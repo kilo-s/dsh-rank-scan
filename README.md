@@ -40,7 +40,7 @@ macOS / Linux：`bash scripts/install.sh desktop <tgz 路径>`。
 
 **验证**：重开 DSH 后左侧栏会话列表下方应出现「扫榜」入口；或访问 `http://127.0.0.1:19387/api/rank-scan/health`，返回 `{ok:true,...}` 即通。
 
-**更新**：重跑上面任一条安装命令即可（链接直装会取最新 main）。装了 [dsh-market](https://github.com/dsh-market/dsh-market) 的话，面板「抓什么」页底部有版本区可就地检查版本 —— 但**本插件未发布到 npm**（占位注册脚本已提供，尚未实际发布），所以那条「一键更新」通道不适用；更新请走 Release 附件或仓库链接。
+**更新**：重跑上面任一条安装命令即可（链接直装会取最新 main）。装了 [dsh-market](https://github.com/dsh-market/dsh-market) 的话，面板「抓什么」页底部有版本区可就地检查版本；**0.2.2 起本插件已发布到 npm**，所以那条「一键更新」通道可用。若面板显示「npm 上查不到」（网络不通或该版尚未发布），按 Release 附件或仓库链接更新。
 
 **卸载**：`pwsh -File scripts\uninstall.ps1`（macOS / Linux：`bash scripts/uninstall.sh`）。顺序是：`dsh plugin remove`（**失败即中止**，不会删 junction、不会改任何文件，并打印手动命令）→ 按 `package.json` 的 `name` 删 profile 里的 junction（新旧包名都试）→ 打印数据目录。**数据目录保留**，想彻底清理请自行删除它。
 
@@ -59,7 +59,7 @@ macOS / Linux：`bash scripts/install.sh desktop <tgz 路径>`。
 | 落盘纪律 | 按数据日期落快照，原子写、同日覆盖即幂等；精简索引 / 保留清理 / 导出 |
 | 定时扫描 | 按站分时，**默认开启**，安装当天不跑；面板可改时刻与开关，**改动跨重载保留** |
 | 面板记忆 | 浮窗位置与尺寸、收起状态、当前页签、正在看哪天，都在刷新后恢复 |
-| 版本与更新 | 面板显示当前版本；装了 dsh-market 可查新版本，但**本插件未发布到 npm**（占位注册尚未执行），「一键更新」不适用；没装则只读（不硬赌能力） |
+| 版本与更新 | 面板显示当前版本；**0.2.2 起已发布到 npm**，装了 dsh-market 可查新版本并「一键更新」；npm 查不到时面板会明确提示，回退 Release 附件 / 仓库链接；没装 dsh-market 则只读（不硬赌能力） |
 | 防卡死 | 单请求 15s / 单榜 90s / 单站连败 3 次熔断 / 120s 无进展看门狗 / 扫描锁 + 心跳（心跳过期可接管） |
 | 书签 | 面板内收藏作品、备注夹、回收站、导出 |
 
