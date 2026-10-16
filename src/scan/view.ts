@@ -303,6 +303,74 @@ export function usesRankDelta(boardId: string): boolean {
  * 缺失值统一成 +Infinity ⇒ 倒序时排到最后，不会污染榜首。
  * 抽成纯函数是为了能被单测钉住方向（之前是内联的 num(a)-num(b)，被写成了正序）。
  */
+/**
+ * 这个榜的补全字段在书页里 ⇒ 榜页永远给不了（起点/起点图=收藏·字数；刺猬猫/菠萝包=字数·收藏·书名·作者；番茄=干净书名·作者·字数）。
+ * 判定 = 快照里还有没有「可补但为空」的字段（纯函数、可单测；宿主用它决定要不要把补全记进待办）。
+ */
+export function isEnrichableBoard(boardId: string): boolean {
+  return boardId.startsWith('qidian.') || boardId.startsWith('qidiantu.') || boardId.startsWith('ciweimao.') || boardId.startsWith('sfacg.') || boardId.startsWith('fanqie.m.')
+}
+
+/** 某行还缺哪些补全字段（**缺失一律 null，不补 0**） */
+export function missingEnrichFields(boardId: string, row: Row): string[] {
+  const ex: any = (row && (row as any).extra) || {}
+  const need: string[] = []
+  if (boardId.startsWith('qidian.')) {
+    if (ex.collect == null) need.push('collect')
+    if (ex.wordsCnt == null) need.push('words')
+  } else if (boardId.startsWith('qidiantu.')) {
+    if (ex.wordsCnt == null) need.push('words')
+  } else if (boardId.startsWith('ciweimao.')) {
+    if (ex.collect == null) need.push('collect')
+    if (ex.wordsCnt == null) need.push('words')
+  } else if (boardId.startsWith('sfacg.')) {
+    if (ex.collect == null) need.push('collect')
+    if (ex.words == null && ex.wordsCnt == null) need.push('words')
+  } else if (boardId.startsWith('fanqie.m.')) {
+    if (ex.titleSuspect !== false) need.push('title')
+    if (ex.wordNumber == null && ex.wordsCnt == null) need.push('words')
+  }
+  return need
+}
+
+/**
+ * 补全续跑的判定（纯函数、可单测）—— 把「要不要试、还试不试」和 IO 分开：
+ * - action='clear'：待办记的是别的数据日（跨日作废）/ 该榜不支持补全
+ * - action='stale'：待办还在，但盘上已经没有裸行 ⇒ 直接清掉条目
+ * - action='try'：值得再试一次（tried < maxTries）
+ * - action='giveup'：当日次数用尽仍缺 ⇒ 当日不再打站点（面板按「已放弃」解释）
+ * tried = 已经尝试过的次数（调用方在真正尝试前 +1）。
+ */
+export function enrichAttemptPolicy(input: {
+  /** 待办里的数据日期（没有待办 = null） */
+  pendingDate: string | null
+  /** 当前最近数据日 */
+  latestDate: string
+  /** 盘上还剩几条缺字段 */
+  missing: number
+  /** 已尝试次数 */
+  tried: number
+  /** 每榜每日最多尝试几次 */
+  maxTries: number
+  /** 该榜现在是否支持补全 */
+  enrichable: boolean
+}): { action: 'clear' | 'stale' | 'try' | 'giveup'; missing: number } {
+  const missing = Math.max(0, Number(input.missing) || 0)
+  if (!input.enrichable) return { action: 'clear', missing }
+  if (input.pendingDate && input.pendingDate !== input.latestDate) return { action: 'clear', missing }
+  if (!missing) return { action: 'stale', missing: 0 }
+  if ((input.tried || 0) >= input.maxTries) return { action: 'giveup', missing }
+  return { action: 'try', missing }
+}
+
+/** 还有几行需要补全（0 = 该榜该数据日的补全已完整） */
+export function enrichMissingCount(boardId: string, rows: Row[]): number {
+  if (!isEnrichableBoard(boardId)) return 0
+  let n = 0
+  for (const r of rows || []) if (missingEnrichFields(boardId, r).length) n += 1
+  return n
+}
+
 export function compareDesc(a: number | null, b: number | null): number {
   // 缺失值显式判定，**永远压到最后**（不依赖 Infinity 参与减法：之前我靠 +Infinity 糊，
   // 倒序时 Infinity 会跑到最前面，把没数据的行顶到榜首）。

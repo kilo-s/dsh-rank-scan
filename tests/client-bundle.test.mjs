@@ -131,3 +131,15 @@ test('lib/client.js 关键结构特征还在（槽位注册 / 面板开合 / 站
   // 单参数调用必须被兼容（否则「看起点图原始页」静默无效）
   assert.match(src, /typeof ctx === 'string'/, 'openLink 缺少单参数兼容分支')
 })
+test('★ 回归：番茄「在读变化」读 valueDelta，绝不退回名次差', () => {
+  const src = readFileSync(SOURCE, 'utf8')
+  assert.ok(src.indexOf('extra.valueDelta') >= 0 || src.indexOf('ex.valueDelta') >= 0, '在读变化必须读 valueDelta（我方按天的在读差）')
+  assert.ok(src.indexOf("if (k === 'readDelta') return ex.delta") < 0, '旧写法（读 ex.delta）会把名次差当在读变化显示，必须已移除')
+})
+
+test('★ 补全未完成在面板上可见（2026-10-16 补全持久化）', () => {
+  const src = readFileSync(SOURCE, 'utf8')
+  assert.ok(src.indexOf('补全未完成') >= 0, '面板要标出「补全未完成」，别让裸行静默')
+  assert.ok(src.indexOf('data.enrich') >= 0, '面板要消费宿主下发的 enrich 状态')
+  assert.ok(src.indexOf('extra.showDate') >= 0, '起点图首订的源数据日期要显示出来')
+})

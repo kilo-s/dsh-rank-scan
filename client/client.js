@@ -436,6 +436,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
     /** 概览：单行汇总 + 站点一行一表；异常榜折叠；今天的变化 */
     function Overview(props) {
       const ov = props.ov
+      /**
+       * ★ 2026-10-17（补全移出阻塞路径）：后台补全的进度。
+       * 抓榜已经很快（~70 秒），补全是 1 请求/秒的长活 ⇒ 把它摘出 /scan 之后，
+       * 面板必须让使用者看得见「还在补、补到第几个」，否则又变成「扫完了但没数据」。
+       */
+      const enrichS = React.useState(null)
+      const enrichRun = enrichS[0]
+      const setEnrichRun = enrichS[1]
       const chgS = React.useState(null)
       const setChg = chgS[1]
       const badS = React.useState(false)
@@ -446,6 +454,25 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const retMsg = retS[0]
       const setRetMsg = retS[1]
       React.useEffect(function () { if (ov && ov.dataDate) jget('/changes').then(setChg).catch(function () { setChg(null) }) }, [ov && ov.dataDate])
+      // 补全进行中：5 秒一次盯进度；跑完后自动刷新一次，让补上的字段出现
+      React.useEffect(function () {
+        let alive = true
+        let id = null
+        let wasActive = false
+        const tick = function () {
+          jget('/enrich-status').then(function (r) {
+            if (!alive) return
+            const er = (r && r.enrichRun) || null
+            setEnrichRun(er)
+            const active = !!(er && er.active)
+            if (wasActive && !active) props.reload()
+            wasActive = active
+          }).catch(function () { /* 读不到进度不影响面板 */ })
+        }
+        tick()
+        id = setInterval(tick, 5000)
+        return function () { alive = false; if (id) clearInterval(id) }
+      }, [])
       if (!ov) return h('div', { style: C.muted }, '加载中…')
       const c = ov.counts || {}
       const total = (c.ok || 0) + (c.missing || 0) + (c.stale || 0) + (c.login_required || 0) + (c.truncated || 0)
@@ -464,6 +491,20 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('span', null, bad === 0 ? '全部正常' : '异常 ' + bad + ' / 正常 ' + (c.ok || 0)),
           h('span', { style: C.muted }, '隐藏 ' + (ov.hiddenCount || 0) + ' 个'),
           scan ? h('span', { style: C.muted }, '上次 ' + scan.outcome + (scan.trigger ? '/' + scan.trigger : '')) : null),
+        // ★ 后台补全进度（active=false 时如果还剩待办也显示一行，说明会在下一次续跑里补）
+        (function () {
+          if (!enrichRun) return null
+          const active = !!enrichRun.active
+          if (!active && !(enrichRun.total > enrichRun.done)) return null
+          const label = active
+            ? '补全中 ' + (enrichRun.done || 0) + '/' + (enrichRun.total || 0) + ' 个榜（1 请求/秒，抓榜数据已可用）'
+            : '补全待续跑：还剩 ' + Math.max(0, (enrichRun.total || 0) - (enrichRun.done || 0)) + ' 个榜'
+          return h('div', {
+            style: { ...C.row, padding: '4px 7px', marginTop: '2px', borderRadius: '6px',
+              background: active ? 'rgba(33,150,243,0.10)' : 'rgba(255,152,0,0.10)',
+              border: '1px solid ' + (active ? 'rgba(33,150,243,0.40)' : 'rgba(255,152,0,0.45)') },
+          }, h('span', { style: { fontWeight: 600 } }, active ? '⏳ ' : '⏸ '), h('span', null, label))
+        })(),
         h('div', { style: C.row },
           h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.act('/scan') } }, props.busy ? '扫描中…' : '立刻扫一次'),
           h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.act('/cancel') } }, '停止本次'),
@@ -675,7 +716,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           note ? h('span', { style: C.muted }, note) : null),
         h('label', { style: C.row },
           h('input', { type: 'checkbox', checked: autoEnrich, onChange: function (e) { setAutoEnrich(e.target.checked); setDirty(true) } }),
-          h('span', { style: C.muted }, '扫描后自动补全番茄/刺猬猫/菠萝包的字数·收藏（榜页没有这些字段，要进书页取，约 90~100 请求）。**定时与手动「立刻扫一次」都会补**，且只补本次扫描范围内的榜；起点收藏与三江字数另见下面的开关。')),
+          h('span', { style: C.muted }, '扫描后自动补全番茄/刺猬猫/菠萝包的字数·收藏（榜页没有这些字段，要进书页取）。**补全已移到后台**：抓榜一结束就返回，补全在后台按 1 请求/秒逐个榜补，顶部显示进度；有书页缓存时不重复进书页。起点收藏与三江字数另见下面的开关。')),
+        // ★ 2026-10-17：通用书页缓存规模（刺猬猫/菠萝包/番茄）——命中即不再进书页
+        (cat && cat.bookCache) ? h('div', { style: { ...C.muted, marginTop: '2px' } },
+          '通用书页缓存：' + ((cat.bookCache.stat && cat.bookCache.stat.entries) || 0) + ' 本' +
+          (cat.bookCache.stat && cat.bookCache.stat.newest ? '（最近 ' + (fmtLocalStamp(cat.bookCache.stat.newest) || String(cat.bookCache.stat.newest).slice(0, 16)) + '）' : '') +
+          '　·　有效期 ' + (cat.bookCache.ttlDays || 7) + ' 天') : null,
         h('div', { style: { margin: '8px 0', padding: '7px 9px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '8px', background: 'rgba(128,128,128,.05)' } },
           h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '定时扫描'),
           h('label', { style: C.row },
@@ -900,7 +946,17 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       if (k === 'read') return fmtRead(ex.read !== undefined ? ex.read : r.value)
       if (k === 'value') return fmtRead(r.value)
       if (k === 'baseRead') return fmtRead(ex.baseRead !== undefined ? ex.baseRead : ex.prevRead)
-      if (k === 'readDelta') return ex.delta != null ? (ex.delta > 0 ? '+' + fmtRead(ex.delta) : String(ex.delta)) : '—'
+      /**
+       * 「在读变化」= **我方按天的数值差**（今日 − 上一数据日），口径见 spec-扫榜插件-v1 / 取证文档。
+       * ★ 2026-10-16：必须读 extra.valueDelta —— 排在它后面的名次差（row.delta / extra.delta）
+       *   是**另一件事**（站方升降）；旧代码读 extra.delta ⇒ 番茄整列显示的是名次差（名次没动就只有 0/—）。
+       *   宿主没给 valueDelta 时只认「在读 − 昨日在读」，**绝不**退回名次差。
+       */
+      if (k === 'readDelta') {
+        const vd = ex.valueDelta != null ? ex.valueDelta
+          : (typeof r.value === 'number' && typeof ex.prevRead === 'number' ? r.value - ex.prevRead : null)
+        return vd == null ? '—' : (vd > 0 ? '+' + fmtRead(vd) : String(vd))
+      }
       if (k === 'dailyDelta') return ex.dailyDelta == null ? '—' : (ex.dailyDelta > 0 ? '+' : '') + ex.dailyDelta
       // 每日增量已拆成 daily0..daily6 七列（见 view.ts），单元格只取那一天
       if (/^daily\d+$/.test(k)) {
@@ -1330,6 +1386,23 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           curSite === 'fanqie'
             ? h('button', { style: enrichBusy ? C.btnOn : C.btn, disabled: enrichBusy, onClick: doEnrichFanqie, title: '把**抓取集里所有番茄分类榜**一次补齐（逐榜、逐本 1 请求 + 1s 限速，会很慢）' }, enrichBusy ? '补全中…' : '补齐番茄全部分类')
             : null,
+          /**
+           * ★ 2026-10-16（补全持久化）：补全没跑完必须**可见**。
+           *   裸行（有行、收藏/字数为空）以前在面板上完全看不出来，只能靠人肉发现「怎么没显示」。
+           *   pending/exhausted 都是「还缺」，点右边「补全本榜」或等定时续跑即可。
+           */
+          (function () {
+            const en = data && data.enrich
+            if (!en || !(en.missing > 0)) return null
+            const label = en.reason === 'exhausted'
+              ? '补全未完成：当日已试 ' + en.tried + ' 次，仍缺 ' + en.missing + ' 条'
+              : en.pending ? '补全未完成：还缺 ' + en.missing + ' 条（定时续跑中，也可点「补全本榜」）'
+              : '本榜有 ' + en.missing + ' 条缺字段（补全没跑完／被打断）'
+            return h('span', {
+              style: { padding: '2px 6px', borderRadius: '4px', fontSize: '12px', background: 'rgba(255,152,0,0.15)', border: '1px solid rgba(255,152,0,0.5)' },
+              title: '裸行（该站榜页给不出这些字段，要进书页取）',
+            }, '⚠ ' + label)
+          })(),
           data && data.note && String(data.boardId).indexOf('qidian.') !== 0 ? h('span', { style: C.muted }, dash(data.note)) : null),
         curSite === 'qidiantu'
           ? h('div', { style: C.row },
@@ -1348,6 +1421,17 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         enrichNote ? h('div', { style: C.muted }, enrichNote) : null,
         data && data.fallbackFrom ? h('div', { style: C.muted }, '当天（' + data.requestedDate + '）没有快照 ⇒ 回落到 ' + data.fallbackFrom) : null,
         data && data.baselineDate ? h('div', { style: C.muted }, '基期 ' + data.baselineDate + ' · 数据日期 ' + dash(data.dataDate)) : null,
+        /**
+         * ★ 2026-10-16（起点图首订锚 n-1）：行的 showDate 与快照数据日期不一致时，明确标出源数据日期。
+         *   站点口径：上架 24 小时后才结算首订 ⇒ 抓到的榜永远是 n-1 那天的页面。
+         */
+        data && data.rows && (function () {
+          const src = (data.rows[0] && data.rows[0].extra && data.rows[0].extra.showDate) || null
+          if (!src || src === data.dataDate) return null
+          return h('div', { style: { ...C.row, alignItems: 'center', gap: '6px', padding: '4px 6px', background: 'rgba(33,150,243,0.10)', border: '1px solid rgba(33,150,243,0.40)', borderRadius: '4px' } },
+            h('span', { style: { fontWeight: 600 } }, '源数据 ' + src),
+            h('span', { style: C.muted }, '（首订榜按 n-1 锚点抓取：上架 24 小时后才结算首订；快照数据日期 ' + dash(data.dataDate) + '）'))
+        })(),
 
         data && data.source ? h('div', { style: C.muted }, '来源：' + data.source) : null,
         data && data.rows && data.rows.length

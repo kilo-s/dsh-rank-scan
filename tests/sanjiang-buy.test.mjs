@@ -130,20 +130,22 @@ test('★ 起点图首订：历史日期要请求 /shouding/<日期>（回归：
     boards: ['qidiantu.shouding'],
     fetchText: async (url) => { seen.push(url); return oneRow },
   })
-  // 非当日 ⇒ 必须带日期路径
+  /**
+   * ★ 2026-10-16（使用者口径）：首订榜一律锚 **n-1**（站点到上架 24h 后才结算首订，站点自身
+   * 进去默认也是 n-1）⇒ 「历史日期」请求的是 day-1，**不再**走不带日期的 /shouding/。
+   * 这条测试的原始意图不变：不同数据日期必须落到不同 URL（曾经的根因是恒抓当日）。
+   */
   await site.fetchBoard('qidiantu.shouding', { now: () => new Date('2026-10-11T12:00:00+08:00'), signal: undefined, requestTimeoutMs: 5000 })
-  // 当日 ⇒ 走 /shouding/
-  // ★ 当日判定必须走注入时钟（曾经用真实 new Date() 比 ⇒ 跨过午夜这条测试就红，且不可确定性复现）
+  // ★ 锚点判定必须走注入时钟（曾经用真实 new Date() 比 ⇒ 跨过午夜这条测试就红，且不可确定性复现）
   await site.fetchBoard('qidiantu.shouding', {
     now: () => new Date('2026-10-15T12:00:00+08:00'),
     todayIso: '2026-10-15',
     signal: undefined,
     requestTimeoutMs: 5000,
   })
-  const todayStr = '2026-10-15'
-  assert.equal(seen[0], 'https://www.qidiantu.com/shouding/2026-10-11', '历史日期要带日期（曾被 ctx.dateOf 短路成当日）')
-  assert.equal(seen[1], 'https://www.qidiantu.com/shouding/', '当日（' + todayStr + '）走无日期路径')
-  assert.notEqual(seen[0], seen[1], '两个日期不能落到同一个 URL —— 那正是「不同日期作品都一样」的根因')
+  assert.equal(seen[0], 'https://www.qidiantu.com/shouding/2026-10-10', '2026-10-11 的数据 ⇒ 请求 n-1')
+  assert.equal(seen[1], 'https://www.qidiantu.com/shouding/2026-10-14', '2026-10-15 的数据 ⇒ 请求 n-1')
+  assert.notEqual(seen[0], seen[1], '两个数据日期不能落到同一个 URL —— 那正是「不同日期作品都一样」的根因')
 })
 test('★ 日期必须补零（回归：/shouding/2026-10-1 只返回 26 字节空页 ⇒ 被误判成「该日期无数据」）', async () => {
   assert.equal(ymd(new Date(2026, 9, 1)), '2026-10-01')
@@ -153,7 +155,8 @@ test('★ 日期必须补零（回归：/shouding/2026-10-1 只返回 26 字节�
   const site = makeQidiantuSite({ boards: ['qidiantu.shouding'], fetchText: async (u) => { seen.push(u); return '<table><tbody></tbody></table>' } })
   try { await site.fetchBoard('qidiantu.shouding', { now: () => new Date(2026, 9, 1, 12), signal: undefined, requestTimeoutMs: 5000 }) } catch (e) {}
   // 单数字月/日必须补零，否则站点给 26 字节空页
-  assert.equal(seen[0], 'https://www.qidiantu.com/shouding/2026-10-01', '日期路径必须补零，不能是 2026-10-1')
+  // ★ n-1 锚：2026-10-01 的数据 ⇒ 请求 2026-09-30（跨月仍必须补零）
+  assert.equal(seen[0], 'https://www.qidiantu.com/shouding/2026-09-30', '日期路径必须补零，不能是 2026-9-30')
   assert.ok(!/\/shouding\/\d{4}-\d-\d$/.test(seen[0]), '不能出现未补零的日期路径')
 })
 

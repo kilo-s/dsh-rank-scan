@@ -335,27 +335,55 @@ export function makeQidiantuSite(opts: {
           warnings: warnings2,
         }
       }
-      // 起点图支持按日期直查：/shouding/<YYYY-MM-DD>（当日 = /shouding/）
-      // 既定口径：面板要能看「之前的日期数据」，不必依赖本地是否存过那天的快照
+      // 起点图支持按日期直查：/shouding/<YYYY-MM-DD>
       const day = ctx.now()
-      const want = ymd(day)
       /**
-       * 「真实今天」与「要请求的日期」是两件事，别搅在一起：
-       *   want     = 要抓的那一天（注入的 ctx.now()，可能不是今天）
-       *   todayStr = 真实系统的今天，用来判断「要不要带日期路径」
-       * ★ 允许用 ctx.todayIso 覆盖真实今天 —— 否则这段判定依赖不可注入的 new Date()，
-       *   测试跨过午夜就会红（曾经踩到：测试写死当日 10-15，10-16 一跑就失败），
-       *   而且没法确定性复现。
+       * ★ 2026-10-16（使用者口径）：首订榜锚 **n-1**。
+       * 站点口径：作品上架 24 小时后才可能结算出首订（有的要到当天 23:59），所以起点图自己进去
+       * 默认显示的就是 **n-1** 那天；抓「今天」拿到的是今天刚上架、首订还没结算的行
+       * （实测 2026-10-16 当天页 = 7 行、首订全空、收订比 -1）。
+       * 这里一律锚 day-1；**只有页面没有数据行**才再退一天（n-2，最多退 1 天，照搬三江写法）。
+       * ★ 不再请求不带日期路径的 /shouding/ —— 那是站点按它自己的默认日给的页面，与本地数据日期
+       *   语义对不上（want 是数据日期，页面只是「承载它的那一天的源」）。
        */
+      const want = addDaysStr(ymd(day), -1)
+      // todayStr：真实系统今天（want 是「要取哪天的数据」，两者不是一回事）
       const todayStr = (ctx as any).todayIso ? String((ctx as any).todayIso) : ymd(new Date())
-      // ★ 2026-10-15 修：原来读 ctx.dateOf，但全仓库没有一处设置过它 ⇒ want 恒为 undefined
-      //   ⇒ 永远请求当日 /shouding/，于是「直接查看历史日期」永远显示今天的榜。
-      //   现在取自 ctx.now()（/day 与 /repair 路由已把 now 设成目标日期 12:00 +08:00）。
-      const url = want !== todayStr ? 'https://www.qidiantu.com/shouding/' + want : 'https://www.qidiantu.com/shouding/'
-      const html = await fetchText(url, ctx)
-      const parsed = parseShouding(html)
-      if (!parsed.rows.length) throw new MissingError('该日期无数据（0 行；注意 200 也可能是空榜）')
-      return { boardId: id, status: 'ok', rows: parsed.rows, requests: 1, durationMs: Date.now() - t0, warnings: [] }
+      // 用户口径（2026-10-14）：首订是计数类 —— 负值/0 一律 null（见 parseShouding），
+      // 所以「这天出没出首订」的判据 = 有没有任何一行的首订 > 0（只用于 warn，不用于筛行）。
+      const settledIn = (rs: Row[]) => rs.some((r) => typeof r.value === 'number' && r.value > 0)
+      let requests = 0
+      let usedDate = want
+      let pageDate: string | null = null
+      const warnings: string[] = []
+      /**
+       * ★ 锚点回退的判据（2026-10-16 定）：**页面没有行**才回退一天。
+       * 「有行但首订全空」要如实保留 —— 那是某个日期还没结算完的**正常状态**
+       * （实测 2026-10-16 当天页就是这种），不是「该换日期」的信号；回退会把「还没结算」
+       * 静默换成一个更早、看起来有数据的名单，反而失真。首订在 n 之后的补跑里会自然结算。
+       */
+      let rows: Row[] = []
+      for (let back = 0; back <= 1; back++) {
+        usedDate = addDaysStr(want, -back)
+        const html = await fetchText('https://www.qidiantu.com/shouding/' + usedDate, ctx)
+        requests += 1
+        const parsed = parseShouding(html)
+        if (parsed.date) pageDate = parsed.date
+        if (parsed.rows.length) {
+          rows = parsed.rows
+          if (back > 0) warnings.push('n-1（' + want + '）无数据行，已回退到 ' + usedDate)
+          break
+        }
+      }
+      if (!rows.length) throw new MissingError('该日期无数据（0 行；注意 200 也可能是空榜）')
+      if (!settledIn(rows)) {
+        warnings.push('首订尚未结算（' + usedDate + '）：站点要到上架 24 小时后才出首订，面板按「—」显示')
+      }
+      // 页面自己写的日期才是「这行数据属于哪一天」的权威来源（缺了才退回 our usedDate）
+      const srcDate = pageDate || usedDate
+      if (srcDate !== want) warnings.push('源数据日期 ' + srcDate + '（本次按 n-1 锚点请求 ' + want + '）')
+      rows = rows.map((r) => ({ ...r, extra: { ...(r.extra || {}), showDate: srcDate } }))
+      return { boardId: id, status: 'ok', rows, requests, durationMs: Date.now() - t0, warnings }
     },
   }
 }

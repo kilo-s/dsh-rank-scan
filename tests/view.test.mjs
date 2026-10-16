@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyColumnPolicy, boardMeta, columnsFor, compareDesc, defaultSortFor, fanqieCatName, hideColumnsFor, shouldShowDays, usesRankDelta, withFanqieCat, groupChanges, groupBySite } from '../lib/scan/view.js'
+import { applyColumnPolicy, boardMeta, columnsFor, compareDesc, defaultSortFor, enrichAttemptPolicy, enrichMissingCount, fanqieCatName, hideColumnsFor, isEnrichableBoard, shouldShowDays, usesRankDelta, withFanqieCat, groupChanges, groupBySite } from '../lib/scan/view.js'
 
 test('列随榜：起点签约榜（已限定分类）不出现分类列，但有子分类与字数', () => {
   const m = boardMeta('qidian.sign.cat12')
@@ -251,3 +251,28 @@ test('★ 番茄分类：extra.catId（数字）要解析成 extra.cat（中文�
   assert.equal(fanqieCatName('258'), '传统玄幻', '字符串 id 也要认')
 })
 
+// ── 补全持久化（2026-10-16）：哪些榜要补、还缺几条、还试不试 ─────────────────────
+test('缺字段判定：榜页给不出的字段为空 ⇒ 算裸行（缺失只看 null，不补 0）', () => {
+  assert.equal(enrichMissingCount('qidian.sign.cat12', [{}]), 1, '起点：没收藏/精确字数 ⇒ 缺 1 行')
+  assert.equal(enrichMissingCount('qidian.sign.cat12', [{ extra: { collect: 12, wordsCnt: 3456 } }]), 0, '补齐了就不缺')
+  assert.equal(enrichMissingCount('ciweimao.yp_new.week', [{ extra: { collect: 1 } }]), 1, '刺猬猫：字数仍缺 ⇒ 还缺')
+  assert.equal(enrichMissingCount('ciweimao.yp_new.week', [{ extra: { collect: 1, wordsCnt: 22 } }]), 0)
+  assert.equal(enrichMissingCount('sfacg.vip.week', [{ extra: { collect: 1, words: 22 } }]), 0, '菠萝包字数在 extra.words')
+  assert.equal(enrichMissingCount('fanqie.m.new.262', [{ extra: { titleSuspect: true } }]), 1, '番茄：书名仍可疑 ⇒ 缺')
+  assert.equal(enrichMissingCount('fanqie.m.new.262', [{ extra: { titleSuspect: false, wordNumber: 99 } }]), 0)
+  assert.equal(enrichMissingCount('qidiantu.sanjiang', [{ extra: {} }]), 1, '起点图三江只补字数')
+  assert.equal(enrichMissingCount('fanqie.derived.period', [{ extra: {} }]), 0, '派生榜不参与补全')
+  assert.equal(isEnrichableBoard('qidian.sign.cat4'), true)
+  assert.equal(isEnrichableBoard('fanqie.derived.period'), false)
+})
+
+test('补全续跑判定：跨日作废 / 已补齐 / 再试 / 当日放弃', () => {
+  const p = (o) => enrichAttemptPolicy({ pendingDate: '2026-10-16', latestDate: '2026-10-16', missing: 3, tried: 0, maxTries: 3, enrichable: true, ...o }).action
+  assert.equal(p({}), 'try', '还有裸行且没试过 ⇒ 该试')
+  assert.equal(p({ tried: 2 }), 'try', '试过 2 次（上限 3）⇒ 还能试最后一次')
+  assert.equal(p({ tried: 3 }), 'giveup', '用尽次数仍缺 ⇒ 当日放弃，不再打站点')
+  assert.equal(p({ missing: 0, tried: 1 }), 'stale', '盘上已经不缺 ⇒ 清掉待办')
+  assert.equal(p({ pendingDate: '2026-10-15', latestDate: '2026-10-16' }), 'clear', '待办是昨天的 ⇒ 跨日作废')
+  assert.equal(p({ enrichable: false }), 'clear', '该榜不支持补全 ⇒ 清掉')
+  assert.equal(enrichAttemptPolicy({ pendingDate: null, latestDate: '2026-10-16', missing: 0, tried: 0, maxTries: 3, enrichable: true }).action, 'stale', '没有待办且不缺字段 ⇒ 无需动作')
+})

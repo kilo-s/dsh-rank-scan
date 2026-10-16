@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join, dirname } from 'node:path'
-import { parseShouding, makeQidiantuSite } from '../lib/sites/qidiantu.js'
+import { parseShouding, makeQidiantuSite, ymd } from '../lib/sites/qidiantu.js'
 import { parseRankPage, makeCiweimaoSite, CIWEIMAO_BOARDS } from '../lib/sites/ciweimao.js'
 import { makeSfacgSite } from '../lib/sites/sfacg.js'
 import { makeQidianMobileSite } from '../lib/sites/qidian-mobile.js'
@@ -325,4 +325,65 @@ test('★ 票 50 闸门可注入：适配器用自己的闸门（测试替身不
   } finally {
     globalThis.fetch = orig
   }
+})
+// 起点图首订页最小构造器（表头 9 列 + 1 行；首订值可给 0 以模拟「还没结算」）
+const SHOUDING_HEAD = '<thead><tr><th>#</th><th>[分类]书名</th><th>首订</th><th>收藏</th><th>收订比</th><th>字数</th><th>粉丝</th><th>作者</th><th>首V时刻</th></tr></thead>'
+const shoudingRow = (v) =>
+  '<tr><td>1</td><td><a href="/info/1001">[玄幻]甲</a></td>' +
+  '<td value="' + v + '">' + v + '</td><td value="1000">1000</td><td value="9.4">9.4</td>' +
+  '<td value="100000">100000</td><td value="12">12</td>' +
+  '<td><a href="/author/a">作者</a></td><td>10:00</td></tr>'
+const mkPage = (date, v) =>
+  '<html><body><input type="date" id="datePicker" value="' + date + '"/><table>' + SHOUDING_HEAD + '<tbody>' + shoudingRow(v) + '</tbody></table></body></html>'
+
+const EMPTY_PAGE = (date) =>
+  '<html><body><input type="date" id="datePicker" value="' + date + '"/><table>' + SHOUDING_HEAD + '<tbody></tbody></table></body></html>'
+// ── 起点图首订锚 n-1（2026-10-16 使用者口径）─────────────────────────────────
+test('起点图首订：默认锚 n-1（不再请求不带日期的 /shouding/）', async () => {
+  const urls = []
+  const site = makeQidiantuSite({
+    boards: ['qidiantu.shouding'],
+    fetchText: async (u) => { urls.push(u); return mkPage('2026-10-13', 1953) },
+    rateGate: createRequestGate({ minIntervalMs: 0 }),
+  })
+  const day = new Date('2026-10-14T20:00:00+08:00')
+  const res = await site.fetchBoard('qidiantu.shouding', { now: () => day, signal: new AbortController().signal, requestTimeoutMs: 15000 })
+  assert.equal(res.status, 'ok')
+  assert.equal(urls.length, 1, 'n-1 已有已结算首订 ⇒ 只打一次')
+  assert.ok(urls[0].endsWith('/shouding/2026-10-13'), '必须锚 n-1，实际 ' + urls[0])
+  assert.equal(ymd(day), '2026-10-14')
+  assert.equal(res.rows[0].value, 1953)
+})
+
+test('起点图首订：n-1 有行但首订未结算 ⇒ 回退 n-2，并记 warning + showDate', async () => {
+  const urls = []
+  const site = makeQidiantuSite({
+    boards: ['qidiantu.shouding'],
+    // n-1 = 2026-10-13 页面**没有数据行**（空表）⇒ 才该回退；另给一个「有行但首订=0」的对照
+    fetchText: async (u) => { urls.push(u); return u.endsWith('2026-10-13') ? EMPTY_PAGE('2026-10-13') : mkPage('2026-10-12', 1423) },
+    rateGate: createRequestGate({ minIntervalMs: 0 }),
+  })
+  const day = new Date('2026-10-14T20:00:00+08:00')
+  const res = await site.fetchBoard('qidiantu.shouding', { now: () => day, signal: new AbortController().signal, requestTimeoutMs: 15000 })
+  assert.equal(urls.length, 2, 'n-1 无数据行 ⇒ 再退一天')
+  assert.ok(urls[0].endsWith('2026-10-13') && urls[1].endsWith('2026-10-12'))
+  assert.equal(res.rows[0].value, 1423, '用 n-2 那份')
+  assert.equal(res.rows[0].extra.showDate, '2026-10-12', '行的源数据日期要标出来（面板据此提示）')
+  assert.ok(res.warnings.some((w) => w.indexOf('回退') >= 0), '必须记一条回退 warning：' + JSON.stringify(res.warnings))
+})
+
+test('起点图首订：n-1 有行但首订未结算 ⇒ 不回退（那是正常状态），保留 n-1 并记 warning（缺失不补 0）', async () => {
+  const urls = []
+  const site = makeQidiantuSite({
+    boards: ['qidiantu.shouding'],
+    fetchText: async (u) => { urls.push(u); return mkPage(u.slice(-10), 0) },
+    rateGate: createRequestGate({ minIntervalMs: 0 }),
+  })
+  const day = new Date('2026-10-14T20:00:00+08:00')
+  const res = await site.fetchBoard('qidiantu.shouding', { now: () => day, signal: new AbortController().signal, requestTimeoutMs: 15000 })
+  assert.equal(res.status, 'ok')
+  assert.equal(urls.length, 1, '有数据行 ⇒ 不回退（首订未结算不是回退信号）')
+  assert.equal(res.rows[0].value, null, '0/负值按计数类口径记 null（不显示 0）')
+  assert.equal(res.rows[0].extra.showDate, '2026-10-13', '页面有行（只是首订没结算）⇒ 不回退，页面日期就是 n-1')
+  assert.ok(res.warnings.some((w) => w.indexOf('尚未结算') >= 0), '必须说明首订还没结算：' + JSON.stringify(res.warnings))
 })
