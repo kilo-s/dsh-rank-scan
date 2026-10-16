@@ -67,6 +67,16 @@ test('面板文案不再写死「1 请求/秒 / 1s 限速」', () => {
   assert.ok(CLIENT.includes('noteRequestInterval(c.requestIntervalMs)'), '打开「抓什么」页时要把生效间隔记下来')
 })
 
+test('npm 取号脚本不能踩 PowerShell 逗号优先级（否则 token 变成第 4 个数组元素）', () => {
+  const script = readFileSync(join(ROOT, 'scripts', 'set-npm-token.ps1'), 'utf8')
+  assert.ok(
+    !script.includes(',"registry=https://registry.npmjs.org/","//registry.npmjs.org/:_authToken=" + $token'),
+    '又写成 @(…,"…_authToken=" + $token) 了：逗号优先于 + ⇒ 落盘成「_authToken= 空值 + 裸 token」，npm 一律 ENEEDAUTH',
+  )
+  assert.ok(script.includes('$authLine = "//registry.npmjs.org/:_authToken=" + $token'), '缺「先拼行再入数组」的写法')
+  assert.ok(script.includes('写出的 .npmrc 形状不对'), '缺写后自检（行数 + authToken 值核验）')
+})
+
 test('面板横幅用宿主的 retryable（第三态：当日已试满）', () => {
   assert.ok(CLIENT.includes('enrichStatus.retryable'), '横幅必须用 retryable 判「还能不能续跑」')
   assert.ok(CLIENT.includes('补全已尽力：'), '缺「已尽力」这一态')
