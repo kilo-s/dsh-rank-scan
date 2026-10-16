@@ -192,16 +192,18 @@ test('★ 入口 occupant：就地弹浮窗的可点图标（不套 button、不
   assert.ok(stopped, 'onClick 必须先 stopPropagation，挡掉宿主 selectPanel')
 })
 
-test('★ 薄 main 面板：一行说明 + 「打开浮窗」按钮（Q29）', function () {
+test('★ main 面板只作宿主契约落点：不渲染界面、装载即弹浮窗（2026-10-16 使用者改口径）', function () {
   const { exportsObj } = loadBundle()
   const { ctx, registrations, drain } = makeFakeCtx()
   exportsObj.apply(ctx)
   drain()
   const main = registrations.find(function (r) { return r.options && r.options.name === 'main' && r.options.key === 'rank-scan-panel' })
-  assert.ok(main, '没有注册 id=rank-scan-panel 的薄 main 面板')
+  assert.ok(main, '必须注册 id=rank-scan-panel 的 main 面板（宿主 layout.selectPanel 对未注册的 main id 会抛）')
   const tree = main.comp({})
-  assert.match(textOf(tree), /打开浮窗/, 'main 面板必须有「打开浮窗」按钮')
-  assert.ok(containsType(tree, 'button'), '「打开浮窗」必须是按钮')
+  assert.equal(tree, null, 'main 面板不再渲染任何界面（使用者口径：不要「多一个界面再点里面的按钮」）')
+  // 防漂移：装载时必须自动把浮窗打开（否则键盘/宿主路径落到这里会是一片空白）
+  const src = readFileSync(SOURCE, 'utf8')
+  assert.match(src, /RankScanMainPanel[\s\S]{0,240}panelOpen\.set\(true\)/, 'main 面板装载时必须自动打开浮窗')
 })
 
 test('★ 首次安装自动弹一次：标记只在**真的打开**的那一刻落（不再「标记落了但从不弹」）', function () {

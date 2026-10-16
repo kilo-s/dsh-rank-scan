@@ -1425,22 +1425,26 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
        *     · onClick 里 stopPropagation() ⇒ 挡掉宿主 PanelRow 那个 selectPanel(id)，会话视图不被顶走；
        *     · 浮窗由 panelOpen 打开 ⇒ 一次点击就出窗。薄 main 面板照旧注册（键盘/无障碍路径仍有落点）。
        */
+      // ★ 2026-10-16（使用者反馈「入口太不明显」）：图标 + 「扫榜」文字 + 满不透明度，
+      //   一眼能看出这里可以点；点了就地弹浮窗（stopPropagation 挡掉宿主的 selectPanel）。
       return h('div', {
         onClick: function (e) {
           if (e && typeof e.stopPropagation === 'function') e.stopPropagation()
           panelOpen.set(true)
         },
         title: '打开扫榜浮窗',
-        style: { display: 'block', cursor: 'pointer', lineHeight: 0 },
-      }, h('svg', {
-        width: size, height: size, viewBox: '0 0 16 16', fill: 'none',
-        stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round',
-        style: { display: 'block', opacity: active ? 1 : 0.78 },
-        'aria-hidden': 'true', focusable: 'false',
+        style: { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', lineHeight: 1, fontSize: '12px', opacity: active ? 1 : 0.92, whiteSpace: 'nowrap' },
       },
-        // 三条由长到短的横杠 + 一个对勾：一眼认出是「榜单」，不是别的面板
-        h('path', { d: 'M2 3.5h12M2 8h9M2 12.5h6' }),
-        h('path', { d: 'M12.2 9.4l1.6 1.6 2-2.6' })))
+        h('svg', {
+          width: size, height: size, viewBox: '0 0 16 16', fill: 'none',
+          stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
+          style: { display: 'block' },
+          'aria-hidden': 'true', focusable: 'false',
+        },
+          // 三条由长到短的横杠 + 一个对勾：一眼认出是「榜单」，不是别的面板
+          h('path', { d: 'M2 3.5h12M2 8h9M2 12.5h6' }),
+          h('path', { d: 'M12.2 9.4l1.6 1.6 2-2.6' })),
+        h('span', null, '扫榜'))
     }
 
     function Panel(props) {
@@ -1568,12 +1572,16 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
        */
       try {
         ctx.slots.inject('main', function () {
+          /**
+           * ★ 2026-10-16（使用者反馈「为什么要多一个界面再点里面的按钮」）：
+           *   这个 main 面板只是**宿主契约的落点**（PanelRow 的 selectPanel(id) 要求 main 槽有同名 key，
+           *   否则 layout 会抛「main panel "x" is not registered」）。正常路径下点侧栏图标已被
+           *   stopPropagation 挡掉、根本不会走到这里；只有键盘/无障碍路径会落到本面板。
+           *   所以这里**不再放任何界面**：装载即把浮窗打开，然后渲染 null。
+           */
           return ctx.slots.register({ name: 'main', key: PANEL_ID, order: 900 }, function RankScanMainPanel() {
-            return h('div', { style: { padding: '16px', fontSize: '13px', lineHeight: 1.7 } },
-              h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '扫榜面板'),
-              h('div', { style: C.muted }, '榜单以可拖动、可缩放的浮窗显示，位置与尺寸会本地记忆。'),
-              h('div', { style: { ...C.row, marginTop: '8px' } },
-                h('button', { style: C.btn, onClick: function () { panelOpen.set(true) } }, '打开浮窗')))
+            React.useEffect(function () { panelOpen.set(true) }, [])
+            return null
           })
         })
       } catch (e) { console.warn('[dsh-rank-scan] 注册 main 面板失败（宿主 layout 未就绪？）', e) }
