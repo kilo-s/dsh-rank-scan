@@ -54,7 +54,7 @@ test('纪律：一个字段都没取到的条目**不入缓存**（下次重试�
 test('合并：本次没取到的字段保留上一次的值（别把已有的覆盖成 null）', () => {
   const root = tmpRoot()
   try {
-    putEntries(root, [{ site: 'sfacg', bookId: '7', entry: { collect: 1280, words: 99784, title: '书', author: '作者', score: 9.1, readCount: null } }])
+    putEntries(root, [{ site: 'sfacg', bookId: '7', entry: { collect: 1280, words: 99784, title: '书', author: '作者', score: 9.1 } }])
     putEntries(root, [{ site: 'sfacg', bookId: '7', entry: { collect: null, words: 12345, title: null, author: null, score: null, readCount: null } }])
     const e = cachedEntry(root, 'sfacg', '7', 0).entry
     assert.equal(e.words, 12345, '新值覆盖')
@@ -88,17 +88,16 @@ test('★ 缓存够不够：刺猬猫要 收藏+字数 两件都给到才算命�
   assert.equal(full.extra.wordsCnt, 116074, '刺猬猫的字数落在 wordsCnt')
 })
 
-test('★ 缓存够不够：菠萝包要 收藏+字数，且字数落在 words（不是 wordsCnt）', () => {
+test('★ 缓存够不够：菠萝包同样用 wordsCnt（与适配器同一字段）', () => {
   const full = assignCachedStats({}, 'sfacg', { collect: 1280, words: 99784, title: null, author: null, score: null })
   assert.equal(full.sufficient, true)
-  assert.equal(full.extra.words, 99784)
-  assert.equal(full.extra.wordsCnt, undefined, '两站的字段名不能混')
+  assert.equal(full.extra.wordsCnt, 99784, '菠萝包的字数也必须落在 wordsCnt（与适配器一致）')
   assert.equal(assignCachedStats({ collect: 1280 }, 'sfacg', { collect: null, words: 99784, title: null, author: null, score: null }).sufficient, true, '行里已有收藏时，缓存给字数就够')
 })
 
 test('★ 缓存够不够：0 是合法值（真取到 0 就算取到），null 才算缺', () => {
   const r = assignCachedStats({}, 'sfacg', { collect: 0, words: 0, title: null, author: null, score: null })
-  assert.equal(r.sufficient, true, '收藏/字数都是 0 也算齐')
+  assert.equal(r.sufficient, true, '收藏/字数都是 0 也算齐（与适配器同一字段 wordsCnt）')
   assert.equal(r.extra.collect, 0)
 })
 

@@ -137,10 +137,13 @@ export function assignCachedStats(
 ): { sufficient: boolean; extra: Record<string, unknown> } {
   const e: any = { ...(extra || {}) }
   if (entry.collect != null) e.collect = entry.collect
-  if (entry.words != null) { if (kind === 'ciweimao') e.wordsCnt = entry.words; else e.words = entry.words }
+  /**
+   * ★ 2026-10-17（审查续核 ②）：**两站的字数都落在行里的 `wordsCnt`**。
+   * 原来菠萝包写成 `extra.words`，而 sfacg 适配器与判定用的都是 `wordsCnt` ⇒
+   * sufficient 永远 false、缓存白写、sfacg 命中数恒 0（等于没缓存）。
+   */
+  if (entry.words != null) e.wordsCnt = entry.words
   if (entry.score != null) e.score = entry.score
-  const sufficient = kind === 'ciweimao'
-    ? e.collect != null && e.wordsCnt != null
-    : e.collect != null && e.words != null
+  const sufficient = e.collect != null && e.wordsCnt != null
   return { sufficient, extra: e }
 }

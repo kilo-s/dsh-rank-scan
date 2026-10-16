@@ -483,7 +483,15 @@ export function apply(ctx: PluginCtx, config: any): void {
      */
     if (opts && opts.deferEnrich && readState().autoEnrich !== false) {
       const only = (opts as any).partial ? rec.boards.map((b: any) => b.boardId) : undefined
-      const marks = (st.boards as string[]).filter((b) => (!only || only.indexOf(b) >= 0) && isEnrichableBoard(b))
+      /**
+       * ★ 2026-10-17（审查续核 ①）：起点/起点图另有「起点收藏与三江字数」开关（qidianEnrich）。
+       * 同步通道在 postScanEnrich 里判过它；而 defer 路径的 worker 直接调 enrichBoard → qidianEnrichBoard，
+       * 那条通道**不读** state.qidianEnrich ⇒ 关掉开关照样打起点书页。这里按站分闸。
+       */
+      const qdOn = readState().qidianEnrich === true
+      const marks = (st.boards as string[])
+        .filter((b) => (!only || only.indexOf(b) >= 0) && isEnrichableBoard(b))
+        .filter((b) => qdOn || !(b.startsWith('qidian.') || b.startsWith('qidiantu.')))
       for (const b of marks) {
         const s: any = new FileStore(root).readSnapshot(rec.dataDate, b)
         if (s && needsEnrichRows(b, s.rows || []) > 0) markEnrichPending(rec.dataDate, b)
@@ -1972,7 +1980,11 @@ export function apply(ctx: PluginCtx, config: any): void {
               if (p2[b] && p2[b].date === latest) { p2[b] = { date: latest, tried: (rec.tried || 0) + 1 }; (s2 as any).enrichPending = p2; writeState(s2) }
             } catch { /* 计数失败不阻塞 */ }
             try {
-              const r: any = await enrichBoard(b, false, ENRICH_RUN_REQUEST_CAP - requests)
+              /**
+               * ★ 2026-10-17（审查续核 ⑥）：单榜预算与「一轮总闸」取小 ⇒ 一轮真实请求数**不会**超总闸
+               * （单榜 24/40 都小于总闸 60，所以以前那个「最多冲到 84」其实到不了；写成 min 是让这个界显式）。
+               */
+              const r: any = await enrichBoard(b, false, Math.min(ENRICH_RUN_REQUEST_CAP - requests, enrichBudgetForBoard(b)))
               requests += (r && typeof r.requests === 'number') ? r.requests : 0
             } catch (e) {
               timerLog('后台补全失败 ' + b + '：' + String(e).slice(0, 100))
@@ -2058,7 +2070,8 @@ export function apply(ctx: PluginCtx, config: any): void {
     }
     for (const r of rows) {
       const next = { ...r, extra: { ...(r.extra || {}) } }
-      const e = next.extra as any
+      // let（不是 const）：贴缓存后 next.extra 会被换成新对象，e 要跟着指向那个活对象
+      let e = next.extra as any
       /**
        * ★ 2026-10-17（书页缓存）：命中即用，0 请求。
        *   现状是「换一天就是全新裸行」⇒ 每天把 60 本书页全部重打一遍；实测这些书号 88% 与前一天重合。
@@ -2071,8 +2084,14 @@ export function apply(ctx: PluginCtx, config: any): void {
         // 贴缓存能给的字段并判「够不够」（纯函数在 scan/book-cache.ts，有单测）
         const c5 = assignCachedStats(e, kind, { collect: ce.collect, words: ce.words, title: ce.title, author: ce.author, score: ce.score })
         next.extra = c5.extra as any
+        /**
+         * ★ 2026-10-17（审查续核 ③）：`e` 是上面捕获的**旧** extra 对象；既然 next.extra 换成了新对象，
+         * 后面那些溯源标记（fromBookPage / statsFrom / statsAt / collectWordsFilled）必须写到新对象上。
+         * 原来写旧 `e` ⇒ 溯源全丢，且 `need = force || e.fromBookPage !== true` 恒真 ⇒ 下次补全又为同一行进一次书页。
+         */
+        e = next.extra as any
         // 书名/作者也缓存了：榜单页截断/空值时用缓存补全（0 请求）
-        if (ce.title && (!next.title || e.titleTruncated === true)) { next.title = ce.title; e.titleTruncated = false }
+        if (ce.title && (!next.title || e.titleTruncated === true)) { next.title = ce.title; (next.extra as any).titleTruncated = false }
         if (ce.author && !next.author) next.author = ce.author
         /**
          * ★ 2026-10-17（审查阻塞 5）：**缓存给不全就不算命中**。
@@ -2144,7 +2163,6 @@ export function apply(ctx: PluginCtx, config: any): void {
                   title: null,
                   author: null,
                   score: null,
-                  readCount: null,
                 },
               })
             }
@@ -2188,7 +2206,6 @@ export function apply(ctx: PluginCtx, config: any): void {
                   title: next.title || null,
                   author: next.author || null,
                   score: s ? Number(s[1]) : null,
-                  readCount: null,
                 },
               })
             }
@@ -2297,7 +2314,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       const a = r.author ? String(r.author) : ''
       const w = r.extra && typeof r.extra.wordNumber === 'number' ? r.extra.wordNumber : null
       if (!t && !a && w == null) continue
-      pendingEntries.push({ site: 'fanqie', bookId: bid, entry: { collect: null, words: w, title: t || null, author: a || null, score: null, readCount: null } })
+      pendingEntries.push({ site: 'fanqie', bookId: bid, entry: { collect: null, words: w, title: t || null, author: a || null, score: null } })
     }
     if (pendingEntries.length) putEntries(root, pendingEntries)
     return { rows: out, requests, learned, cacheHits } as any
