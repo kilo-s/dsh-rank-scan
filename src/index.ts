@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-rank-scan — 扫榜插件（host 侧）。
+ * dsh-rank-scan — 扫榜插件（host 侧）。
  * 形态：hybrid（定时 + HTTP 路由 + 面板）。零运行时依赖（不 import cordis/dsh-tools/schemastery）。
  * ★ 本插件**没有注册任何 DSH 工具**（曾经注释里列的 rank_scan/rank_diff/… 是模板期残留，实际不存在）：
  *   对外能力只有 /api/rank-scan/* 这些 HTTP 路由 + 面板 UI。
@@ -70,7 +70,7 @@ interface PluginCtx {
   logger?: { info?(msg: string): void }
 }
 
-export const name = '@dsh-external/dsh-rank-scan'
+export const name = 'dsh-rank-scan'
 /**
  * ★ 票 24：**不写硬注入**。写进 inject 的服务只要缺失或改名，cordis 就让整个插件停在 pending，
  * 面板与路由一起消失（宿主只会打一行 "pending (waiting for services: ...)"）。本插件对这三个服务的态度：
@@ -2007,7 +2007,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             // 两个探测互不阻塞；任一失败都只是「查不到」，不影响另一个
             const [market, npm] = await Promise.all([
               probeMarket(fetch as any, { origin: 'http://' + host, cookie: cookie ? String(cookie) : null }),
-              fetchNpmLatest(fetch as any, own.name || '@dsh-external/dsh-rank-scan'),
+              fetchNpmLatest(fetch as any, own.name || 'dsh-rank-scan'),
             ])
             let marketLatest: string | null = null
             if (market && own.name && market.endpoints && market.endpoints.updates) {

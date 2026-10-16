@@ -1,10 +1,10 @@
 /**
- * @dsh-external/dsh-rank-scan — 面板（手写 bundle，零依赖；只用平台提供的 react）。
+ * dsh-rank-scan — 面板（手写 bundle，零依赖；只用平台提供的 react）。
  * 2026-10-14 重写：可拖动/可缩放浮窗（位置尺寸本地记忆）；概览单行汇总；异常榜折叠；行内详情卡。
  * 数据全部来自宿主同源路由 /api/rank-scan（只读本地快照，渲染不联网）。
  */
 window.__ModuleLoader__.load({
-  id: '@dsh-external/dsh-rank-scan',
+  id: 'dsh-rank-scan',
   factory: (require) => {
     const React = require('react')
     const h = React.createElement
@@ -1480,6 +1480,6 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         window.__rankScanEntry = reg('sidebar.panellist') ? 'sidebar.panellist' : reg('sidebar.footer.action') ? 'sidebar.footer.action' : null
       } catch (e) {}
     }
-    return { name: '@dsh-external/dsh-rank-scan', inject: inject, apply: apply }
+    return { name: 'dsh-rank-scan', inject: inject, apply: apply }
   },
 })

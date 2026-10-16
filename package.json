@@ -1,8 +1,7 @@
 {
-  "name": "@dsh-external/dsh-rank-scan",
-  "version": "0.1.0",
-  "description": "DSH 扫榜插件：手动/定时扫多站榜单，出变化，面板挑着看",
-  "private": true,
+  "name": "dsh-rank-scan",
+  "version": "0.2.0",
+  "description": "DSH 扫榜插件：多站小说榜单采集 + 本地变化分析 + 面板；零运行时依赖",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",
@@ -11,6 +10,22 @@
     "cordis.patch.yml"
   ],
   "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kilo-s/dsh-rank-scan.git"
+  },
+  "homepage": "https://github.com/kilo-s/dsh-rank-scan#readme",
+  "bugs": {
+    "url": "https://github.com/kilo-s/dsh-rank-scan/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "rank",
+    "novel",
+    "scraper"
+  ],
   "devDependencies": {
     "@types/node": "^24.13.3",
     "typescript": "^5.9.0"

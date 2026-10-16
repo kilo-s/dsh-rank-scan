@@ -53,7 +53,7 @@ test('★ GET /version：返回本插件版本（读包根 package.json）+ 市�
     assert.equal(r.code, 200)
     assert.equal(r.body.ok, true)
     assert.match(String(r.body.version), /^\d+\.\d+\.\d+/, '要有版本号，实际 ' + r.body.version)
-    assert.equal(r.body.name, '@dsh-external/dsh-rank-scan')
+    assert.equal(r.body.name, 'dsh-rank-scan')
     assert.equal(r.body.marketEndpoint, '/dsh-market/api/v1/capabilities')
   } finally { h.cleanup() }
 })

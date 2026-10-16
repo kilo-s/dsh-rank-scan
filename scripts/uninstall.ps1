@@ -5,7 +5,7 @@
 #>
 param([string]$Profile = "desktop")
 $ErrorActionPreference = "Continue"
-$pkg = "@dsh-external/dsh-rank-scan"
+$pkg = "dsh-rank-scan"
 $home_ = $env:USERPROFILE
 $profileDir = Join-Path $home_ ".dsh\profiles\$Profile"
 $dataDir = Join-Path $home_ ".dsh\data\rank-scan"

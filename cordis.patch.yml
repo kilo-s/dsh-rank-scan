@@ -2,4 +2,4 @@
 # 最小合法内容：一条 insert + id + name（见 dsh-http-tools / dsh-genui 的同名文件）。
 - insert:
     - id: dsh-rank-scan
-      name: '@dsh-external/dsh-rank-scan'
+      name: 'dsh-rank-scan'

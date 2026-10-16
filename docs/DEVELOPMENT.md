@@ -90,6 +90,7 @@ pwsh -File scripts/acceptance.ps1             # 加上在线探针（需要插�
 1. 改 `package.json` 的版本位；
 2. 双闸门全绿（`scripts/test-local.ps1` + `scripts/acceptance.ps1`）；
 3. 打 tag（`v<version>`）并推送 —— `.github/workflows/build.yml` 会从源码构建、跑离线自测、校验包内是否有 `lib/index.js` / `lib/client.js` / `cordis.patch.yml`，然后挂到同名 Release；
-4. 发布说明写「安装：先完全退出 DSH，再执行 `dsh plugin --profile desktop add <附件 tgz 的本地路径>` 或解压后跑 `scripts/install.ps1`」。
+4. 本地 `npm pack` 前先**释放文件认领**（或删掉根目录的 `README*.dshclaim` / `CHANGELOG*.dshclaim`）—— npm 会无条件收录 `README*`/`CHANGELOG*`/`LICENSE*`，认领标记会被一起打进包；CI 从干净检出构建，不受影响。
+5. 发布说明写「安装：先完全退出 DSH，再执行 `dsh plugin --profile desktop add <附件 tgz 的本地路径>` 或解压后跑 `scripts/install.ps1`」。
 
 包名与分发渠道的决定（含改名与 scope 注意事项）记在开发机的私有文档里，不入库。

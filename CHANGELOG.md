@@ -2,6 +2,15 @@
 
 本项目的版本变更记录。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.2.0] - 2026-10-16
+
+### 变更
+
+- **包名改为 `dsh-rank-scan`**（原来是带内部 scope 的名字，无法发布到 npm），并补齐 repository / homepage / bugs / keywords 元数据。
+- **面板 bundle 的源入库**：`client/client.js` 是唯一真源，构建时复制为 `lib/client.js`。此前它只存在于开发机的 `lib/` 里，导致从源码构建出的包里没有面板。
+- **测试夹具最小化**：6 个站点夹具从 614 KB 压到约 90 KB（只保留解析器读取的结构，解析结果与整页原文一致）；整页快照移出仓库。
+- 构建脚本的 tsc 探测优先用仓库自己的 `node_modules/.bin/tsc`，CI 里不再依赖外部 checkout。
+
 ## [0.1.0] - 2026-10-16
 
 首个公开版本。

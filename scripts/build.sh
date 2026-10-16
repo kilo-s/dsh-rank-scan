@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 TSC=""
-for c in "${DSH_CHECKOUT:-}" "$HOME/dsh-harness" "$HOME/dsh" "$HOME/.dsh/dsh-harness"; do
+for c in "$ROOT" "${DSH_CHECKOUT:-}" "$HOME/dsh-harness" "$HOME/dsh" "$HOME/.dsh/dsh-harness"; do
   if [ -n "$c" ] && [ -x "$c/node_modules/.bin/tsc" ]; then TSC="$c/node_modules/.bin/tsc"; break; fi
 done
 if [ -z "$TSC" ]; then
@@ -25,3 +25,11 @@ fi
 mkdir -p "$ROOT/lib"
 cp "$ROOT/client/client.js" "$ROOT/lib/client.js"
 echo "build: 完成 → $ROOT/lib（host 由 tsc 产出；面板 bundle 由 client/client.js 复制而来）"
+
+# 会话认领标记形如 README.md.dshclaim。npm 会**无条件**把 README*/LICENSE*/CHANGELOG* 收进包里，
+# 所以这些标记一旦在根目录，就会被一起打包发出去（本地 pack 才会踩到；CI 从干净检出构建，不受影响）。
+for f in README*.dshclaim LICENSE*.dshclaim CHANGELOG*.dshclaim; do
+  if [ -e "$f" ]; then
+    echo "build: 警告 —— $f 会被 npm 打进包（发布走 CI 不受影响；本地 pack 前请先释放认领或删掉它）" >&2
+  fi
+done

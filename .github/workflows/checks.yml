@@ -1,0 +1,38 @@
+name: checks
+
+# 每次推送 / PR 都在**干净检出**上跑「构建 → 离线测试 → 公开面闸」。
+# 这条链以前跑不通：面板源不在仓库里，构建出来的包缺 lib/client.js。
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装开发依赖
+        run: npm install --no-audit --no-fund
+
+      - name: 构建（src → lib，并把面板 bundle 复制进 lib）
+        run: npm run build
+
+      - name: 离线测试
+        run: |
+          fail=0
+          for f in tests/*.test.mjs; do
+            node "$f" || fail=1
+          done
+          exit $fail
+
+      - name: 打包（供验收闸门检查分发）
+        run: npm pack
+
+      - name: 验收闸门（离线）
+        run: pwsh -NoProfile -File scripts/acceptance.ps1 -SkipLive

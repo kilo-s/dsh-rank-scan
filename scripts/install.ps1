@@ -1,5 +1,5 @@
 ﻿<#
-  扫榜插件（@dsh-external/dsh-rank-scan）安装脚本 —— Windows / PowerShell
+  扫榜插件（dsh-rank-scan）安装脚本 —— Windows / PowerShell
   用法：
     pwsh -File scripts\install.ps1 -Spec "E:\path\to\dsh-rank-scan-0.0.1.tgz"
     pwsh -File scripts\install.ps1 -Spec "link:E:\path\to\dsh-rank-scan"      # 目录直装（开发用）

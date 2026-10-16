@@ -1,17 +1,13 @@
 name: build-and-release
 
-# 为什么需要它：仓库里**不放编译产物**（lib/ 会复制源码注释、sourcemap 带绝对路径），
-# 所以别人要用的包必须在 CI 里从源码构建出来 —— 打 tag 时自动构建并挂到 Release。
+# 为什么需要它：仓库里**不放编译产物**（lib/ 里的注释是源码的复制品，且产物会与源码各自漂移），
+# 所以可分发的包必须在 CI 里从源码构建 —— 打 tag 时构建、自测、校验，再把 tgz 挂到同名 Release。
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
-      tag:
-        description: '要发布的 tag（例如 v0.1.1）；留空则只构建、不发布'
-        required: false
-        default: ''
       dry_run:
         description: '只构建与自测，不发布'
         type: boolean
@@ -33,10 +29,10 @@ jobs:
       - name: 安装开发依赖（typescript / @types/node）
         run: npm install --no-audit --no-fund
 
-      - name: 构建（src → lib）
+      - name: 构建（src → lib，并把面板 bundle 复制进 lib）
         run: npm run build
 
-      - name: 离线自测（21 个测试文件）
+      - name: 离线自测（tests/*.test.mjs）
         run: |
           fail=0
           for f in tests/*.test.mjs; do
@@ -44,18 +40,19 @@ jobs:
           done
           exit $fail
 
-      - name: 打包（含 lib/ 与 cordis.patch.yml）
+      - name: 打包
         run: npm pack
 
       - name: 校验产物
         run: |
-          tgz=$(ls -1 dsh-rank-scan-*.tgz dsh-external-dsh-rank-scan-*.tgz 2>/dev/null | head -n1)
+          tgz=$(ls -1 dsh-rank-scan-*.tgz 2>/dev/null | head -n1)
           echo "包：$tgz"
           test -n "$tgz" || { echo "没有产出 tgz"; exit 1; }
-          # 必须带编译产物与装配补丁，否则别人装上加载不了
+          # 必须带 host 产物、面板产物与装配补丁，否则别人装上加载不了
           tar -tzf "$tgz" | grep -q 'package/lib/index.js' || { echo "包内缺 lib/index.js"; exit 1; }
           tar -tzf "$tgz" | grep -q 'package/lib/client.js' || { echo "包内缺 lib/client.js"; exit 1; }
           tar -tzf "$tgz" | grep -q 'package/cordis.patch.yml' || { echo "包内缺 cordis.patch.yml"; exit 1; }
+          if tar -tzf "$tgz" | grep -q 'dshclaim'; then echo "包内混入会话认领标记"; exit 1; fi
 
       - name: 上传构建产物（artifact）
         uses: actions/upload-artifact@v4
@@ -68,7 +65,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tgz=$(ls -1 dsh-rank-scan-*.tgz dsh-external-dsh-rank-scan-*.tgz 2>/dev/null | head -n1)
-          gh release create "${{ github.ref_name }}" "$tgz"             --repo "${{ github.repository }}"             --title "${{ github.ref_name }}"             --notes "构建产物见下方附件。安装：先完全退出 DSH，再执行
-          `dsh plugin --profile desktop add <附件 tgz 的本地路径>`
-          或解压后运行 `pwsh -File scripts/install.ps1 -Spec \"<tgz 路径>\"`。"
+          tgz=$(ls -1 dsh-rank-scan-*.tgz 2>/dev/null | head -n1)
+          cat > /tmp/release-notes.md <<'NOTES'
+          安装：先**完全退出 DSH**，然后二选一 ——
+
+          1. 直接装附件包：`dsh plugin --profile desktop add <附件 tgz 的本地路径>`
+          2. 解压后运行：`pwsh -File scripts/install.ps1 -Spec "<tgz 路径>"`
+             （macOS / Linux：`bash scripts/install.sh desktop <tgz 路径>`）
+
+          仓库不含编译产物，**不要**用仓库 URL 直接安装。详见 README 的「安装 / 更新」。
+          NOTES
+          gh release create "${GITHUB_REF_NAME}" "$tgz" \
+            --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file /tmp/release-notes.md
