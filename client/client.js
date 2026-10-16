@@ -460,13 +460,18 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         let id = null
         let wasActive = false
         const tick = function () {
+          // ★ 审查（非阻塞）：页面不可见时不轮询（概览页开着一天会白打上万次请求）
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
           jget('/enrich-status').then(function (r) {
             if (!alive) return
             const er = (r && r.enrichRun) || null
             setEnrichRun(er)
-            const active = !!(er && er.active)
+            // ★ 审查（非阻塞 5）：active 由宿体现算；重启后旧记录可能没有这个字段 ⇒ 只认真的工人标志
+            const active = !!(er && er.active === true)
             if (wasActive && !active) props.reload()
             wasActive = active
+            // 没工人、也没待办 ⇒ 没有可看的变化，停轮询（下次扫描会重新挂载）
+            if (!active && !(r && r.pending > 0)) { alive = false; if (id) clearInterval(id) }
           }).catch(function () { /* 读不到进度不影响面板 */ })
         }
         tick()

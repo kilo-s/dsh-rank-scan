@@ -55,7 +55,7 @@ import {
 } from './scan/files.js'
 import { DEFAULT_FALLBACK_TIME, DEFAULT_SITE_TIMES, hmOf, planSiteRuns, SITE_ORDER, siteOfBoard, timeReached, validTime } from './scan/schedule.js'
 import { cacheStats, cachedBook, clearCache, putCachedBooks } from './scan/qidian-cache.js'
-import { cacheStats as bookCacheStats, cachedEntry, clearCache as clearBookCache, putEntries } from './scan/book-cache.js'
+import { assignCachedStats, cacheStats as bookCacheStats, cachedEntry, clearCache as clearBookCache, putEntries } from './scan/book-cache.js'
 
 interface PluginCtx {
   tools: { register(tool: any): unknown }
@@ -477,7 +477,11 @@ export function apply(ctx: PluginCtx, config: any): void {
      * 现在：先把本次范围内的榜**记成待办**（面板因此能显示「补全中 N/M」），立刻启动后台工人并返回；
      * 补全过程照旧受请求预算与「每榜每日 3 次」约束，逐个榜把字段补进快照。
      */
-    if (opts && opts.deferEnrich) {
+    /**
+     * ★ 2026-10-17（审查阻塞 4）：defer 通道也要看 autoEnrich 开关。
+     * 同步通道（postScanEnrich）第一行就是「关了就直接返回」，defer 分支以前不看 ⇒ 用户关掉自动补全照样跑。
+     */
+    if (opts && opts.deferEnrich && readState().autoEnrich !== false) {
       const only = (opts as any).partial ? rec.boards.map((b: any) => b.boardId) : undefined
       const marks = (st.boards as string[]).filter((b) => (!only || only.indexOf(b) >= 0) && isEnrichableBoard(b))
       for (const b of marks) {
@@ -645,7 +649,15 @@ export function apply(ctx: PluginCtx, config: any): void {
   })()
   /** 每榜每日最多尝试补全几次（防无限重跑；跨日由 enrichPending 的日期自动作废） */
   const ENRICH_TRIES_PER_DAY = 3
-  /** 一次「补全续跑」的请求预算上限（安全阀：即使某榜还有很多裸行，也不让一次 tick 打太久） */
+  /**
+   * ★ 2026-10-17（审查阻塞 1/2）：**单榜**补全的请求预算，按需求 v1 Q2 分档：
+   * 起点 / 起点图 40，刺猬猫 / 菠萝包 / 番茄 24。以前只在起点通道生效，且还被写死成一个跨榜总数。
+   */
+  function enrichBudgetForBoard(boardId: string): number {
+    if (boardId.startsWith('qidian.') || boardId.startsWith('qidiantu.')) return 40
+    return 24
+  }
+  /** 一次「后台补全工人」一轮的请求预算上限（安全阀：不让一轮把站点打太久） */
   const ENRICH_RUN_REQUEST_CAP = 60
 
   function timerLog(msg: string): void {
@@ -827,7 +839,8 @@ export function apply(ctx: PluginCtx, config: any): void {
     timerLog('定时扫描开始（按站）site=' + target + ' boards=' + siteBoards.length + ' 时刻=' + ((st as any).siteTimes || DEFAULT_SITE_TIMES)[target])
     try {
       // 补全只在定时任务里跑（手动「立刻扫一次」不带，避免误触百请求级长任务）
-      const rec: any = await doScan('timer', { boards: siteBoards, enrichAfter: st.autoEnrich !== false, partial: true, site: target })
+      // ★ 2026-10-17（审查阻塞 3）：定时是主路径，同样走 defer（抓完即返回，补全交给后台工人）
+      const rec: any = await doScan('timer', { boards: siteBoards, enrichAfter: st.autoEnrich !== false, deferEnrich: true, partial: true, site: target })
       const note = (rec.warnings || []).join(' | ')
       timerLog('定时扫描结束 site=' + target + ' outcome=' + rec.outcome + ' progress=' + rec.progress.done + '/' + rec.progress.total +
         (note ? ' warnings=' + note : ''))
@@ -1664,7 +1677,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         wired: timerState.wired,
         inFlight: timerState.scanInFlight,
         /** ★ 2026-10-17：后台补全工人 —— 面板据此显示「补全中 N/M」，active=false 表示已收工 */
-        enrichRun: (st as any).enrichRun || null,
+        enrichRun: (st as any).enrichRun ? { ...(st as any).enrichRun, active: timerState.enrichWorker } : null,
         enrichPending: Object.keys(((st as any).enrichPending) || {}).length,
         enrichWorker: timerState.enrichWorker,
       },
@@ -1819,7 +1832,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         const e = r.extra || {}
         return !r.title || e.titleSuspect !== false || hasPua(r.title) || hasPua(r.author)
       })
-      const got = need.length ? await enrichFanqieTitles(need, ctxBoard) : ({ rows: [], requests: 0 } as any)
+      const got = need.length ? await enrichFanqieTitles(need, ctxBoard, budget ?? enrichBudgetForBoard(boardId)) : ({ rows: [], requests: 0 } as any)
       const byKey = new Map((got.rows || []).map((r: any) => [String(r.key), r]))
       out = { rows: snap.rows.map((r: any) => (byKey.has(String(r.key)) ? byKey.get(String(r.key)) : r)), requests: got.requests } as any
     } else if (boardId === 'ciweimao.buy.latest') {
@@ -1832,12 +1845,12 @@ export function apply(ctx: PluginCtx, config: any): void {
        * 口径提示：同一行里「首订（约）」是第三方约值，字数/收藏是刺猬猫书页当天的值，**不同源**。
        */
       const withSource = snap.rows.map((r: any) => ({ ...r, extra: { ...(r.extra || {}), sourceUrl: CIWEIMAO_BUY_URL, sourcePage: 'http://www.yukirus.com/' } }))
-      const filled = await enrichBookPages(withSource, ctxBoard, 'ciweimao', force)
+      const filled = await enrichBookPages(withSource, ctxBoard, 'ciweimao', force, budget ?? enrichBudgetForBoard(boardId))
       out = { rows: filled.rows, requests: filled.requests } as any
     } else if (boardId.startsWith('ciweimao.')) {
-      out = await enrichBookPages(snap.rows, ctxBoard, 'ciweimao', force)
+      out = await enrichBookPages(snap.rows, ctxBoard, 'ciweimao', force, budget ?? enrichBudgetForBoard(boardId))
     } else if (boardId.startsWith('sfacg.')) {
-      out = await enrichBookPages(snap.rows, ctxBoard, 'sfacg', force)
+      out = await enrichBookPages(snap.rows, ctxBoard, 'sfacg', force, budget ?? enrichBudgetForBoard(boardId))
     } else {
       return { ok: false, error: '这个榜暂不支持补全' }
     }
@@ -1989,75 +2002,6 @@ export function apply(ctx: PluginCtx, config: any): void {
     else void run()
   }
 
-  /**
-   * ★ 2026-10-16（补全持久化续跑）：把所有「还缺补全」的榜补一遍。
-   * - **只补字段，不重抓榜页**（榜页每天只抓 1 次）；底层 enrich 自身幂等：已补好的行不再发请求。
-   * - 请求预算逐榜扣减；到点停下，剩下的留到下一次 tick（不会把一个 tick 拖成小时级）。
-   * - 每榜每日最多 ENRICH_TRIES_PER_DAY 次；用尽仍缺 ⇒ 清掉待办并如实记一行（不无限打站点）。
-   * 由 doScan 收尾与定时器 tick 调用（两处都只针对**最近一个数据日**）。
-   */
-  async function enrichPendingNow(budget: number): Promise<{ done: number; tried: number; requests: number; exhausted: string[] }> {
-    const out = { done: 0, tried: 0, requests: 0, exhausted: [] as string[] }
-    try {
-      if (!(budget > 0)) return out
-      const st = readState()
-      const pending: any = (st as any).enrichPending || {}
-      const ids = Object.keys(pending)
-      if (!ids.length) return out
-      const dates = listDataDates(root)
-      const latest = dates[dates.length - 1]
-      if (!latest) return out
-      const store = new FileStore(root)
-      let left = budget
-      for (const b of ids) {
-        if (left <= 0) break
-        const rec = pending[b]
-        // 跨日的旧待办：清掉（补全只针对最近一个数据日）
-        if (!rec || rec.date !== latest) { clearEnrichPending(b); continue }
-        if (!siteTimeReached(boardMeta(b).site, st)) continue
-        const snap: any = store.readSnapshot(latest, b)
-        if (!snap || !(snap.rows || []).length) { clearEnrichPending(b); continue }
-        const before = needsEnrichRows(b, snap.rows)
-        // 续跑判定（纯函数）：跨日作废 / 已补齐 / 值得再试 / 当日放弃
-        const pol = enrichAttemptPolicy({
-          pendingDate: rec.date,
-          latestDate: latest,
-          missing: before,
-          tried: rec.tried || 0,
-          maxTries: ENRICH_TRIES_PER_DAY,
-          enrichable: isEnrichableBoard(b),
-        })
-        if (pol.action === 'clear' || pol.action === 'stale') { clearEnrichPending(b); continue }
-        if (pol.action === 'giveup') { out.exhausted.push(b); continue }
-        const tries = (rec.tried || 0) + 1
-        // 先把这次尝试计数落盘：即使随后被取消/进程死掉，也不会无限重试
-        try {
-          const s2 = readState()
-          const p2: any = { ...((s2 as any).enrichPending || {}) }
-          if (p2[b] && p2[b].date === latest) { p2[b] = { date: latest, tried: tries }; ;(s2 as any).enrichPending = p2; writeState(s2) }
-        } catch { /* 计数失败不阻塞 */ }
-        out.tried += 1
-        try {
-          const r: any = await enrichBoard(b, false, left)
-          out.requests += r && typeof r.requests === 'number' ? r.requests : 0
-        } catch (e) {
-          ctx.logger?.info?.('[' + name + '] 补全续跑失败 ' + b + '：' + String(e).slice(0, 80))
-        }
-        left = budget - out.requests
-        const after: any = store.readSnapshot(latest, b)
-        const rest = needsEnrichRows(b, (after && after.rows) || [])
-        if (!rest) { clearEnrichPending(b); out.done += 1; continue }
-        if (tries >= ENRICH_TRIES_PER_DAY) {
-          // 用尽当日额度仍缺 ⇒ 不再打站点；如实记一行（不静默），条目留着让面板能解释原因
-          timerLog('补全续跑：' + b + ' 当日已尝试 ' + tries + ' 次，仍缺 ' + rest + ' 条 ⇒ 今日不再重试')
-          out.exhausted.push(b)
-        }
-      }
-    } catch (e) {
-      timerLog('补全续跑异常：' + String(e).slice(0, 160))
-    }
-    return out
-  }
 
   /** 批量补全：把某个站已抓的、当天有快照的榜逐个补一遍（番茄用于一次性洗掉全部分类的乱码） */
   async function enrichAll(site: string) {
@@ -2093,7 +2037,7 @@ export function apply(ctx: PluginCtx, config: any): void {
    * - 菠萝包 书页含 字数：97862 / 收藏：1276
    * 1s/请求（采集纪律）
    */
-  async function enrichBookPages(rows: any[], ctxBoard: any, kind: 'ciweimao' | 'sfacg', force = false): Promise<{ rows: any[]; requests: number }> {
+  async function enrichBookPages(rows: any[], ctxBoard: any, kind: 'ciweimao' | 'sfacg', force = false, budget = 24): Promise<{ rows: any[]; requests: number }> {
     const out: any[] = []
     let requests = 0
     /** ★ 2026-10-17：本榜补全的缓存命中数（写进 note，便于面板/日志看出省了多少请求） */
@@ -2123,26 +2067,36 @@ export function apply(ctx: PluginCtx, config: any): void {
       const bid = bookIdFromUrl(String(r.url || ''))
       const cached = !force && bid ? cachedEntry(root, kind, bid, BOOK_CACHE_TTL_MS) : { hit: false, entry: null as any }
       if (cached.hit && cached.entry) {
-        cacheHits += 1
         const ce: any = cached.entry
-        e.fromBookPage = true
-        e.statsFrom = 'book-page-cache'
-        e.statsAt = ce.fetchedAt
-        if (kind === 'ciweimao') {
-          if (ce.collect != null) e.collect = ce.collect
-          if (ce.words != null) e.wordsCnt = ce.words
-          e.collectWordsFilled = true
-        } else {
-          if (ce.collect != null) e.collect = ce.collect
-          if (ce.words != null) e.words = ce.words
-          if (ce.score != null) e.score = ce.score
-        }
+        // 贴缓存能给的字段并判「够不够」（纯函数在 scan/book-cache.ts，有单测）
+        const c5 = assignCachedStats(e, kind, { collect: ce.collect, words: ce.words, title: ce.title, author: ce.author, score: ce.score })
+        next.extra = c5.extra as any
         // 书名/作者也缓存了：榜单页截断/空值时用缓存补全（0 请求）
         if (ce.title && (!next.title || e.titleTruncated === true)) { next.title = ce.title; e.titleTruncated = false }
         if (ce.author && !next.author) next.author = ce.author
-        out.push(next)
-        continue
+        /**
+         * ★ 2026-10-17（审查阻塞 5）：**缓存给不全就不算命中**。
+         * 缓存按「真取到哪个写哪个」合并，完全可能只有 collect 没有 words；
+         * 旧写法命中就置 fromBookPage=true ⇒ 这行以后永远命中同一份半残缓存、永不再发请求，
+         * 而面板/待办仍把它算成缺字段 ⇒ 待办永不清、每榜每日额度全花在空转上。
+         */
+        if (c5.sufficient) {
+          cacheHits += 1
+          e.fromBookPage = true
+          e.collectWordsFilled = true
+          e.statsFrom = 'book-page-cache'
+          e.statsAt = ce.fetchedAt
+          out.push(next)
+          continue
+        }
       }
+      /**
+       * ★ 2026-10-17（审查阻塞 1）：**请求预算必须在这层生效**。
+       * 以前 budget 只传到起点的缓存通道，ciweimao/sfacg/番茄是「传了但没人看」⇒
+       * 一个 60 行的榜能一把打 60 请求，工人那层的上限只在**每榜开始前**检查，形同虚设。
+       * 到额就保留原行、不再发请求（下一次补全/续跑接着补）。
+       */
+      if (requests >= budget) { out.push(next); continue }
       // force = 同一份快照上重跑也重新取（用于口径修正后回填）
     // 菠萝包**一律以书页为准**：首页 SSR 的数字是另一个口径（实测同一本 首页 165 / 详情页 1280）
     // ★ 2026-10-16：两个分支原本写的是同一个表达式（恒等三元），去掉误导；语义不变 = 「没从书页取过才取」
@@ -2250,7 +2204,7 @@ export function apply(ctx: PluginCtx, config: any): void {
   }
 
   /** 番茄逐本补：/api/book/info?bookId= ⇒ 干净书名/作者 + 字数 */
-  async function enrichFanqieTitles(rows: any[], ctxBoard: any): Promise<{ rows: any[]; requests: number }> {
+  async function enrichFanqieTitles(rows: any[], ctxBoard: any, budget = 24): Promise<{ rows: any[]; requests: number }> {
     const out: any[] = []
     let requests = 0
     let learned = 0
@@ -2264,14 +2218,23 @@ export function apply(ctx: PluginCtx, config: any): void {
       const bid = String(r.key || '')
       const ce = bid ? cachedEntry(root, 'fanqie', bid, BOOK_CACHE_TTL_MS) : { hit: false, entry: null as any }
       if (ce.hit && ce.entry) {
-        cacheHits += 1
         const e0: any = ce.entry
         if (e0.title) { next.title = e0.title; next.extra.titleSuspect = false; next.extra.titleFrom = 'book-page-cache' }
         if (e0.author) next.author = e0.author
         if (e0.words != null) next.extra.wordNumber = e0.words
-        out.push(next)
-        continue
+        /**
+         * ★ 2026-10-17（审查阻塞 5 的番茄分支）：番茄这一路要的就是**书名 + 字数**两件。
+         * 缓存给不全就落回真实请求 —— 否则「只缓存到书名」的行会被永久标成已补，字数字段永远空着。
+         */
+        if (next.title && next.extra.wordNumber != null) {
+          cacheHits += 1
+          next.extra.statsFrom = 'book-page-cache'
+          out.push(next)
+          continue
+        }
       }
+      // ★ 2026-10-17（审查阻塞 1）：番茄这层同样吃请求预算（到额保留原行，下次续跑接着补）
+      if (requests >= budget) { out.push(next); continue }
       try {
         if (requests > 0) await new Promise((res) => setTimeout(res, 1000)) // 采集纪律：1s/请求
         const resp = await boundedFetch('https://fanqienovel.com/api/book/info?bookId=' + encodeURIComponent(String(r.key)), {
@@ -2578,7 +2541,9 @@ export function apply(ctx: PluginCtx, config: any): void {
             const stE: any = readState()
             return send(200, {
               ok: true,
-              enrichRun: stE.enrichRun || null,
+              // ★ 审查（非阻塞 5）：active 一律现算 —— 进程在工人运行时退出的话，落盘里的 active 会永远是 true，
+              //   面板会一直显示「补全中 0/N」但根本没人在跑。
+              enrichRun: stE.enrichRun ? { ...stE.enrichRun, active: timerState.enrichWorker } : null,
               pending: Object.keys((stE.enrichPending) || {}).length,
               worker: timerState.enrichWorker,
               cache: bookCacheStats(root),
@@ -2830,7 +2795,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             return send(200, {
               ok: true, outcome: rec.outcome, dataDate: rec.dataDate, attempt: rec.attempt, progress: rec.progress,
               scannedAll: !bsel,
-              enrich: stR.enrichRun || null,
+              enrich: stR.enrichRun ? { ...stR.enrichRun, active: timerState.enrichWorker } : null,
               enrichPending: Object.keys((stR.enrichPending) || {}).length,
               boards: (rec.boards || []).map((b: any) => ({ boardId: b.boardId, status: b.status, rows: (b.rows || []).length })),
             })

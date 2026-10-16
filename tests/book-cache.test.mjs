@@ -74,3 +74,37 @@ test('坏缓存/清空：坏 JSON 当没有；clearCache 后归零', () => {
     assert.equal(clearCache(root), false, '再清一次返回 false')
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+// ── ★ 审查阻塞 5：缓存命中判定（纯函数，宿主闭包里那份调不了）
+import { assignCachedStats } from '../lib/scan/book-cache.js'
+
+test('★ 缓存够不够：刺猬猫要 收藏+字数 两件都给到才算命中', () => {
+  // 只有收藏、没有字数 ⇒ 不算命中（否则这行会被永久标成已补，字数字段永远空着）
+  const partial = assignCachedStats({}, 'ciweimao', { collect: 5573, words: null, title: null, author: null, score: null })
+  assert.equal(partial.sufficient, false, '缺字数就不能算够')
+  assert.equal(partial.extra.collect, 5573, '但缓存已有的值仍要贴上（只补缺的）')
+  assert.equal(partial.extra.wordsCnt, undefined)
+  const full = assignCachedStats({}, 'ciweimao', { collect: 5573, words: 116074, title: null, author: null, score: null })
+  assert.equal(full.sufficient, true)
+  assert.equal(full.extra.wordsCnt, 116074, '刺猬猫的字数落在 wordsCnt')
+})
+
+test('★ 缓存够不够：菠萝包要 收藏+字数，且字数落在 words（不是 wordsCnt）', () => {
+  const full = assignCachedStats({}, 'sfacg', { collect: 1280, words: 99784, title: null, author: null, score: null })
+  assert.equal(full.sufficient, true)
+  assert.equal(full.extra.words, 99784)
+  assert.equal(full.extra.wordsCnt, undefined, '两站的字段名不能混')
+  assert.equal(assignCachedStats({ collect: 1280 }, 'sfacg', { collect: null, words: 99784, title: null, author: null, score: null }).sufficient, true, '行里已有收藏时，缓存给字数就够')
+})
+
+test('★ 缓存够不够：0 是合法值（真取到 0 就算取到），null 才算缺', () => {
+  const r = assignCachedStats({}, 'sfacg', { collect: 0, words: 0, title: null, author: null, score: null })
+  assert.equal(r.sufficient, true, '收藏/字数都是 0 也算齐')
+  assert.equal(r.extra.collect, 0)
+})
+
+test('★ 缓存够不够：不修改传入的 extra（纯函数，别把调用方对象改脏）', () => {
+  const src = { collect: 1 }
+  const r = assignCachedStats(src, 'sfacg', { collect: 2, words: 3, title: null, author: null, score: null })
+  assert.equal(src.collect, 1, '原对象不该被改')
+  assert.equal(r.extra.collect, 2)
+})

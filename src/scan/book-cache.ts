@@ -20,7 +20,6 @@ export interface BookPageEntry {
   title: string | null
   author: string | null
   score: number | null
-  readCount: number | null
   fetchedAt: string
 }
 
@@ -61,7 +60,7 @@ export function cachedEntry(root: string, site: string, bookId: string, ttlMs: n
 }
 
 function hasValue(e: Omit<BookPageEntry, 'fetchedAt'>): boolean {
-  return e.collect != null || e.words != null || (e.title != null && String(e.title).trim() !== '') || e.author != null || e.score != null || e.readCount != null
+  return e.collect != null || e.words != null || (e.title != null && String(e.title).trim() !== '') || e.author != null || e.score != null
 }
 
 /** 写入一批（原子写）；**只接受至少取到一个字段的条目**，返回写入条数 */
@@ -80,7 +79,6 @@ export function putEntries(root: string, list: { site: string; bookId: string; e
       title: x.entry.title != null && String(x.entry.title).trim() !== '' ? x.entry.title : (prev ? prev.title : null),
       author: x.entry.author != null && String(x.entry.author).trim() !== '' ? x.entry.author : (prev ? prev.author : null),
       score: x.entry.score != null ? x.entry.score : (prev ? prev.score : null),
-      readCount: x.entry.readCount != null ? x.entry.readCount : (prev ? prev.readCount : null),
       fetchedAt: now,
     }
   }
@@ -112,4 +110,37 @@ export function clearCache(root: string): boolean {
   if (!existsSync(p)) return false
   rmSync(p, { force: true })
   return true
+}
+/** 缓存里能提供的字段子集（不含时间戳） */
+export interface CachedStats {
+  collect: number | null
+  words: number | null
+  title: string | null
+  author: string | null
+  score: number | null
+}
+
+/**
+ * ★ 2026-10-17（审查阻塞 5）：把缓存里的值贴到行上（原地改 `extra`），并回答「这份缓存**够不够**，能不能免掉这次请求」。
+ *
+ * 为什么要单独判「够不够」：缓存是按「真取到哪个写哪个」合并的，完全可能只有 collect 没有 words。
+ * 若命中就一律把行标成「已从书页取过」，这一行会**永久**命中同一份半残缓存、永不再发请求，
+ * 而面板/补全待办仍把它算成缺字段 ⇒ 待办永不清、每榜每日 3 次额度全花在空转上。
+ * 口径：缓存必须能填满该站要求的全部字段才算命中；否则落回真实请求（先贴缓存已有值，只补缺的）。
+ *
+ * 纯函数、不读盘、不改行本身 —— 这条判定值得被单测钉住（宿主闭包里那份调不了）。
+ */
+export function assignCachedStats(
+  extra: Record<string, unknown> | undefined,
+  kind: 'ciweimao' | 'sfacg',
+  entry: CachedStats,
+): { sufficient: boolean; extra: Record<string, unknown> } {
+  const e: any = { ...(extra || {}) }
+  if (entry.collect != null) e.collect = entry.collect
+  if (entry.words != null) { if (kind === 'ciweimao') e.wordsCnt = entry.words; else e.words = entry.words }
+  if (entry.score != null) e.score = entry.score
+  const sufficient = kind === 'ciweimao'
+    ? e.collect != null && e.wordsCnt != null
+    : e.collect != null && e.words != null
+  return { sufficient, extra: e }
 }
