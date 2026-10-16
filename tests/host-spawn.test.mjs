@@ -10,7 +10,7 @@
  *   ② 行为：真起一个 node 子进程，让它 spawn 不存在的可执行文件 —— 不带监听必须死（探针自检），
  *      带监听必须存活并把后续日志打出来。
  *
- * ★ 沙箱注意：本机 DSH 沙箱下「父进程用管道捕获子进程 stdio」会 EPERM ⇒ 子进程 stdout/stderr
+ * ★ 沙箱注意：当前 DSH 沙箱下「父进程用管道捕获子进程 stdio」会 EPERM ⇒ 子进程 stdout/stderr
  *   一律**重定向到文件**（stdio: ['ignore', fd, fd]）再读回，不用 pipe。
  */
 import { test } from 'node:test'

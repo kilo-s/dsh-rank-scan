@@ -29,7 +29,7 @@ Check "P0-1 recordRun 自身不抛" ($host_src -match "写定时状态失败（�
 Check "P0-2 日期入口有校验" ($host_src -match "assertDataDate\(body\.date\)") ("调用点数=" + ([regex]::Matches($host_src, "assertDataDate\(body\.date\)").Count))
 #   ★ 2026-10-16（审计-2/46）：旧断言只 match "async function withScanLock" ⇒ 有人把调用点删光它照样 PASS。
 #     改成真断言：锁**定义**在 + **两个**手动入口（/scan、/retry）都真的调用它。
-Check "票 30 扫描锁真的置位" ((([regex]::Matches($host_src, "async function withScanLock")).Count -eq 1) -and ($host_src -match "withScanLock\(\(\) => doScan\('manual', \{ retry: true \}\)\)") -and ($host_src -match "withScanLock\(\(\) => doScan\('manual', opts\)\)")) "锁定义 1 处 + /retry 与 /scan 两个调用点都在"
+Check "票 30 扫描锁真的置位" ((([regex]::Matches($host_src, "async function withScanLock")).Count -eq 1) -and ($host_src -match "withScanLock\(\(\) => doScan\('manual', \{ retry: true") -and ($host_src -match "withScanLock\(\(\) => doScan\('manual', opts\)\)")) "锁定义 1 处 + /retry 与 /scan 两个调用点都在"
 #   ★ 2026-10-16（审计-2/46）：旧正则 "6,10_000|10_000\)" 太松。改成「把超时值抠出来 + 断言它是有界正整数」。
 $readBodyTimeout = [regex]::Match($host_src, 'const timer = setTimeout\(\(\) => done\(\{\}\), ([0-9_]+)\)').Groups[1].Value
 Check "票 30 readBody 有超时" ($readBodyTimeout -match '^[0-9][0-9_]*$' -and [int]($readBodyTimeout -replace '_','') -ge 1000 -and [int]($readBodyTimeout -replace '_','') -le 60000) ("readBody 超时 = " + $readBodyTimeout + " ms（有界：1s–60s）")

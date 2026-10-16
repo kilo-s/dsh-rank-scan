@@ -58,6 +58,19 @@ export function deriveFanqieViews(
   read: SnapshotReader,
   opts: { date: string; poolBoards: string[]; dataDates: string[] },
 ): DerivedView[] {
+  /**
+   * ★ 读取去重（2026-10-16 使用者反馈「切换番茄周榜加载半天」）：
+   *   valueAt / daysInPool / pdaysOf 的访问模式是「每本书 × 每个日期 × 池内每个榜」，
+   *   而同一轮派生里快照不会变。实测 /board?boardId=fanqie.derived.period 触发
+   *   **18,639 次 readSnapshot / 读 130MB / 4.6 秒**（池子只有 8 个榜 × 6 个日期 ⇒ 应有 ≤48 次读）。
+   *   这里按 (日期, 榜) 缓存，数值与对外行为完全不变。
+   */
+  const cache = new Map<string, SnapshotLike | null>()
+  const readOnce: SnapshotReader = (b, d) => {
+    const k = d + '|' + b
+    if (!cache.has(k)) cache.set(k, read(b, d))
+    return cache.get(k) as SnapshotLike | null
+  }
   const today = opts.date
   const periodStart = weekStart(today)
   const periodEnd = addDays(periodStart, 6)
@@ -73,7 +86,7 @@ export function deriveFanqieViews(
   // 使用者 2026-10-15：在读周榜也要显示作品字数，此前因为派生行没带这两个字段而整列空着。
   const meta = new Map<string, { words: number | null; catId: number | null }>()
   for (const b of opts.poolBoards) {
-    const s = read(b, today)
+    const s = readOnce(b, today)
     if (!s) continue
     for (const r of s.rows) {
       const cur = pool.get(r.key)
@@ -89,7 +102,7 @@ export function deriveFanqieViews(
   }
   const valueAt = (key: string, date: string): number | null => {
     for (const b of opts.poolBoards) {
-      const s = read(b, date)
+      const s = readOnce(b, date)
       if (!s) continue
       const hit = s.rows.find((r) => r.key === key)
       if (hit) return num(hit.value)

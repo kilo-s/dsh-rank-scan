@@ -1086,7 +1086,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                 if (b.collect == null) return h('span', { style: { ...C.chip, opacity: 0.55 }, title: lab + '：' + src }, lab + ' —')
                 return h('span', { style: C.chip, title: lab + '：' + fmtRead(b.collect) + '　·　' + src }, lab + ' ' + fmtRead(b.collect))
               })(),
-              b.metric ? h('span', { style: C.chip }, b.metric.name + ' ' + (b.metric.value == null ? '—' : b.metric.value)) : null,
+              // ★ 2026-10-16（使用者反馈）：只在**真有数值**且与上面 collect chip 不同源时渲染。
+              //   名次型榜（起点/刺猬猫/菠萝包）的 metric.value 恒 null ⇒ 以前画成「名次 —」（无内容的空标签）；
+              //   番茄的 metric 与 collect 都是 row.value（在读）⇒ 以前画两遍「在读」。
+              //   这里同时兜住**存量**书签：旧盘上写下的 {名次,null} / 重复项一律不再显示（autoUpdate 是合并语义，不回头改盘）。
+              b.metric && b.metric.value != null && b.metric.value !== b.collect
+                ? h('span', { style: C.chip }, b.metric.name + ' ' + b.metric.value) : null,
               b.firstSeen ? h('span', { style: C.muted }, '首次发现：' + b.firstSeen.boardId + ' 第 ' + (b.firstSeen.rank == null ? '—' : b.firstSeen.rank) + ' 名（' + b.firstSeen.dataDate + '）') : h('span', { style: C.muted }, '手动添加 · 无榜单来源'),
               b.source === 'manual' ? h('span', { style: C.muted }, '（不在榜 ⇒ 不会自动更新）') : null),
             (b.seenBoards || []).filter(function (s) { return !b.firstSeen || s.boardId !== b.firstSeen.boardId }).length

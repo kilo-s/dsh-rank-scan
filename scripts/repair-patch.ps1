@@ -132,5 +132,5 @@ Write-Host "1) dsh --profile $Profile --dump-config   —— 退出码 0 就说�
 Write-Host "2) 重新打开桌面版 DSH，看侧栏入口是否回来（路由自查：/api/rank-scan/health 返回 {ok:true}）；"
 Write-Host "3) 想撤销本次修改：pwsh -File scripts\repair-patch.ps1 -Profile $Profile -Restore"
 Write-Host ""
-Write-Host "如果 DSH 仍然起不来：把 -DryRun 的完整输出与 $bak 的内容发给维护者（备份不会自动删）。" -ForegroundColor Yellow
+Write-Host "如果 DSH 仍然起不来：把 -DryRun 的完整输出与 $bak 的内容附在仓库的 Issue 里（备份不会自动删）。" -ForegroundColor Yellow
 exit 0

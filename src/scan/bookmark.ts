@@ -433,7 +433,8 @@ export class BookmarkService {
       if (b.author) bits.push('作者 ' + b.author)
       if (b.words != null) bits.push('字数 ' + b.words)
       if (b.collect != null) bits.push((b.collectLabel || '收藏') + ' ' + b.collect)
-    if (b.metric) bits.push(b.metric.name + ' ' + (b.metric.value == null ? '—' : b.metric.value))
+    // ★ 2026-10-16：与卡片同一口径 —— 没有数值的 metric（名次型榜）不进文本，避免导出/文本里出现「名次 —」
+    if (b.metric && b.metric.value != null) bits.push(b.metric.name + ' ' + b.metric.value)
       bits.push('数据日期 ' + String(b.capturedAt).slice(0, 10))
       lines.push('## ' + b.label)
       lines.push('')

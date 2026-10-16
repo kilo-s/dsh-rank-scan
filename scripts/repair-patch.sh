@@ -123,5 +123,5 @@ echo "1) dsh --profile $PROFILE --dump-config   —— 退出码 0 就说明宿�
 echo "2) 重新打开桌面版 DSH，看侧栏入口是否回来（路由自查：/api/rank-scan/health 返回 {ok:true}）；"
 echo "3) 想撤销本次修改：bash scripts/repair-patch.sh $PROFILE -Restore"
 echo
-echo "如果 DSH 仍然起不来：把 -DryRun 的完整输出与 $BAK 的内容发给维护者（备份不会自动删）。"
+echo "如果 DSH 仍然起不来：把 -DryRun 的完整输出与 $BAK 的内容附在仓库的 Issue 里（备份不会自动删）。"
 exit 0

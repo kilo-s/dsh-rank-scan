@@ -133,7 +133,7 @@ function findDsh() {
 }
 
 /**
- * ★ 沙箱注意：本机 DSH 沙箱下「父进程用管道捕获子进程 stdio」会 EPERM ⇒
+ * ★ 沙箱注意：当前 DSH 沙箱下「父进程用管道捕获子进程 stdio」会 EPERM ⇒
  *   一律把 stdout/stderr **重定向到文件**（stdio: ['ignore', fd, fd]）再读回。
  */
 function execCapture(exe, args, env) {

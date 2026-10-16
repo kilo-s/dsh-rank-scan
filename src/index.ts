@@ -967,7 +967,13 @@ export function apply(ctx: PluginCtx, config: any): void {
         collect: col.value,
         collectLabel: col.label,
         collectFrom: col.from,
-        metric: { name: mainLabelOf(best.boardId, meta), value: typeof row.value === 'number' ? row.value : null },
+        // ★ 2026-10-16（使用者反馈「书签里番茄显示两个在读 / 其他站多一个空名次」）：
+        //   ① 名次型榜的 row.value 恒为 null（名次在 row.rank；而书签卡片按 spec-书签-v1:120 本来就不显示名次）
+        //      ⇒ 没有数值就**不写** metric，别让盘上留下 {name:'名次', value:null} 被渲染成「名次 —」；
+        //   ② 番茄的 metric 与 collect 同源（都是 row.value = 在读）⇒ 同值时不重复写。
+        ...(typeof row.value === 'number' && row.value !== col.value
+          ? { metric: { name: mainLabelOf(best.boardId, meta), value: row.value } }
+          : {}),
         metricBoard: best.boardId,
         metricDate: best.date,
         valueFrom: 'snapshot',
@@ -2318,7 +2324,11 @@ export function apply(ctx: PluginCtx, config: any): void {
           }
           if (p === '/api/rank-scan/retry') {
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })
-            const got = await withScanLock(() => doScan('manual', { retry: true }))
+            // ★ 2026-10-16（使用者反馈「刺猬猫抓取没有自动补字数和收藏」）：
+            //   补全原来只挂在 doScan 的 opts.enrichAfter 上，而这条路没传 ⇒ **重试出来的榜永不补全**
+            //   （实测：重试拿到 10 行，书页请求 0 次，快照 collect/wordsCnt 全空）。
+            //   传 partial 让 postScanEnrich 只补本次重试覆盖到的榜（autoEnrich 由它自己再判一次）。
+            const got = await withScanLock(() => doScan('manual', { retry: true, enrichAfter: true, partial: true }))
             if (!got.ok) return send(409, { error: '已有扫描在进行中，请等它跑完' })
             const rec2: any = got.value
             return send(200, { ok: true, outcome: rec2.outcome, dataDate: rec2.dataDate, attempt: rec2.attempt, progress: rec2.progress })
