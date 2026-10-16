@@ -1442,6 +1442,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         onPointerDown: openHere,
         onMouseUp: openHere,
         title: '打开扫榜浮窗',
+        // 给宿主那一行按钮里的我们的节点打个标记：document 捕获阶段靠它认出「这一行是我们的」
+        'data-rank-scan-entry': '1',
         style: { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', lineHeight: 1, fontSize: '12px', opacity: active ? 1 : 0.92, whiteSpace: 'nowrap' },
       },
         h('svg', {
@@ -1590,7 +1592,27 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         const reg = function (slot) {
           try {
             ctx.slots.inject(slot, function () {
-              return ctx.slots.register({ name: slot, id: ENTRY_ID, order: 900, label: '扫榜面板' }, SidebarEntryIcon)
+              // ★ 2026-10-16（使用者反馈「点『扫榜面板』文字本身没反应」）：宿主把 label 文字画在同一行的
+          //   那个 <button> 里，点文字走的是宿主的 selectPanel(入口 id)；而我们的入口 id 没有对应
+          //   main 面板 ⇒ 什么都不会发生。这里在 document 的**捕获阶段**接管：只要点击（或指针按下）
+          //   落在「含我们入口标记的那个 button」内，就就地弹浮窗并阻断宿主处理 —— 图标与文字整行一致。
+          if (typeof document !== 'undefined' && document.addEventListener) {
+            const onRowActivate = function (e) {
+              try {
+                const mark = document.querySelector('[data-rank-scan-entry]')
+                if (!mark) return
+                const btn = e.target && e.target.closest ? e.target.closest('button') : null
+                if (btn && btn.contains(mark)) {
+                  if (e.stopPropagation) e.stopPropagation()
+                  if (e.preventDefault) e.preventDefault()
+                  panelOpen.set(true)
+                }
+              } catch (err) { /* 宿主 DOM 变了也不该把插件带崩 */ }
+            }
+            document.addEventListener('click', onRowActivate, true)
+            document.addEventListener('pointerdown', onRowActivate, true)
+          }
+          return ctx.slots.register({ name: slot, id: ENTRY_ID, order: 900, label: '扫榜面板' }, SidebarEntryIcon)
             })
             return true
           } catch (e) { console.warn('[dsh-rank-scan] 入口槽位注册失败：' + slot, e); return false }
