@@ -22,10 +22,12 @@ scripts/              构建、测试、安装、卸载、验收闸门
 ## 构建
 
 ```bash
-npm install            # 只为拿 typescript / @types/node（运行期零依赖）
-bash scripts/build.sh  # tsc 编译 host + 把 client/client.js 复制成 lib/client.js
-                       # 单跑 npx tsc 只编 host，面板要自己 cp client/client.js lib/client.js
+npm install        # 只为拿 typescript / @types/node（运行期零依赖；装完会自动跑一次 prepare=构建）
+npm run build      # = node scripts/build.mjs：tsc 编 host + 把 client/client.js 复制成 lib/client.js
 ```
+
+- 构建入口**必须是纯 Node**（`scripts/build.mjs`）：Windows 上没有可用的 bash，而 git 直装（`dsh plugin add github:…`）要靠 package.json 的 `prepare` 在**用户机器上**跑构建。
+- `prepare` 同时意味着「本地 npm install 会自动构建一次」；`prepack` 保证打包前一定是最新产物。
 
 - `lib/` **不入库**：编译产物会把源码注释复制一份，sourcemap 还带构建机的绝对路径；同时产物与源码会各自漂移。
 - **面板 bundle 的源是 `client/client.js`**（入库），构建时被**复制**到 `lib/client.js` —— 它是手写的，不编译、不打包；所以「clone → `npm run build`」能产出与发布包一致的 `lib/`。

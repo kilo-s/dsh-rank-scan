@@ -131,6 +131,9 @@ $hasPeer = $null -ne $pkgJson.peerDependencies
 $hasDeps = ($null -ne $pkgJson.dependencies) -and (($pkgJson.dependencies.PSObject.Properties | Measure-Object).Count -gt 0)
 Check "依赖闸：package.json 无 peerDependencies、无运行时 dependencies" ((-not $hasPeer) -and (-not $hasDeps)) ("peer=" + $hasPeer + " deps=" + $hasDeps)
 Check "装配闸：cordis.patch.yml 存在且是 dsh.bundle.patch 指向的文件" ((Test-Path (Join-Path $root 'cordis.patch.yml')) -and ($pkgJson.dsh.bundle.patch -eq './cordis.patch.yml')) "最小 insert 补丁"
+#   ★ git 直装（dsh plugin add github:…）靠 package.json 的 prepare 在用户机器上构建；
+#     没有它，装出来的包只有源码、没有 lib/，插件加载会 did not activate。
+Check "分发闸：package.json 有 prepare（仓库链接直装才会现场构建出 lib/）" ($null -ne $pkgJson.scripts.prepare) ("prepare=" + $pkgJson.scripts.prepare)
 Check "装配闸：dsh.client.platform=web 且 exports 有 ./client" (($pkgJson.dsh.client.platform -eq 'web') -and ($null -ne $pkgJson.exports.'./client')) "面板注入路径"
 Check "装配闸：inject 声明的服务都在宿主已知集合（timer/webServer）" ((($pkgJson.dsh.client.inject | Measure-Object).Count -eq 0) -or (& { $ok=$true; foreach ($s in $pkgJson.dsh.client.inject) { if (@('timer','webServer','tools') -notcontains $s) { $ok=$false } }; $ok })) ("client.inject=" + ($pkgJson.dsh.client.inject -join ','))
 Check "轻量闸：面板产物不会再被构建覆盖（无 src/client、无 tsdown 配置）" ((-not (Test-Path (Join-Path $root 'src\client'))) -and (-not (Test-Path (Join-Path $root 'tsdown.config.ts')))) "手写 client/client.js + 构建复制"

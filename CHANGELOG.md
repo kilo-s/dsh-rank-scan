@@ -2,6 +2,16 @@
 
 本项目的版本变更记录。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.2.1] - 2026-10-16
+
+### 新增
+
+- **支持从仓库链接直装**：构建入口改成纯 Node（scripts/build.mjs），并补 `prepare` 脚本 —— 安装时可以现场从源码构建出 `lib/`，不必先手工打包。
+
+### 变更
+
+- `scripts/build.sh` 变成 `scripts/build.mjs` 的薄包装（Windows 上没有可用 bash，git 直装必须走 Node）。
+
 ## [0.2.0] - 2026-10-16
 
 ### 修复
