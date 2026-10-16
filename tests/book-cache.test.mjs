@@ -30,11 +30,19 @@ test('命中：写进去能按 site:bookId 取回（站点之间不串）', () =
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
-test('过期：TTL 之外判未命中（ttl<=0 视为不过期）', () => {
+test('过期：TTL 之外判未命中（ttl<=0 视为不过期）', async () => {
   const root = tmpRoot()
   try {
     putEntries(root, [{ site: 'sfacg', bookId: '783623', entry: { collect: 89670, words: null, title: null, author: null, score: null } }])
     assert.equal(cachedEntry(root, 'sfacg', '783623', 0).hit, true, 'ttl=0 = 不过期')
+    /**
+     * ★ 2026-10-17（CI 假红）：`cachedEntry` 的过期判定是 `Date.now() - 写入时刻 >= ttlMs`，
+     *   而写入与读取在**快文件系统上可能落在同一毫秒**（ubuntu runner 实测）⇒ ttl=1ms 也会判命中，
+     *   这条断言就变成「看机器快慢」：本地 Windows 一直过、CI 上必红。
+     *   所以先显式等到时钟真的走过 1ms，再断言过期 —— 被测语义不变，断言不再依赖运气。
+     */
+    const t0 = Date.now()
+    while (Date.now() - t0 < 3) await new Promise((r) => setTimeout(r, 1))
     assert.equal(cachedEntry(root, 'sfacg', '783623', 1).hit, false, 'ttl=1ms 必然已过期')
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

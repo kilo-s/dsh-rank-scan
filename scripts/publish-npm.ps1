@@ -1,4 +1,4 @@
-﻿# 发布到 npm（在你自己的终端执行；需要 npm 登录态与 OTP）
+# 发布到 npm（在你自己的终端执行；需要 npm 登录态与 OTP）
 #   pwsh -File scripts\publish-npm.ps1 -DryRun        # 只检查 + 打包预览，不发布
 #   pwsh -File scripts\publish-npm.ps1               # 真发布
 #   pwsh -File scripts\publish-npm.ps1 -Otp 123456   # 有 2FA 时一步到位
@@ -29,7 +29,12 @@ Step "打包预览（列出真正上传的文件）"
 & npm.cmd pack --dry-run --cache $cache 2>&1 | Select-Object -Last 12 | Write-Host
 if ($DryRun) { Step "-DryRun：到此为止，没有发布。"; exit 0 }
 Step "发布"
-$npmArgs = @("publish", "--access", "public", "--tag", $Tag, "--registry", $Registry, "--cache", $cache)
+# ★ 2026-10-17（发布实测）：本地 npm 10.9.3 生效的 `auth-type=web` 与「凭 token 发布」这条路不合，
+#   实测 PUT 时会把 otp 发成布尔 true ⇒ 注册表回 400：
+#   child "otp" fails because ["otp" with value "true" fails to match the required pattern: /^\d+$/]。
+#   显式走 legacy 认证（token 发布的正路），需要 OTP 时 npm 会正常回 EOTP，下面的分支再接。
+#   （实测：`npm config get auth-type` = web；`--auth-type legacy` 后 PUT 正常携带 token。）
+$npmArgs = @("publish", "--access", "public", "--tag", $Tag, "--registry", $Registry, "--cache", $cache, "--auth-type", "legacy")
 if ($Otp -ne "") { $npmArgs += "--otp"; $npmArgs += $Otp }
 $out = (& npm.cmd @npmArgs 2>&1 | Out-String)
 Write-Host $out
