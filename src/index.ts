@@ -1759,13 +1759,18 @@ export function apply(ctx: PluginCtx, config: any): void {
       const e = next.extra as any
       // force = 同一份快照上重跑也重新取（用于口径修正后回填）
     // 菠萝包**一律以书页为准**：首页 SSR 的数字是另一个口径（实测同一本 首页 165 / 详情页 1280）
-    const need = force ? true : kind === 'ciweimao' ? e.fromBookPage !== true : e.fromBookPage !== true
+    // ★ 2026-10-16：两个分支原本写的是同一个表达式（恒等三元），去掉误导；语义不变 = 「没从书页取过才取」
+    const need = force || e.fromBookPage !== true
       if (r.url && need) {
         try {
           if (requests > 0) await new Promise((res) => setTimeout(res, 1000))
           const resp = await boundedFetch(String(r.url), { rateLimit: true, timeoutMs: 15000, signal: ctxBoard.signal, headers: ua as any })
           requests += 1
           const html = await (resp as any).text()
+          // ★ 2026-10-16（使用反馈「刺猬猫补不上字数/收藏」）：只有**真解析出数值**才把这一行标成
+          //   「已从书页取过」。原来无论解析成功与否都置 fromBookPage=true ⇒ 页面结构一变，
+          //   这些行被判「已抓」，不传 force 就永久补不上。
+          let got = false
           if (kind === 'ciweimao') {
             // 只认 book-grade 段落里的那三个数（页面别处可能有 0 占位模板）
             const blk = html.match(/class="book-grade"[\s\S]{0,400}?<\/p>/)
@@ -1780,12 +1785,14 @@ export function apply(ctx: PluginCtx, config: any): void {
               e.collect = numOf(g[2])
               e.wordsCnt = numOf(g[3])
               e.collectWordsFilled = true
+              got = true
             } else {
               const c = seg.match(/总收藏：<b>([^<]*)<\/b>/)
-              if (c) e.collect = numOf(c[1])
+              if (c) { e.collect = numOf(c[1]); got = e.collect != null || got }
               const w = seg.match(/总字数：<b>([^<]*)<\/b>/)
-              if (w) e.wordsCnt = numOf(w[1])
+              if (w) { e.wordsCnt = numOf(w[1]); got = e.wordsCnt != null || got }
             }
+            if (!got) e.enrichError = '书页里没解析出总收藏/总字数（页面结构可能变了）'
             const t = html.match(/<title>([^<]{1,60})/)
             if (t && r.title && String(r.title).replace(/[\s…]/g, '').length <= String(t[1]).length) next.title = String(t[1]).replace(/最新章节.*$/, '').trim()
           } else {
@@ -1795,9 +1802,10 @@ export function apply(ctx: PluginCtx, config: any): void {
             const w = html.match(/字数[：:]\s*([\d,]+)\s*字/)
             const c = html.match(/>收藏\s*([\d,]+)\s*</) || html.match(/id="J_BookCollectCount"[^>]*>\s*([\d,]+)/)
             const s = html.match(/([\d.]+)\s*分/)
-            if (w) e.words = numOf(w[1])
-            if (c) e.collect = numOf(c[1])
-            if (s) e.score = Number(s[1])
+            if (w) { e.words = numOf(w[1]); got = e.words != null || got }
+            if (c) { e.collect = numOf(c[1]); got = e.collect != null || got }
+            if (s) { e.score = Number(s[1]); got = Number.isFinite(e.score) || got }
+            if (!got) e.enrichError = '书页里没解析出字数/收藏（页面结构可能变了）'
             // 书名：页面标题是「书名 - 小说全文阅读 - 分类 - 作者 - SF轻小说」⇒ 截到第一个 ' - '
             const t = html.match(/<title>([^<]{1,120})<\/title>/)
             if (t) {
@@ -1812,7 +1820,8 @@ export function apply(ctx: PluginCtx, config: any): void {
               const author = authorFromBookTitle(String(t[1]))
               if (author) next.author = author
             }
-            e.fromBookPage = true
+            // 只在真拿到数时标记「已从书页取过」；否则留待下次（或 force）重试
+            if (got) e.fromBookPage = true
           }
         } catch (err) {
           e.enrichError = String(err).slice(0, 60)

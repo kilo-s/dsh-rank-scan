@@ -1090,8 +1090,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               //   名次型榜（起点/刺猬猫/菠萝包）的 metric.value 恒 null ⇒ 以前画成「名次 —」（无内容的空标签）；
               //   番茄的 metric 与 collect 都是 row.value（在读）⇒ 以前画两遍「在读」。
               //   这里同时兜住**存量**书签：旧盘上写下的 {名次,null} / 重复项一律不再显示（autoUpdate 是合并语义，不回头改盘）。
-              b.metric && b.metric.value != null && b.metric.value !== b.collect
-                ? h('span', { style: C.chip }, b.metric.name + ' ' + b.metric.value) : null,
+              (function () { const t = metricChipText(b.metric, b.collect); return t ? h('span', { style: C.chip }, t) : null })(),
               b.firstSeen ? h('span', { style: C.muted }, '首次发现：' + b.firstSeen.boardId + ' 第 ' + (b.firstSeen.rank == null ? '—' : b.firstSeen.rank) + ' 名（' + b.firstSeen.dataDate + '）') : h('span', { style: C.muted }, '手动添加 · 无榜单来源'),
               b.source === 'manual' ? h('span', { style: C.muted }, '（不在榜 ⇒ 不会自动更新）') : null),
             (b.seenBoards || []).filter(function (s) { return !b.firstSeen || s.boardId !== b.firstSeen.boardId }).length
@@ -1578,6 +1577,19 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         window.__rankScanEntry = reg('sidebar.panellist') ? 'sidebar.panellist' : reg('sidebar.footer.action') ? 'sidebar.footer.action' : null
       } catch (e) { console.warn('[dsh-rank-scan] 入口注册失败：', e) }
     }
-    return { name: 'dsh-rank-scan', inject: inject, apply: apply }
+    /**
+   * 书签卡片的「站方指标」chip 文案（纯函数，便于单测）。null ⇒ 不渲染。
+   * 规则（2026-10-16 使用反馈）：
+   *   ① 没有数值就不渲染 —— 名次型榜（起点/刺猬猫/菠萝包）的 row.value 恒为 null，
+   *      以前会画成「名次 —」这种只有标签没有内容的空 chip；
+   *   ② 与 collect chip 同源同值时不重复渲染 —— 番茄的 metric 与 collect 都是 row.value（在读）。
+   */
+  function metricChipText(metric, collect) {
+    if (!metric || metric.value == null) return null
+    if (collect != null && metric.value === collect) return null
+    return metric.name + ' ' + metric.value
+  }
+  // 测试缝：宿主只消费 name/inject/apply，多挂一个纯展示函数对运行无影响
+  return { name: 'dsh-rank-scan', inject: inject, apply: apply, __test: { metricChipText: metricChipText } }
   },
 })
