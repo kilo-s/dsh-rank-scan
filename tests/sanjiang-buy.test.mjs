@@ -72,12 +72,17 @@ test('★ 三江：本期与上两期全空 ⇒ missing（不无限回退，最�
   const site = makeQidiantuSite({ boards: ['qidiantu.sanjiang'], fetchText: async (u) => { seen.push(u); return empty } })
   const rec = await runScan({ sites: [site], clock, store: new MemoryStore() })
   assert.equal(rec.boards[0].status, 'missing')
-  assert.equal(seen.length, 3, '本期 + 回退两期 = 最多 3 次请求，不能更多')
-  assert.deepEqual(seen, [
+  /**
+   * ★ 2026-10-17：自动重试会再跑一轮 ⇒ 总请求 = 3（本期+回退两期）× 2（首轮 + 自动重试）= 6。
+   * 被守住的不变式：**单次抓取最多回退 2 期**（前 3 条必须正好是这三期、且互不重复）。
+   */
+  assert.equal(seen.length, 6, '本期 + 回退两期，各跑两轮 = 最多 6 次，不能更多')
+  assert.equal(new Set(seen).size, 3, '两轮请求的是同一组 3 个期首日（没有第 4 个 URL）')
+  assert.deepEqual(seen.slice(0, 3), [
     'https://www.qidiantu.com/bang/1/6/2026-10-11',
     'https://www.qidiantu.com/bang/1/6/2026-10-04',
     'https://www.qidiantu.com/bang/1/6/2026-09-27',
-  ])
+  ], '第一轮就是「本期 + 回退两期」，顺序与期首日都要对')
 })
 
 test('刺猬猫首订(约)：真实夹具解析 + 第三方标记', () => {
@@ -213,4 +218,3 @@ test('★ 票 48 刺猬猫首订(约)：① 省略 ② 空串 ③ 占位串 ⇒ 
   assert.equal(typeof rows[0].value, 'number')
   assert.match(rows[0].url, /^https:\/\/www\.ciweimao\.com\/book\/\d+$/)
 })
-

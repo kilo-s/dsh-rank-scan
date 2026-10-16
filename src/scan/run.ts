@@ -54,6 +54,8 @@ export interface RunScanDeps {
   pollMs?: number
   /** 榜与榜之间的最小间隔（默认 0；采集纪律建议 1000ms） */
   betweenBoardsMs?: number
+  /** ★ 2026-10-17 失败榜自动重试前的等待（默认 5000ms；测试传 0） */
+  retryDelayMs?: number
   signal?: AbortSignal
   onProgress?: (r: ScanRecord) => void
 }
@@ -82,6 +84,8 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
   const betweenBoardsMs = typeof deps.betweenBoardsMs === 'number' ? deps.betweenBoardsMs : 0
   const maxSiteFailures = typeof deps.maxSiteFailures === 'number' ? deps.maxSiteFailures : 3
   const maxRetryPerBoard = typeof deps.maxRetryPerBoard === 'number' ? deps.maxRetryPerBoard : 2
+  /** ★ 2026-10-17：失败榜自动重试前的等待（默认 5s；测试注入 0 免得每个用例白等 5 秒） */
+  const retryDelayMs = typeof deps.retryDelayMs === 'number' ? deps.retryDelayMs : 5000
   const start = deps.clock.now()
   const dataDate = localDate(start)
 
@@ -153,21 +157,29 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
 
   const abort = new AbortController()
   const cancelled = () => abort.signal.aborted || (deps.signal ? deps.signal.aborted : false)
-  const poller = setInterval(() => {
-    deps.store
-      .getCancelFlag()
-      .then((f) => { if (f) abort.abort() })
-      .catch(() => {})
-  }, pollMs)
 
   const results = new Map<string, BoardResult>()
+  /** ★ 2026-10-17：本榜本次尝试次数（自动重试用它防「同一个榜反复打」） */
+  const boardAttempts = new Map<string, number>()
   let jobIndex = 0
   const siteFailures = new Map<string, number>()
   let requests = 0
   let lastProgress = start.getTime()
 
-  try {
-    for (const job of jobs) {
+  /**
+   * ★ 2026-07-17（失败榜自动重试）：把「跑一个榜列表」抽成局部函数，主体循环一行未改。
+   * 这样「抓完发现有的榜 fetch failed ⇒ 隔一会儿再打一次」可以复用同一段逻辑与同一套护栏
+   * （取消/预算/无进展/站点熔断/重试上限），不需要复制粘贴。
+   */
+  const runJobs = async (jobsToRun: { site: SiteAdapter; boardId: string }[]): Promise<void> => {
+    const poller = setInterval(() => {
+      deps.store
+        .getCancelFlag()
+        .then((f) => { if (f) abort.abort() })
+        .catch(() => {})
+    }, pollMs)
+    try {
+    for (const job of jobsToRun) {
       if (jobIndex > 0 && betweenBoardsMs > 0) await sleep(betweenBoardsMs)
       jobIndex += 1
       const now = deps.clock.now()
@@ -206,6 +218,7 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
       }
 
       const t0 = Date.now()
+      boardAttempts.set(job.boardId, (boardAttempts.get(job.boardId) || 0) + 1)
       record.heartbeatAt = stamp(deps.clock.now())
       let res: BoardResult
       try {
@@ -263,8 +276,32 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
       if (deps.store.heartbeatLock) await deps.store.heartbeatLock(record.heartbeatAt)
       deps.onProgress?.(record)
     }
+    } finally { clearInterval(poller) }
+  }
+
+  try {
+    await runJobs(jobs)
+    /**
+     * ★ 2026-10-17（失败榜自动重试）：一次网络抖动不该把整个榜判成 missing 一整天
+     * （实测 2026-10-17 凌晨 19 榜里挂了 4 个，全是 5~7 秒内 failure 的 transient fetch failed）。
+     * 口径：**失败榜最多自动重试一次**，隔 5 秒再打；成功的榜不动（不需要重抓）。
+     * 仍受原有护栏约束：取消立即停、预算/无进展/站点熔断照旧、每榜累计尝试 ≤ maxRetryPerBoard。
+     */
+    const retryList = jobs.filter((j) => {
+      const r = results.get(j.boardId)
+      return r && r.status !== 'ok' && (boardAttempts.get(j.boardId) || 0) < maxRetryPerBoard
+    })
+    if (retryList.length && !cancelled() && requests < budget.maxRequests) {
+      record.warnings.push('以下是第一次没抓到的榜，隔 ' + Math.round(retryDelayMs / 1000) + ' 秒自动重试一次：' + retryList.map((j) => j.boardId).join('、'))
+      if (retryDelayMs > 0) await sleep(retryDelayMs)
+      const before = new Map(([...results]).map(([k, v]) => [k, v.status]))
+      await runJobs(retryList)
+      const recovered = [...results].filter(([k, v]) => v.status === 'ok' && before.get(k) !== 'ok').map(([k]) => k)
+      record.warnings.push(recovered.length
+        ? '自动重试成功 ' + recovered.length + ' 个榜：' + recovered.join('、')
+        : '自动重试后仍有 ' + retryList.length + ' 个榜没抓到（站点可能真的不可达）')
+    }
   } finally {
-    clearInterval(poller)
     // ★ 审计-2/35：兜底 —— 取消可能落在最后一个榜之后（或只被 poller 观察到），那时消费点不会执行
     try { if (await deps.store.getCancelFlag()) await deps.store.setCancelFlag(false) } catch { /* 复位失败不阻塞收尾 */ }
     if (deps.store.releaseLock) await deps.store.releaseLock()

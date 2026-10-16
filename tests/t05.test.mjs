@@ -14,9 +14,14 @@ test('熔断：同一站连续失败 3 次后，本站剩余榜标 truncated(sit
   let calls = 0
   const s = site('bad', ['b1', 'b2', 'b3', 'b4', 'b5'], async () => { calls++; throw new MissingError('抓不到') })
   const rec = await runScan({ sites: [s], clock: at('2026-10-14T10:00:00+08:00'), store, maxSiteFailures: 3 })
-  assert.equal(calls, 3, '熔断后不应再请求该站')
+  /**
+   * ★ 2026-10-17（加了失败榜自动重试之后）：熔断计数**跨轮累计**，所以重试那轮一个请求都不发——
+   * 这正是想要的行为：站点明显挂了就别再打它（重试只救「偶发抖动」）。
+   */
+  assert.equal(calls, 3, '熔断后（含自动重试那轮）不应再请求该站')
+  assert.ok(rec.warnings.length >= 1, '熔断要有警告')
   const st = Object.fromEntries(rec.boards.map((b) => [b.boardId, b.status]))
-  assert.equal(st.b3, 'missing')
+  assert.equal(st.b3, 'truncated', '首轮 b3 失败；重试那轮撞上熔断 ⇒ truncated(site_unhealthy)')
   assert.equal(st.b4, 'truncated')
   assert.equal(rec.boards.find((b) => b.boardId === 'b5').reason, 'site_unhealthy')
   assert.ok(rec.warnings.some((w) => w.includes('熔断')))
@@ -39,7 +44,12 @@ test('重试：只重跑非 ok 的榜，并回当天记录（attempt +1）', asy
   assert.equal(second.attempt, 2)
   assert.equal(second.boards.find((x) => x.boardId === 'a').status, 'ok')
   assert.equal(second.boards.find((x) => x.boardId === 'b').status, 'ok')
-  assert.deepEqual(fetched, ['a', 'b', 'b'], '已 ok 的 a 不应被重跑')
+  /**
+   * ★ 2026-10-17：本轮的**自动重试**也会再打一次 b（第一次没抓到的榜隔 5 秒重试一次）。
+   * 第二次 runScan 走 retryNonOk，只重跑 b（a 已 ok，不该被重跑）。
+   */
+  assert.deepEqual(fetched, ['a', 'b', 'b', 'b'], 'a 只抓一次；b 抓三次（首轮失败 + 自动重试 + 次日显式重试）')
+  assert.ok(first.warnings.some((w) => w.includes('自动重试')), '首轮要记一条自动重试警告')
   assert.equal(store.snapshot('b', '2026-10-14').rows.length, 1)
 })
 
