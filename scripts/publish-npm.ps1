@@ -30,10 +30,16 @@ Step "打包预览（列出真正上传的文件）"
 if ($DryRun) { Step "-DryRun：到此为止，没有发布。"; exit 0 }
 Step "发布"
 $npmArgs = @("publish", "--access", "public", "--tag", $Tag, "--registry", $Registry, "--cache", $cache)
-if ($Otp -eq "") { $Otp = (Read-Host "取一个新的 6 位 OTP（刚取的才有效）").Trim() }
 if ($Otp -ne "") { $npmArgs += "--otp"; $npmArgs += $Otp }
-& npm.cmd @npmArgs
-Guard ($LASTEXITCODE -eq 0) "npm publish 失败（401/403 = 权限或 2FA；EOTP = 用 -Otp 重试）"
+$out = (& npm.cmd @npmArgs 2>&1 | Out-String)
+Write-Host $out
+# 没开 2FA 的账号不需要任何验证码：上面这条就发完了。
+# 只有 npm 明确要求一次性验证码（EOTP）时才现取现输，避免输早了过期。
+if ($LASTEXITCODE -ne 0 -and $Otp -eq "" -and $out -match 'EOTP|one-time password') {
+  $fresh = (Read-Host "npm 要求一次性验证码：现取 6 位 OTP").Trim()
+  if ($fresh -ne "") { $npmArgs += "--otp"; $npmArgs += $fresh; & npm.cmd @npmArgs }
+}
+Guard ($LASTEXITCODE -eq 0) "npm publish 失败（401/403 = 权限；EOTP = 现取 6 位 OTP 后重跑）"
 Step "验证"
 $shown = (& npm.cmd view $name version --registry $Registry --cache $cache 2>&1 | Out-String).Trim()
 Write-Host ("  npm 上的版本：" + $shown)
