@@ -8,6 +8,8 @@ node_modules/
 *.dshclaim
 *.dshpending/
 .tmp-types/
+# 临时探针/构建脚本别进仓库
+.tmp-*
 scripts/build-local.ps1
 
 # npm 凭据（granular token）绝不进仓库
