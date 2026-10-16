@@ -43,6 +43,8 @@ node tests/diff.test.mjs              # 单个文件
 
 新增测试时：把它放进 `tests/`，文件名以 `.test.mjs` 结尾即可被两个闸门收集（`scripts/test-local.ps1` 与 `scripts/acceptance.ps1`）。
 
+**夹具纪律**：`tests/fixtures/` 只放**自动裁剪过的最小夹具** —— 每个文件只保留解析器真正读取的结构，裁剪后解析结果与原响应逐字节一致（所以断言的仍是真实页面结构）。整页原文与「全保真回归」在开发机私有层（`run-full-fixtures.ps1`：临时覆盖整页快照跑全量测试，跑完 `git checkout` 还原）。**不要把整页快照搬回仓库**。
+
 ## 设计约束（改代码前先读）
 
 - **词汇统一**：站（站点）/ 榜（榜单）/ 快照（某榜某数据日的行集）/ 数据日期 / 变化集（与上一数据日的差异）/ 抓取集（抓哪些榜）/ 显示集 / 状态五态（`ok` `missing` `stale` `login_required` `truncated`）。
