@@ -80,7 +80,13 @@ jobs:
           2. 解压后运行：`pwsh -File scripts/install.ps1 -Spec "<tgz 路径>"`
              （macOS / Linux：`bash scripts/install.sh desktop <tgz 路径>`）
 
-          仓库不含编译产物，**不要**用仓库 URL 直接安装。详见 README 的「安装 / 更新」。
+          仓库不含编译产物（`lib/` 由 `prepare` 在安装时现场构建）。
+
+          也可以直接装仓库链接：`dsh plugin --profile desktop add github:kilo-s/dsh-rank-scan`
+          —— pnpm 默认会拦住依赖的构建脚本，首次会失败并打印需要放行的确切键，
+          把它加进 `~/.dsh/profiles/<profile>/pnpm-workspace.yaml` 的 `allowBuilds` 后重跑同一条命令即可。
+
+          详见 README 的「安装 / 更新」。
           NOTES
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             echo "Release 已存在：只覆盖附件（人工写的发布说明优先）"

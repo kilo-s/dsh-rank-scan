@@ -27,24 +27,40 @@ Write-Host "== 不连累本体 ==" -ForegroundColor Cyan
 Check "P0-1 定时回调有兜底（未捕获拒绝会让宿主 exit(1)）" ($host_src -match "checkTimer\(\)\.catch") "setInterval 回调挂了 .catch"
 Check "P0-1 recordRun 自身不抛" ($host_src -match "写定时状态失败（已吞）") "写盘失败只记 timer.log"
 Check "P0-2 日期入口有校验" ($host_src -match "assertDataDate\(body\.date\)") ("调用点数=" + ([regex]::Matches($host_src, "assertDataDate\(body\.date\)").Count))
-Check "票 30 扫描锁真的置位" ($host_src -match "async function withScanLock") "手动 /scan 与 /retry 都走 withScanLock"
-Check "票 30 readBody 有超时" ($host_src -match "6,10_000|10_000\)") "半开连接不再悬挂"
-Check "票 29 站点请求有超时" (Test-Path (Join-Path $root "src\scan\bounded-fetch.ts")) "bounded-fetch.ts 存在（五站已接线）"
+#   ★ 2026-10-16（审计-2/46）：旧断言只 match "async function withScanLock" ⇒ 有人把调用点删光它照样 PASS。
+#     改成真断言：锁**定义**在 + **两个**手动入口（/scan、/retry）都真的调用它。
+Check "票 30 扫描锁真的置位" ((([regex]::Matches($host_src, "async function withScanLock")).Count -eq 1) -and ($host_src -match "withScanLock\(\(\) => doScan\('manual', \{ retry: true \}\)\)") -and ($host_src -match "withScanLock\(\(\) => doScan\('manual', opts\)\)")) "锁定义 1 处 + /retry 与 /scan 两个调用点都在"
+#   ★ 2026-10-16（审计-2/46）：旧正则 "6,10_000|10_000\)" 太松。改成「把超时值抠出来 + 断言它是有界正整数」。
+$readBodyTimeout = [regex]::Match($host_src, 'const timer = setTimeout\(\(\) => done\(\{\}\), ([0-9_]+)\)').Groups[1].Value
+Check "票 30 readBody 有超时" ($readBodyTimeout -match '^[0-9][0-9_]*$' -and [int]($readBodyTimeout -replace '_','') -ge 1000 -and [int]($readBodyTimeout -replace '_','') -le 60000) ("readBody 超时 = " + $readBodyTimeout + " ms（有界：1s–60s）")
+#   ★ 2026-10-16（审计-2/46）：旧断言只查 bounded-fetch.ts **文件存在** ⇒ 五站全都没接线也 PASS。
+$bfSites = ([regex]::Matches($host_src, "await boundedFetch\(")).Count
+$bfAdapters = @(@("fanqie","ciweimao","sfacg","qidian-mobile","qidiantu") | Where-Object { (Get-Content -Raw -Encoding UTF8 (Join-Path $root ("src\sites\" + $_ + ".ts"))) -match "await boundedFetch\(" }).Count
+Check "票 29 站点请求有超时" (($host_src -match "import \{[^}]*boundedFetch[^}]*\} from '\./scan/bounded-fetch\.js'") -and ($bfSites -ge 5) -and ($bfAdapters -eq 5)) ("host 补全链 await boundedFetch=" + $bfSites + " 处（>=5）；五个站适配器接线=" + $bfAdapters + "/5")
 
 Write-Host "== 轻量 ==" -ForegroundColor Cyan
-Check "票 25 定时惰性接线" ($host_src -match "function syncTimer") "syncTimer 由 timerEnabled 驱动"
-Check "票 26 占用统计走缓存" ($host_src -match "function storageSummary") "storageSummary + TTL 缓存"
+#   ★ 2026-10-16（审计-2/46）：旧断言只 match 函数名 ⇒ 函数体被掏空也 PASS。
+#     改成真断言：syncTimer 内部真的读 timerEnabled 开关、并按开关接/断定时器。
+Check "票 25 定时惰性接线" (($host_src -match "function syncTimer\(") -and ($host_src -match "function syncTimer\(\)[\s\S]{0,900}?timerEnabled") -and ($host_src -match "function syncTimer\(\)[\s\S]{0,900}?setInterval\(") -and ($host_src -match "function syncTimer\(\)[\s\S]{0,900}?disposer\(\)")) "syncTimer 体内读 timerEnabled 且真的 setInterval 接线 / disposer() 断开"
+#   ★ 2026-10-16（审计-2/46）：同上，函数名不算证据。要求「函数体里有缓存字段 + 真的 TTL 比较」。
+Check "票 26 占用统计走缓存" (($host_src -match "function storageSummary\(") -and ($host_src -match "function storageSummary\([\s\S]{0,1200}?storageCache") -and ($host_src -match "function storageSummary\([\s\S]{0,1200}?now \- storageCache\.at > STORAGE_TTL_MS") -and ($host_src -match "function storageSummary\([\s\S]{0,1200}?storageCache = \{ at: now")) "storageSummary 走 storageCache + TTL 比较 + 命中时回填"
 Check "票 27 面板收起/隐藏不轮询" (($client_src -match "document\.visibilityState") -and ($client_src -match "if \(!open\) return undefined")) "可见性判断 + 收起提前返回"
 
 Write-Host "== 坏了也没事 ==" -ForegroundColor Cyan
 Check "票 28 书签写盘原子（无先删后改名）" (-not ($bm_src -match "rmSync\(this\.file")) "bookmark.ts 不再 rmSync 主文件"
-Check "票 28 主文件缺失能从备份恢复" ($bm_src -match "主文件缺失，已从备份恢复") "read() 缺失也走备份轮转"
+#   ★ 2026-10-16（审计-2/46）：旧断言只认这条**错误消息字符串** ⇒ 轮转被删掉也 PASS。
+Check "票 28 主文件缺失能从备份恢复" (($bm_src -match "主文件缺失，已从备份恢复") -and ($bm_src -match "for \(let i = 1; i <= BACKUP_ROTATION; i\+\+\)") -and ($bm_src -match "this\.file \+ '\.' \+ i") -and ($bm_src -match "return \{ file: migrate\(got\), error: why \+ bak, recoveredFrom: bak \}")) "read() 真按 BACKUP_ROTATION 轮转，命中即回传 recoveredFrom"
 
 Write-Host "== 离线测试 ==" -ForegroundColor Cyan
 Push-Location $root
-foreach ($t in @("tests\host-guard.test.mjs","tests\client-bundle.test.mjs","tests\bookmark.test.mjs")) {
-  node (Join-Path $root $t) | Out-Null
-  Check ("离线测试 " + $t) ($LASTEXITCODE -eq 0) $t
+#   ★ 2026-10-16（审计-2/46）：旧实现硬编码 3 个文件，而 docs/DEVELOPMENT.md 宣称
+#     「文件名以 .test.mjs 结尾即被两个闸门收集」⇒ 改成全量收集（唯一真调 apply() 的
+#     update-routes.test.mjs 此前根本不在列表里）。
+$testFiles = Get-ChildItem -Path (Join-Path $root 'tests') -Filter '*.test.mjs' | Sort-Object Name
+Check "离线测试收集数 >= 3（全量收集 tests\*.test.mjs）" ($testFiles.Count -ge 3) ("收集到 " + $testFiles.Count + " 个 *.test.mjs：" + (($testFiles | ForEach-Object { $_.Name }) -join ', '))
+foreach ($t in $testFiles) {
+  node $t.FullName | Out-Null
+  Check ("离线测试 " + $t.Name) ($LASTEXITCODE -eq 0) $t.Name
 }
 Pop-Location
 
@@ -78,7 +94,8 @@ foreach ($f in $srcFiles) {
 Check "依赖闸：host 侧零第三方 import（只允许 node: 与相对路径）" ($badImports.Count -eq 0) ("可疑 import: " + ($badImports -join ', '))
 # ★ 公开面闸（2026-10-16）：本仓库是**给别人看的**，以下四类一律不许出现：
 #   ① 编译产物 lib/（会把源码注释复制一份，sourcemap 还带构建机的绝对路径）
-#   ② 个人绝对路径（形如 C:\Users\<某人的名字>）
+#   ② 个人绝对路径（形如「系统盘 + 用户目录 + 某个真人的名字」；本行刻意不写真样本，
+#      否则闸门会命中这条注释 —— 2026-10-16 审计-2/46 踩过）
 #   ③ 私下对话的人称与所属称呼（本仓早期版本满篇都是「某人说了什么」，外人看不懂）
 #   ④ 公开面引用的仓库内图片 / 文档必须存在（死链 = 读者点开 404）
 #   ★ 禁词本字刻意用 [char] 拼出来，这样闸门不会命中自己 —— 因此**任何文件都不需要开例外**。
@@ -93,10 +110,14 @@ $libInIndex = ($trackedFiles | Where-Object { $_ -like 'lib/*' } | Measure-Objec
 Check "公开面闸：编译产物 lib/ 不在仓库索引里" ($libInIndex -eq 0) ("索引内 lib 文件数=" + $libInIndex + "（仓库只放源码，包由 CI 构建）")
 $textFiles = $trackedFiles | Where-Object { $_ -match '\.(ts|mjs|js|md|json|yml|ps1|sh|gitignore|gitattributes)$' }
 $pathHits = @()
-$userPathNeedle = 'C:' + [char]92 + [char]92 + 'Users' + [char]92
+#     ★ 2026-10-16（审计-2/46）：旧 needle 被拼成了带**两个**反斜杠的字符串，真实路径永远命中不了，
+#       等于闸门白设。改成单反斜杠（本注释刻意不写反斜杠，否则闸门会命中自己这条注释）；
+#       自检样本也改成独立字面量（旧样本是照着 needle 拼的 ⇒ 恒真）。
+$userPathNeedle = 'C:' + [char]92 + 'Users' + [char]92
 #    ★ 探针自检：先用合成样本证明这个匹配真的能命中（历史坑：模式以反斜杠结尾 ⇒ 正则非法 ⇒ 每次都在
 #      抛异常，而探针却显示 PASS，等于白设）。
-$probeWorks = ('C:' + [char]92 + [char]92 + 'Users' + [char]92 + 'someone').Contains($userPathNeedle)
+$pathSample = 'C:' + [char]92 + 'Users' + [char]92 + 'someone' + [char]92 + 'Documents' + [char]92 + 'x.txt'
+$probeWorks = $pathSample.Contains($userPathNeedle)
 foreach ($f in $textFiles) {
   $c = Get-Content -Raw -Encoding UTF8 (Join-Path $root $f) -ErrorAction SilentlyContinue
   if ($c -and $c.Contains($userPathNeedle)) { $pathHits += $f }
@@ -141,11 +162,26 @@ Check "轻量闸：面板产物不会再被构建覆盖（无 src/client、无 t
 #     于是 CI 从源码构建出的 tgz 没有面板，build.yml 的产物校验必然失败。
 $clientSrcPath = Join-Path $root 'client\client.js'
 $clientOutPath = Join-Path $root 'lib\client.js'
-$clientSame = if (Test-Path $clientOutPath) { (Get-FileHash $clientSrcPath).Hash -eq (Get-FileHash $clientOutPath).Hash } else { $true }
-Check "装配闸：面板源入库（client/client.js），且 lib/client.js 与它内容一致" ((Test-Path $clientSrcPath) -and $clientSame) ("源在=" + (Test-Path $clientSrcPath) + " 产物存在=" + (Test-Path $clientOutPath) + " 内容一致=" + $clientSame)
+#   ★ 2026-10-16（审计-2/46）：旧实现产物缺失时 $clientSame = $true（恒真）⇒ 从没构建过也 PASS。
+#     改成三段真断言：源在 + 产物在 + 哈希一致（缺产物 = FAIL，如实报「没构建」）。
+$clientSrcExists = Test-Path $clientSrcPath
+$clientOutExists = Test-Path $clientOutPath
+$clientSame = ($clientSrcExists -and $clientOutExists -and ((Get-FileHash $clientSrcPath).Hash -eq (Get-FileHash $clientOutPath).Hash))
+Check "装配闸：面板源入库（client/client.js），且 lib/client.js 与它内容一致" ($clientSrcExists -and $clientOutExists -and $clientSame) ("源在=" + $clientSrcExists + " 产物存在=" + $clientOutExists + " 内容一致=" + $clientSame + "（产物缺失即 FAIL：跑 scripts\build-local.ps1）")
 $tgz = Get-ChildItem -Path $root -Filter '*.tgz' -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($tgz) { Check "分发闸：tgz 体积 <= 400 KB" ($tgz.Length -le 409600) ($tgz.Name + ' = ' + [math]::Round($tgz.Length / 1024) + ' KB') } else { Check "分发闸：tgz 存在" $false "还没 npm pack（可接受，但分发前要产出）" }
-Check "迁移闸：state 迁移不动用户开关（v6 迁移里没有 timerEnabled 赋值）" (-not ($host_src -match 'st1\.timerEnabled')) "老配置保持原样"
+#   ★ 2026-10-16（审计-2/46）：干净 clone 上必然没有 tgz ⇒ 旧写法 Check ... $false 让 acceptance.ps1 恒 exit 1。
+#     未 pack 改成 SKIP（不计 fail），pack 过了就照旧查体积。
+if ($tgz) {
+  Check "分发闸：tgz 体积 <= 400 KB" ($tgz.Length -le 409600) ($tgz.Name + ' = ' + [math]::Round($tgz.Length / 1024) + ' KB')
+} else {
+  Write-Host "SKIP  分发闸：tgz 体积（还没 npm pack —— 干净 clone 上属正常，分发前要产出）" -ForegroundColor Yellow
+}
+#   ★ 2026-10-16（审计-2/46）：旧断言与后面的「开关-1」重复且更弱（只挡 st1 一个变量名）。
+#     改成「全文件只有一处 timerEnabled 赋值，且必须是面板 /timer 接口」。
+$hostCode = ($host_src -split "`n" | Where-Object { $_ -notmatch '^\s*(\*|//|/\*)' -and $_ -notmatch "timerLog\(" }) -join "`n"
+$timerAssigns = ([regex]::Matches($hostCode, 'timerEnabled\s*=(?!=)')).Count
+$timerPanelAssigns = ([regex]::Matches($host_src, 'stT\.timerEnabled = body\.enabled')).Count
+Check "迁移闸：除面板 /timer 接口外没有任何代码写 timerEnabled" (($timerAssigns -eq 1) -and ($timerPanelAssigns -eq 1)) ("timerEnabled 赋值语句=" + $timerAssigns + " 处；其中面板 /timer 接口=" + $timerPanelAssigns + " 处")
 Check "通道闸：startInterval 回调里的拒绝有兜底（checkTimer 包装）" ($host_src -match 'checkTimer\(\)\.catch\(') "定时回调挂 catch"
 
 Write-Host "== 周期榜换期（2026-10-16）==" -ForegroundColor Cyan

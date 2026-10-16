@@ -12,7 +12,9 @@ export class MemoryStore implements ScanStore {
   lock: LockInfo | null = null
   async acquireLock(info: LockInfo, staleMs: number) {
     if (!this.lock) { this.lock = info; return { ok: true, previous: null } }
-    const stale = Date.now() - Date.parse(this.lock.heartbeatAt) > staleMs
+    // ★ 审计-2/42：心跳不可解析（NaN）时旧比较恒为 false ⇒ 锁永不接管、扫描永久卡住
+    const at = Date.parse(this.lock.heartbeatAt)
+    const stale = !Number.isFinite(at) ? true : Date.now() - at > staleMs
     if (!stale) return { ok: false, previous: this.lock }
     const previous = this.lock
     this.lock = info
@@ -61,7 +63,9 @@ export class FileStore implements ScanStore {
   async acquireLock(info: LockInfo, staleMs: number) {
     const prev = this.read<LockInfo>(this.lockPath())
     if (prev) {
-      const stale = Date.now() - Date.parse(prev.heartbeatAt) > staleMs
+      // ★ 审计-2/42：心跳不可解析（NaN）时旧比较恒为 false ⇒ 锁永不接管、扫描永久卡住
+      const at = Date.parse(prev.heartbeatAt)
+      const stale = !Number.isFinite(at) ? true : Date.now() - at > staleMs
       if (!stale) return { ok: false, previous: prev }
       this.write(this.lockPath(), info)
       return { ok: true, previous: prev }

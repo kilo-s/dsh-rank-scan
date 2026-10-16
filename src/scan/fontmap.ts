@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /**
@@ -35,8 +35,17 @@ export function loadFontMap(root: string): FontMap {
   }
 }
 
+/**
+ * ★ 审计-2/39：与 store 一致改**原子写**（先 .tmp 再 rename）。旧实现裸 writeFileSync：
+ * 写盘瞬间被杀/断电会留下半截 JSON，而 loadFontMap 的 catch 直接返回 {} ⇒ 整张映射表静默丢失，
+ * 番茄书名又变方块字。落盘 schema 不变（仍是 { 码点: 真字 }）。
+ */
 export function saveFontMap(root: string, map: FontMap): void {
-  writeFileSync(join(root, 'font-map.json'), JSON.stringify(map, null, 0) + '\n', 'utf8')
+  const p = join(root, 'font-map.json')
+  const tmp = p + '.tmp'
+  mkdirSync(root, { recursive: true })
+  writeFileSync(tmp, JSON.stringify(map, null, 0) + '\n', 'utf8')
+  renameSync(tmp, p)
 }
 
 /** 用「PUA 文本 + 干净文本」学映射；等长才学（长度不等说明站点截断/改写，宁可不学） */

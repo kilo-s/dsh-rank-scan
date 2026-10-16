@@ -1,5 +1,6 @@
 import { MissingError, type BoardCtx, type BoardResult, type Row, type SiteAdapter } from '../scan/types.js'
 import { boundedFetch } from '../scan/bounded-fetch.js'
+import { defaultRequestGate, withRateLimit, type RequestGate } from '../scan/rate-limit.js'
 
 /**
  * 起点图（qidiantu.com）适配器 —— 首订榜。实测（2026-10-14，只读取证）：
@@ -34,6 +35,109 @@ function addDaysStr(s: string, n: number): string {
 }
 
 /**
+ * ★ 票 49：起点图两个榜都是**纯位置索引**（第 5 格是收订比、第 6 格是首订…）——
+ * 站点插一列、或改个表头名，旧实现会把整列读错却照样判 ok（错的数比没数更糟）。
+ * 所以在读格之前先校验表头：**列数**（第一行 th 的 colspan 之和，与数据行 td 数对齐）+ **列名**。
+ * 不符一律 MissingError（runScan 映射成 missing，不落快照）。
+ *
+ * 例外：**空期不校验**（一个数据行都没有的 200 页 = 「这期还没发布」，不是结构变化）——
+ * 三江的「空期回退上一期」依赖这个语义。
+ */
+interface TableHead {
+  /** 每一行 thead 的 th 纯文本（去掉标签与「点击可排序」这类备注） */
+  rows: string[][]
+  /** 列数 = 第一行 th 的 colspan 之和 */
+  columns: number
+}
+
+function normHeadText(inner: string): string {
+  return String(inner)
+    .replace(/<[^>]*>/g, ' ') // 丢掉 <font>/<br> 之类
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[(（][^()（）]*[)）]\s*$/, '') // 表头里的「点击可排序」备注不算列名
+    .trim()
+}
+
+function colspanOf(attrs: string): number {
+  const m = attrs.match(/colspan\s*=\s*"?(\d+)/i)
+  const n = m ? Number(m[1]) : 1
+  return Number.isFinite(n) && n > 0 ? n : 1
+}
+
+/** 取表头（优先 <thead>；退路：第一个含 <th> 的行）；拿不到 ⇒ null */
+function parseTableHead(html: string): TableHead | null {
+  const thead = html.match(/<thead[\s\S]*?<\/thead>/)
+  const block = thead
+    ? thead[0]
+    : (html.match(/<tr[\s\S]*?<\/tr>/g) || []).find((tr) => /<th[\s>]/.test(tr)) || null
+  if (!block) return null
+  const thRe = /<th\b([^>]*)>([\s\S]*?)(?=<\/th>|<th\b|$)/g
+  const rows: string[][] = []
+  let columns = 0
+  for (const tr of block.match(/<tr[\s\S]*?<\/tr>/g) || []) {
+    const cells: string[] = []
+    let span = 0
+    for (const m of tr.matchAll(thRe)) {
+      cells.push(normHeadText(m[2]))
+      span += colspanOf(m[1])
+    }
+    if (cells.length) {
+      rows.push(cells)
+      if (!columns) columns = span
+    }
+  }
+  return rows.length ? { rows, columns } : null
+}
+
+/** 首订榜表头（真实页面 2026-10-13：9 列） */
+const SHOUDING_HEAD = ['#', '[分类]书名', '首订', '收藏', '收订比', '字数', '粉丝', '作者', '首V时刻']
+
+function assertShoudingHead(html: string): number {
+  const head = parseTableHead(html)
+  const labels = head && head.rows[0]
+  if (!head || !labels) throw new MissingError('起点图首订榜表头缺失（站点结构变化）')
+  if (labels.length !== SHOUDING_HEAD.length || head.columns !== SHOUDING_HEAD.length) {
+    throw new MissingError(
+      '起点图首订榜表头列数变化：' + labels.length + ' 列（列宽 ' + head.columns + '，期望 ' + SHOUDING_HEAD.length + '）',
+    )
+  }
+  const bad = SHOUDING_HEAD.findIndex((h, i) => labels[i] !== h)
+  if (bad >= 0) {
+    throw new MissingError('起点图首订榜表头第 ' + (bad + 1) + ' 列变化：' + labels[bad] + '（期望 ' + SHOUDING_HEAD[bad] + '）')
+  }
+  return head.columns
+}
+
+/** 三江表头第一行前 7 列（真实页面 2026-10-11：两行表头，列宽 16） */
+const SANJIANG_HEAD_LEAD = ['#', '分类', '书名', '作者', '等级', '首订', '日期']
+
+function assertSanjiangHead(html: string): number {
+  const head = parseTableHead(html)
+  if (!head) throw new MissingError('三江页表头缺失（站点结构变化）')
+  const r1 = head.rows[0]
+  const r2 = head.rows[1]
+  if (!r1 || !r2) throw new MissingError('三江页表头行数变化：' + head.rows.length + '（期望 2 行）')
+  if (r1.length !== 9 || r2.length !== 9 || head.columns !== 16) {
+    throw new MissingError(
+      '三江页表头列数变化：' + r1.length + '/' + r2.length + '（列宽 ' + head.columns + '，期望 9/9/16）',
+    )
+  }
+  const bad = SANJIANG_HEAD_LEAD.findIndex((h, i) => r1[i] !== h)
+  if (bad >= 0) {
+    throw new MissingError('三江页表头第 ' + (bad + 1) + ' 列变化：' + r1[bad] + '（期望 ' + SANJIANG_HEAD_LEAD[bad] + '）')
+  }
+  if (r1[7] !== '收藏' || r1[8] !== '每日收藏增量') throw new MissingError('三江页表头分组变化：' + r1[7] + '/' + r1[8])
+  if (!/^\d{1,2}\.\d{1,2}\s*初始$/.test(r2[0])) throw new MissingError('三江页表头「初始」列变化：' + r2[0])
+  if (r2[1] !== '总增量') throw new MissingError('三江页表头第 9 列变化：' + r2[1] + '（期望 总增量）')
+  const dailyBad = r2.slice(2).findIndex((t) => !/^\d{1,2}[.\-/]\d{1,2}$/.test(t))
+  if (dailyBad >= 0) throw new MissingError('三江页每日增量表头变化：' + r2[2 + dailyBad])
+  return head.columns
+}
+
+
+/**
  * 三江·推荐效果（/bang/1/6/<期首日>）：
  * 数据行恒 16 cell = [0]# [1]分类 [2]书名 [3]作者 [4]等级 [5]首订 [6]日期 [7]初始 [8]总增量 [9..15]第1..7天增量
  * 数值一律取单元格 value 属性（显示值是 8k / +3603 这类缩写）。
@@ -45,14 +149,18 @@ function addDaysStr(s: string, n: number): string {
 export function parseSanjiang(html: string, today: string, periodStart: string): Row[] {
   const rows: Row[] = []
   const tbody = html.slice(html.indexOf('<tbody'))
+  let columns = 0
   for (const tr of tbody.match(/<tr[\s\S]*?<\/tr>/g) || []) {
     const info = tr.match(/<a href="\/info\/(\d+)[^"]*"[^>]*>([^<]+)<\/a>/)
     if (!info) continue
+    // ★ 票 49：有数据行才校验表头（空期不校验 —— 那正是「新一期还没发布」）
+    if (!columns) columns = assertSanjiangHead(html)
     const cells = tr.split('<td').slice(1).map((c) => {
       const vm = c.match(/value="?([^">]*)"?/)
       const body = c.slice(c.indexOf('>') + 1)
       return { v: vm ? vm[1] : null, text: body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() }
     })
+    if (cells.length !== columns) throw new MissingError('三江页数据行列数变化：' + cells.length + '（表头 ' + columns + ' 列）')
     const cnt = (s?: string | null): number | null => {
       const n = num(s)
       return n == null || n <= 0 ? null : n
@@ -102,7 +210,10 @@ function cellsOf(tr: string): { v: string | null; text: string }[] {
 
 const num = (s: string | null | undefined): number | null => {
   if (s == null) return null
-  const n = Number(String(s).trim())
+  const t = String(s).trim()
+  // ★ 票 48 口径同源：空串不是 0（`Number('') === 0` 会把「没给值」写成真实的 0）
+  if (t === '') return null
+  const n = Number(t)
   return Number.isFinite(n) ? n : null
 }
 
@@ -115,10 +226,14 @@ export function parseShouding(html: string): { date: string | null; rows: Row[] 
   // 日期在日期选择器的 value 里（标题不含日期）
   const dm = html.match(/id="datePicker"\s+value='(\d{4}-\d{2}-\d{2})'/) || html.match(/首订（(\d{4}-\d{2}-\d{2})/)
   const rows: Row[] = []
+  let columns = 0
   for (const tr of html.match(/<tr[\s\S]*?<\/tr>/g) || []) {
     const info = tr.match(/<a href="\/info\/(\d+)[^"]*"[^>]*>([^<]+)<\/a>/)
     if (!info) continue
+    // ★ 票 49：有数据行才校验表头（空榜页不校验 —— 「该日期无数据」是正常 200）
+    if (!columns) columns = assertShoudingHead(html)
     const cells = cellsOf(tr)
+    if (cells.length !== columns) throw new MissingError('起点图首订榜数据行列数变化：' + cells.length + '（表头 ' + columns + ' 列）')
     // 计数类：负值 / 0 一律 null（本页实测有负值行；使用反馈过「怎么还有负数」）
     const cnt = (s?: string | null): number | null => {
       const n = num(s)
@@ -141,7 +256,9 @@ export function parseShouding(html: string): { date: string | null; rows: Row[] 
         qidiantuUrl: 'https://www.qidiantu.com/info/' + info[1],
         cat: (tr.match(/\[([^\]]+)\]/) || [])[1] || null,
         collect: cnt(cells[3] && cells[3].v),
-        ratio: num(cells[4] && cells[4].v),
+        // ★ 票 49：收订比走 cnt() 口径 —— 站点在缺数据时给 -1 / 0（真实夹具 27 行里 7 行 -1、9 行 0），
+        //   那是「没算出来」不是「比值是 -1」，一律 null（沿用既有的负数/0 = 计数类缺失口径）
+        ratio: cnt(cells[4] && cells[4].v),
         wordsCnt: num(cells[5] && cells[5].v),
         fans: cnt(cells[6] && cells[6].v),
         // ★ 第 7 格是「等级 作者」（如「Lv.5 骆驼祥爷！」/「白金 轻泉流响」），第 8 格是首 V 时刻
@@ -156,9 +273,12 @@ export function parseShouding(html: string): { date: string | null; rows: Row[] 
 export function makeQidiantuSite(opts: {
   boards?: string[]
   fetchText?: (url: string, ctx: BoardCtx) => Promise<string>
+  /** ★ 票 50：本适配器用的请求闸门（缺省 = 全局限速器；测试替身可用假时钟/假 sleep） */
+  rateGate?: RequestGate
 } = {}): SiteAdapter {
   const boards = opts.boards && opts.boards.length ? opts.boards : ['qidiantu.shouding']
-  const fetchText = opts.fetchText || (async (url: string, c?: BoardCtx) => {
+  // ★ 票 50：默认请求通道过全局限速器（三江「空期回退上一期」的连发也算同一时间线）
+  const fetchText = opts.fetchText || withRateLimit(async (url: string, c?: BoardCtx) => {
     const res = (await boundedFetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'zh-CN,zh;q=0.9' }, signal: c?.signal, timeoutMs: c?.requestTimeoutMs })) as unknown as {
       status: number
       ok: boolean
@@ -167,7 +287,7 @@ export function makeQidiantuSite(opts: {
     if (res.status === 404) throw new MissingError('起点图 404')
     if (!res.ok) throw new MissingError('HTTP ' + res.status)
     return await res.text()
-  })
+  }, () => opts.rateGate || defaultRequestGate())
   return {
     id: 'qidiantu',
     site: '起点图',

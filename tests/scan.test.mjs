@@ -37,7 +37,10 @@ test('数据日期 = 本地自然日（凌晨 01:30 也算当天）', async () =
   const store = new MemoryStore()
   const rec = await runScan({ sites: [okSite('s1', ['b'])], clock: clockAt('2026-10-14T01:30:00+08:00'), store })
   assert.equal(rec.dataDate, '2026-10-14')
-  assert.ok(rec.startedAt.startsWith('2026-10-14T01:30:00'))
+  // ★ 审计-2/42（Q23）：落盘时间戳改绝对时刻（ISO/UTC）⇒ 断言改成「同一瞬间」而非字符串前缀。
+  //   本用例要守的不变式是 **dataDate 仍是本地自然日**（上一行）。
+  assert.equal(Date.parse(rec.startedAt), Date.parse('2026-10-14T01:30:00+08:00'))
+  assert.ok(rec.startedAt.endsWith('Z'), '落盘时间戳用 ISO(UTC) 绝对时刻')
   assert.equal(store.snapshot('b', '2026-10-14').rows.length, 2)
 })
 

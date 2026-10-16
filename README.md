@@ -34,13 +34,17 @@ pwsh -File scripts\install.ps1 -Spec "<刚下载的 tgz 的完整路径>"
 
 macOS / Linux：`bash scripts/install.sh desktop <tgz 路径>`。
 
+> ⚠ **`scripts/` 不在 tgz 里**：包的 `files` 白名单只含运行所需（`lib/`、`cordis.patch.yml`），npm 另外强制带上 `package.json` / `README` / `LICENSE`。所以上面的脚本来自**仓库或 Release 页的源码包**（`Source code (zip)` / `Source code (tar.gz)`），下载后和 tgz 放一起用；不想下源码也行，直接 `dsh plugin --profile desktop add "<tgz 完整路径>"` —— 脚本只是替你补上 `-Profile` 与几行提示。
+
 想自己从源码构建、或了解为什么仓库里不放 `lib/`，见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
 **验证**：重开 DSH 后左侧栏会话列表下方应出现「扫榜」入口；或访问 `http://127.0.0.1:19387/api/rank-scan/health`，返回 `{ok:true,...}` 即通。
 
-**更新**：重跑上面任一条安装命令即可（链接直装会取最新 main）。装了 [dsh-market](https://github.com/dsh-market/dsh-market) 的话，面板「抓什么」页底部有版本区，可就地检查并一键更新（该路径以 npm 上的包为目标）。
+**更新**：重跑上面任一条安装命令即可（链接直装会取最新 main）。装了 [dsh-market](https://github.com/dsh-market/dsh-market) 的话，面板「抓什么」页底部有版本区可就地检查版本 —— 但**本插件未发布到 npm**（占位注册脚本已提供，尚未实际发布），所以那条「一键更新」通道不适用；更新请走 Release 附件或仓库链接。
 
-**卸载**：`pwsh -File scripts\uninstall.ps1`（macOS / Linux：`bash scripts/uninstall.sh`）。卸载会清掉插件、路由残留与 junction，但**保留数据目录** —— 想彻底清理请自行删除它。
+**卸载**：`pwsh -File scripts\uninstall.ps1`（macOS / Linux：`bash scripts/uninstall.sh`）。顺序是：`dsh plugin remove`（**失败即中止**，不会删 junction、不会改任何文件，并打印手动命令）→ 按 `package.json` 的 `name` 删 profile 里的 junction（新旧包名都试）→ 打印数据目录。**数据目录保留**，想彻底清理请自行删除它。
+
+> 卸载脚本**永远不改写** profile 的 `cordis.patch.yml`（理由见下面「DSH 起不来」一节）：它只读一眼、告诉你有没有残留。patch 里可能留着一条宿主写的 `disabled` 记录 —— 留着合法，别手删。
 
 ## 能做什么
 
@@ -55,7 +59,7 @@ macOS / Linux：`bash scripts/install.sh desktop <tgz 路径>`。
 | 落盘纪律 | 按数据日期落快照，原子写、同日覆盖即幂等；精简索引 / 保留清理 / 导出 |
 | 定时扫描 | 按站分时，**默认开启**，安装当天不跑；面板可改时刻与开关，**改动跨重载保留** |
 | 面板记忆 | 浮窗位置与尺寸、收起状态、当前页签、正在看哪天，都在刷新后恢复 |
-| 版本与更新 | 面板显示当前版本；装了 dsh-market 可一键更新，没装则只读（不硬赌能力） |
+| 版本与更新 | 面板显示当前版本；装了 dsh-market 可查新版本，但**本插件未发布到 npm**（占位注册尚未执行），「一键更新」不适用；没装则只读（不硬赌能力） |
 | 防卡死 | 单请求 15s / 单榜 90s / 单站连败 3 次熔断 / 120s 无进展看门狗 / 扫描锁 + 心跳（心跳过期可接管） |
 | 书签 | 面板内收藏作品、备注夹、回收站、导出 |
 
@@ -94,12 +98,13 @@ macOS / Linux：`bash scripts/install.sh desktop <tgz 路径>`。
 | `GET/POST /api/rank-scan/bookmarks` `bookmark` `bookmark/sync` `bookmark/export` `bookmark/trash` | 书签列表 / 单条增删改 / 同步 / 导出 / 回收站 |
 | `GET /api/rank-scan/version` `update-check`，`POST /api/rank-scan/update` `update-restart` | 版本读数与一键更新（只走 dsh-market 公开的更新 API v1；宿主不支持重启时明确拒绝并提示自行重启） |
 
-跨源请求一律 403：`/api/rank-scan/*` 在宿主侧不做鉴权，插件自己加了来源闸。
+来源闸（宿主对 `/api/rank-scan/*` 不做鉴权，插件自己加了一道）：请求带了 `Origin` 或 `Referer`、且其 host 与本次请求的 Host 不同源 ⇒ **403**；`Origin: null`（沙箱 iframe / `file://`）也拒；**两个头都不带 ⇒ 放行**。最后这条是**有意为之**：curl、PowerShell 脚本、你自己机器上的进程本来就能直接操作系统，这道闸门防的是「浏览器里的第三方页面」，不是本地可控进程。
 
 ## 数据与隐私
 
 - **只读**站点公开榜单与书页；**不登录、不抓正文、不推送**任何地方。
 - 采集纪律：限速 **1s/请求**、每榜**每日 1 次**、失败重试 **≤2** 次。
+- 时间口径：落盘时间戳是绝对时刻、面板显示成本地时刻，但**非 +08:00 时区未测**（测试与 CI 只跑 `Asia/Shanghai`）。
 - 数据目录默认 `~/.dsh/data/rank-scan/`（插件配置 `dataDir` 可改）：
 
 ```text
@@ -119,13 +124,40 @@ macOS / Linux：`bash scripts/install.sh desktop <tgz 路径>`。
 
 **左侧栏没有「扫榜」入口**（按顺序看）：
 
-1. DSH 启动日志里搜 `did not activate` 与 `pending (waiting for services`：前者 = 面板 bundle 没加载成功，后者 = 缺 timer / webServer 服务；
-2. 访问 `/api/rank-scan/health`：能返回 JSON ⇒ host 侧活着，问题在面板；连不上 ⇒ 插件没装上；
-3. 重装一次：`pwsh -File scripts\install.ps1 -Spec "<tgz>"`。
+1. **先确认装到了你正在跑的那个 profile**：安装脚本结束时打印「本次装到 profile 「x」」，跟你实际启动的 profile 对不上就会**静默不出现**（不报错）；可核对 `~/.dsh/profiles/<你跑的 profile>/node_modules/dsh-rank-scan` 是否存在；
+2. DSH 启动日志里搜 `did not activate` 与 `pending (waiting for services`：前者 = 面板 bundle 没加载成功，后者 = 缺 timer / webServer 服务；
+3. 访问 `/api/rank-scan/health`：能返回 JSON ⇒ host 侧活着，问题在面板；连不上 ⇒ 插件没装上；
+4. 重装一次：`pwsh -File scripts\install.ps1 -Spec "<tgz>"`（缺省 `-Spec` 走目录直装，要求仓库目录已构建出 `lib/index.js`，否则脚本会直接报错退出）。
 
 **面板点不开 / 点了没反应**：先确认点的是哪颗按钮 —— DSH 的侧栏会把插件入口包进它自己的一行 `<button>`，我们的入口嵌在里面（DOM 里因此有两颗文本相同的 button，外层那颗不是我们的 handler）。
 
 **某个榜显示 `missing` / 一列都是「—」**：先看是不是数据源本身就没有这个字段（例如站点榜单页不给字数与收藏，需要点「补全」进书页取）；本插件对缺失一律显示「—」，不会编造 0。
+
+**DSH 起不来 / 日志提示 patch 解析失败怎么办**（`must be a top-level YAML array of loader entries`、`failed to parse overlay`）：
+
+profile 的 `cordis.patch.yml` 被改坏了（手动编辑、或旧版卸载脚本删条目留下的孤儿行）。**宿主自己修不了** —— 它写 patch 之前先要求「顶层是 YAML 数组」，文件已经不合法时就卡死，别指望在 GUI 里点回去。用救援脚本（只碰这一个文件，先备份）：
+
+```powershell
+pwsh -File scripts\repair-patch.ps1 -DryRun     # 先看判定，不写盘
+pwsh -File scripts\repair-patch.ps1             # 只有不可解析才动手：备份 → 回写成 []（空 overlay）
+pwsh -File scripts\repair-patch.ps1 -Restore    # 想退回：用最近的备份还原
+```
+
+macOS / Linux：`bash scripts/repair-patch.sh desktop -DryRun`。脚本只认 `~/.dsh/profiles/<profile>/cordis.patch.yml` 这一个文件，用 `-Profile <名字>` 换 profile。
+
+那个文件每一行是什么：
+
+```yaml
+- id: dsh-rank-scan          # 一条 loader 条目：顶层数组的一项，「- 」必须从第 1 列开始
+  disabled: true            # 宿主「禁用插件」时写的字段；留着合法，删掉也行
+- insert:                   # 另一种合法形态：把下面的条目插进某个父节点
+    - id: dsh-rank-scan
+      disabled: true
+```
+
+**只有注释 / 空行**，或者出现**不以上述 `- ` 开头、却顶在第 1 列的散行**（例如孤零零一行 `disabled: true`）—— 这两种都会让宿主启动失败；`[]` 是最小合法文件（= 没有 overlay）。修完这样验证：`dsh --profile <profile> --dump-config` 退出码 0，再重开 DSH。
+
+> 为什么卸载脚本不动它？自动改写 YAML 恰恰是把 patch 改坏的主要来源（删一行就留孤儿）。所以卸载脚本只「读 + 打印」，宁可留一条 `disabled` 残留，也不冒把文件改坏的风险 —— 本插件不承诺「patch 零残留」。
 
 **站点改版**：先跑夹具测试（`node tests/qidian-fixture.test.mjs` 等），再看 `tests/fixtures/` 里的响应快照哪里变了。
 

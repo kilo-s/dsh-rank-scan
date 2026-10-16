@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HistoryEntry } from './diff.js'
 import { addDays, parseLocalDate } from './diff.js'
@@ -134,9 +134,9 @@ export function writeSlim(root: string, s: SlimIndex): string {
   const p = join(dir, s.dataDate + '.json')
   const tmp = p + '.tmp'
   writeFileSync(tmp, JSON.stringify(s, null, 2) + '\n', 'utf8')
-  rmSync(p, { force: true })
-  copyFileSync(tmp, p)
-  rmSync(tmp, { force: true })
+  // ★ 审计-2/39：旧实现「先 rm 再 copy」——两步之间进程被杀会**直接丢掉主文件**（面板该栏显示缺数据），
+  //   而同一仓库的 store 与书签都用 renameSync（Windows 上按 REPLACE_EXISTING 覆盖）。这里统一。
+  renameSync(tmp, p)
   return p
 }
 
@@ -191,6 +191,26 @@ export function historyFor(indexes: SlimIndex[], boardId: string, beforeDate: st
 export function previousDataDate(dates: string[], today: string): string | null {
   const before = dates.filter((d) => d < today)
   return before.length ? before[before.length - 1] : null
+}
+
+/**
+ * ★ 审计-2/39：清扫原子写中途留下的 `*.tmp`（旧实现只写不扫，数据目录里永久堆积）。
+ * 只删 `<root>` 下深度受限的 `.tmp` 文件；删不掉不影响启动。
+ */
+export function sweepTmp(root: string, maxDepth = 3): number {
+  let n = 0
+  const walk = (dir: string, depth: number) => {
+    if (depth > maxDepth) return
+    let entries: any[] = []
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walk(p, depth + 1)
+      else if (e.name.endsWith('.tmp')) { try { rmSync(p, { force: true }); n += 1 } catch { /* 忽略 */ } }
+    }
+  }
+  walk(root, 0)
+  return n
 }
 
 export { addDays }

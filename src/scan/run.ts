@@ -65,8 +65,14 @@ export function localDate(d: Date): string {
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
 }
 
+/**
+ * 落盘时间戳 = **绝对时刻**（ISO 8601 UTC）。
+ * ★ 审计-2/42（Q23）：旧实现把本地墙钟拼成硬编码 '+08:00'，非 +08 时区下算出的时刻整体偏移
+ *   (offset−8h)：UTC+12 以上时，崩溃残留锁的心跳会被判成「未来」⇒ 几小时扫不动且不自愈；
+ *   负偏移区则永远判过期、锁形同虚设。数据日期仍走 localDate（不受影响）。
+ */
 function stamp(d: Date): string {
-  return localDate(d) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + '+08:00'
+  return d.toISOString()
 }
 
 /** 唯一的扫描用例（测试 seam）：依赖全部注入 */
@@ -78,6 +84,20 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
   const maxRetryPerBoard = typeof deps.maxRetryPerBoard === 'number' ? deps.maxRetryPerBoard : 2
   const start = deps.clock.now()
   const dataDate = localDate(start)
+
+  // 重试模式：读当天记录 → 只挑非 ok 的榜
+  // ★ 审计-2/35：这段必须放在**拿锁之前**。旧实现先 acquireLock 再在这里提前 return，
+  //   提前返回时锁没释放 ⇒ 之后 120s 内（心跳过期前）所有扫描都被「已有扫描在进行中」挡住，
+  //   用户表现为「点了扫描但数据没动」。
+  let previous: ScanRecord | null = null
+  let selected: Set<string> | null = null
+  if (deps.retryNonOk && deps.store.readScan) {
+    previous = await deps.store.readScan(dataDate)
+    if (previous) selected = new Set(previous.boards.filter((b) => b.status !== 'ok').map((b) => b.boardId))
+    if (previous && selected && selected.size === 0) {
+      return { ...previous, warnings: [...previous.warnings, '没有需要重试的榜（当天全部 ok）'] }
+    }
+  }
 
   // 扫描锁：拿不到就说明已有一轮在跑
   let crashedNote: string | null = null
@@ -92,17 +112,6 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
       throw new Error('已有扫描在进行中（扫描锁未释放）')
     }
     if (got.previous) crashedNote = '检测到上一次扫描残留（心跳过期）⇒ 判为 crashed 并已接管'
-  }
-
-  // 重试模式：读当天记录 → 只挑非 ok 的榜
-  let previous: ScanRecord | null = null
-  let selected: Set<string> | null = null
-  if (deps.retryNonOk && deps.store.readScan) {
-    previous = await deps.store.readScan(dataDate)
-    if (previous) selected = new Set(previous.boards.filter((b) => b.status !== 'ok').map((b) => b.boardId))
-    if (previous && selected && selected.size === 0) {
-      return { ...previous, warnings: [...previous.warnings, '没有需要重试的榜（当天全部 ok）'] }
-    }
   }
 
   const record: ScanRecord = previous
@@ -164,6 +173,11 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
       const now = deps.clock.now()
       if (cancelled() || (await deps.store.getCancelFlag())) {
         if (!abort.signal.aborted) abort.abort()
+        // ★ 审计-2/35：取消被**消费**后立刻复位。原来全仓只有置位、没有复位（唯一写点是 /cancel 路由），
+        //   于是用户点一次「停止本次」之后，此后每一轮扫描（含定时、含重启后）都在第一个榜被判取消，
+        //   只能手删 state/cancel.json。口径：需求确认-扫榜插件-v1:155「再次扫描不受影响」。
+        //   放在「消费点」而不是「扫描开始」：预置位的那一轮仍然要被取消（既有行为不变）。
+        await deps.store.setCancelFlag(false)
         record.outcome = 'cancelled'
         results.set(job.boardId, truncated(job.boardId, 'cancelled'))
         continue
@@ -251,6 +265,8 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
     }
   } finally {
     clearInterval(poller)
+    // ★ 审计-2/35：兜底 —— 取消可能落在最后一个榜之后（或只被 poller 观察到），那时消费点不会执行
+    try { if (await deps.store.getCancelFlag()) await deps.store.setCancelFlag(false) } catch { /* 复位失败不阻塞收尾 */ }
     if (deps.store.releaseLock) await deps.store.releaseLock()
   }
 

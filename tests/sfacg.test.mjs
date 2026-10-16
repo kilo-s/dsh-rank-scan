@@ -52,6 +52,28 @@ test('菠萝包首页（真实夹具）：三个榜都能解析出 10 条', () =
   assert.equal(news[9].extra.words, null, '第 3 名起没有数值 ⇒ null（不补 0）')
 })
 
+// ★ 票 49：夹具原来不含 <i class="num">（被裁剪掉），于是「名次来自页面」这条路径从没被走过 ——
+//   解析出的 1..10 其实全是按位置补号。夹具补回真名次结构（第 3 名起是 <i class="num">03</i>）。
+test('★ 票 49 菠萝包：名次来自页面 i.num（不是按位置补号）；页面不给名次时不静默', async () => {
+  const rows = parseHomeBoard(home, '新书榜', '点击')
+  assert.equal(rows.length, 10)
+  assert.deepEqual(rows.map((r) => r.rank), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+  assert.equal(rows[0].extra.rankFromPage, false, '前两名是图文卡 li.figure，页面确实不给名次（按位置 1、2 是既定口径）')
+  assert.equal(rows[2].extra.rankFromPage, true, '第 3 名起名次来自页面 i.num')
+  // 真名次结构：把「新书榜·点击」第 3 名（783195）的页面名次 03 改成 07 ⇒ 解析出的名次必须是 7
+  // （若仍是 3，说明名次其实是按位置补号的）
+  const mutRe = /<i class="num">\d+<\/i>(\s*<a href="\/Novel\/783195\/")/
+  assert.match(home, mutRe, '夹具必须含真名次结构 <i class="num">（曾被当「不影响输出」裁掉）')
+  const mutated = home.replace(mutRe, '<i class="num">07</i>$1')
+  assert.equal(parseHomeBoard(mutated, '新书榜', '点击')[2].rank, 7, '名次必须来自页面 i.num')
+  // 站点改版把 i.num 撤掉 ⇒ 名次退回按位置补号，必须留 warning（不再静默）
+  const noNum = home.replace(/<i class="num">\s*\d+\s*<\/i>/g, '')
+  const site = makeSfacgSite({ boards: ['sfacg.new.click'], fetchText: async () => noNum })
+  const rec = await runScan({ sites: [site], clock, store: new MemoryStore() })
+  assert.equal(rec.boards[0].status, 'ok')
+  assert.ok(rec.boards[0].warnings.some((w) => w.includes('名次')), '名次不是页面给的 ⇒ 必须 warning：' + JSON.stringify(rec.boards[0].warnings))
+})
+
 test('菠萝包：错误页 ⇒ missing；未知榜 ⇒ missing', async () => {
   const bad = makeSfacgSite({ boards: ['sfacg.new.click'], fetchText: async () => '<html><title>出错了</title><body>很抱歉给您带来不便</body></html>' })
   const store = new MemoryStore()

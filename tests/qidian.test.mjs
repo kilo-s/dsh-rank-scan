@@ -50,11 +50,30 @@ test('适配器端到端（离线）：一榜 20 条 → ok，并落快照', asy
   assert.equal(snap.rows.length, 20)
 })
 
-test('条数异常（非 20）⇒ missing，不产出条目', async () => {
-  const site = makeQidianMobileSite({ boards: ['sign'], categories: ['轻小说'], fetchText: async () => fixture(SAMPLE) })
+// ★ 票 49：条数异常是「可疑」不是「没抓到」—— 原来 != 20 直接判整榜 missing，
+//   站点少一条（局部改版/预览页）就整天没数据；现在按实际条数落盘 + truncated + warning。
+test('★ 票 49 条数异常（19 条）⇒ truncated + warning，仍按实际条数落盘（不整榜 missing）', async () => {
+  const nineteen = fixture(Array.from({ length: 19 }, (_, i) => ['书' + (i + 1), '10.0', 1050000000 + i, '原生幻想', '作者' + (i + 1)]))
+  const site = makeQidianMobileSite({ boards: ['sign'], categories: ['轻小说'], fetchText: async () => nineteen })
   const store = new MemoryStore()
   const rec = await runScan({ sites: [site], clock: clockAt('2026-10-14T05:00:00+08:00'), store })
-  assert.equal(rec.boards[0].status, 'missing')
-  assert.match(rec.boards[0].reason, /条数异常/)
-  assert.equal(store.snapshot(boardId('sign', 12), '2026-10-14'), null)
+  assert.equal(rec.boards[0].status, 'truncated', '条数少一条 ⇒ truncated（不是 missing）')
+  assert.equal(rec.boards[0].rows.length, 19, '按实际条数落盘')
+  assert.ok(rec.boards[0].warnings.some((w) => /条数异常/.test(w) && /19/.test(w)), '要留 warning：' + JSON.stringify(rec.boards[0].warnings))
+  assert.equal(store.snapshot(boardId('sign', 12), '2026-10-14').rows.length, 19)
+})
+
+test('条数异常（3 条）⇒ truncated；records 为 0 条 ⇒ 仍是 missing（真没抓到）', async () => {
+  const site = makeQidianMobileSite({ boards: ['sign'], categories: ['轻小说'], fetchText: async () => fixture(SAMPLE) })
+  const store = new MemoryStore()
+  const rec = await runScan({ sites: [site], clock: clockAt('2026-10-14T05:30:00+08:00'), store })
+  assert.equal(rec.boards[0].status, 'truncated')
+  assert.equal(rec.boards[0].rows.length, 3)
+  assert.ok(rec.boards[0].warnings.some((w) => w.includes('条数异常：3')))
+
+  const empty = makeQidianMobileSite({ boards: ['sign'], categories: ['轻小说'], fetchText: async () => fixture([]) })
+  const store2 = new MemoryStore()
+  const rec2 = await runScan({ sites: [empty], clock: clockAt('2026-10-14T06:00:00+08:00'), store: store2 })
+  assert.equal(rec2.boards[0].status, 'missing', '0 条才是 missing')
+  assert.equal(store2.snapshot(boardId('sign', 12), '2026-10-14'), null)
 })

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { join, dirname } from 'node:path'
 import { parseSanjiang, periodStartOf, makeQidiantuSite, ymd } from '../lib/sites/qidiantu.js'
 import { parseBuy, makeCiweimaoSite, CIWEIMAO_BUY_BOARD, CIWEIMAO_BUY_URL } from '../lib/sites/ciweimao.js'
+import { MissingError } from '../lib/scan/types.js'
 import { runScan } from '../lib/scan/run.js'
 import { MemoryStore } from '../lib/scan/store.js'
 
@@ -120,9 +121,10 @@ test('刺猬猫首订(约)：当期为空 ⇒ 回退上一期（最多 2 期）'
 })
 test('★ 起点图首订：历史日期要请求 /shouding/<日期>（回归：曾读从未设置的 ctx.dateOf ⇒ 永远抓当日）', async () => {
   const seen = []
-  const oneRow = '<table><tbody><tr>' +
+  // 表头 9 列 + 数据行 9 格（票 49 起解析前校验表头/列数，夹具必须真）
+  const oneRow = '<table><thead><tr><th>#</th><th>[分类]书名</th><th>首订</th><th>收藏</th><th>收订比</th><th>字数</th><th>粉丝</th><th>作者</th><th>首V时刻</th></tr></thead><tbody><tr>' +
     '<td>1</td><td><a href="/info/1050725440">甲书</a></td>' +
-    '<td value="1">1</td><td value="2">2</td><td value="3">3</td><td value="4">4</td><td value="5">5</td>' +
+    '<td value="1">1</td><td value="2">2</td><td value="3">3</td><td value="4">4</td><td value="5">5</td><td value="Lv.4">Lv.4</td><td value="08:00">08:00</td>' +
     '</tr></tbody></table>'
   const site = makeQidiantuSite({
     boards: ['qidiantu.shouding'],
@@ -153,5 +155,59 @@ test('★ 日期必须补零（回归：/shouding/2026-10-1 只返回 26 字节�
   // 单数字月/日必须补零，否则站点给 26 字节空页
   assert.equal(seen[0], 'https://www.qidiantu.com/shouding/2026-10-01', '日期路径必须补零，不能是 2026-10-1')
   assert.ok(!/\/shouding\/\d{4}-\d-\d$/.test(seen[0]), '不能出现未补零的日期路径')
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ 票 49：三江表头校验（16 列位置索引，插一列就会整列静默读错）
+// ─────────────────────────────────────────────────────────────────────────────
+test('★ 票 49 三江：表头列数/文本不符 ⇒ MissingError；数据行列数不符 ⇒ MissingError', async () => {
+  const good = fx('qidiantu-sanjiang.html')
+  assert.ok(parseSanjiang(good, '2026-10-14', '2026-10-11').length >= 10, '真实夹具先能解析')
+  assert.throws(() => parseSanjiang(good.replace(/>等级</, '>品级<'), '2026-10-14', '2026-10-11'), MissingError, '表头改名 ⇒ 文本不符')
+  assert.throws(() => parseSanjiang(good.replace(/>收藏</, '>追读<'), '2026-10-14', '2026-10-11'), MissingError, '分组表头改名 ⇒ 列错位')
+  assert.throws(() => parseSanjiang(good.replace('10.13</th>', '10.13</th><th>插队</th>'), '2026-10-14', '2026-10-11'), MissingError, '插一列 ⇒ 列数不符')
+  assert.throws(() => parseSanjiang(good.replace(/<thead>[\s\S]*?<\/thead>/, ''), '2026-10-14', '2026-10-11'), MissingError, '表头整个没了 ⇒ 不能瞎读位置')
+  const at = good.indexOf('<tbody>')
+  const plus = good.slice(0, at) + good.slice(at).replace('<tr>', '<tr><td value="1">x</td>')
+  assert.throws(() => parseSanjiang(plus, '2026-10-14', '2026-10-11'), MissingError, '数据行 17 格 ≠ 表头 16 列')
+  // 端到端：结构变了 ⇒ 该榜 missing（不落快照）
+  const site = makeQidiantuSite({ boards: ['qidiantu.sanjiang'], fetchText: async () => good.replace(/>首订</, '>首定<') })
+  const store = new MemoryStore()
+  const rec = await runScan({ sites: [site], clock, store })
+  assert.equal(rec.boards[0].status, 'missing')
+  assert.equal(store.snapshot('qidiantu.sanjiang', '2026-10-14'), null)
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ 票 48：刺猬猫「首订(约)」—— 缺失一律 null + book_id 缺失的行跳过
+// ─────────────────────────────────────────────────────────────────────────────
+test('★ 票 48 刺猬猫首订(约)：① 省略 ② 空串 ③ 占位串 ⇒ null；④ book_id 改名 ⇒ 跳过（不再 key="undefined"）', async () => {
+  const one = (x) => parseBuy({ code: 0, data: { issue: 477, list: [x] } })[0]
+  const base = { book_id: 1, book_name: 'X', author: 'A' }
+  assert.equal(one({ ...base, buy_num: '100+' }).value, 100, '真值照旧（去 + 号）')
+  assert.equal(one({ ...base }).value, null, '① buy_num 省略 ⇒ null')
+  assert.equal(one({ ...base, buy_num: null }).value, null, '① 显式 null ⇒ null（Number(null)===0 陷阱）')
+  assert.equal(one({ ...base, buy_num: '' }).value, null, '② 空串 ⇒ null（回归：不能落成 0）')
+  assert.equal(one({ ...base, buy_num: '暂无' }).value, null, '③ 占位串 ⇒ null（清洗后是空串）')
+  assert.equal(one({ ...base, buy_num: '--' }).value, null, '③ 占位串 ⇒ null')
+  const renamed = parseBuy({ code: 0, data: { issue: 477, list: [{ BookId: 7, book_name: 'X', author: 'A', buy_num: '5+' }] } })
+  assert.deepEqual(renamed, [], '④ book_id 改名 ⇒ 跳过该行（不能 key="undefined" / /book/undefined）')
+  const mixed = parseBuy({ code: 0, data: { issue: 477, list: [{ ...base, buy_num: '5+' }, { BookId: 9, book_name: 'Y', author: 'B', buy_num: '6+' }] } })
+  assert.equal(mixed.length, 1, '混一行坏的 ⇒ 只跳坏行')
+  assert.deepEqual(mixed.map((r) => r.rank), [1], '跳过坏行后名次仍连续')
+  // 端到端：整页改名 ⇒ 整榜 missing（不能落 url=/book/undefined 的快照）
+  const site = makeCiweimaoSite({
+    boards: [CIWEIMAO_BUY_BOARD],
+    fetchText: async () => JSON.stringify({ code: 0, data: { issue: 477, list: [{ BookId: 9, book_name: 'Y', author: 'B', buy_num: '6+' }] } }),
+  })
+  const store = new MemoryStore()
+  const rec = await runScan({ sites: [site], clock, store })
+  assert.equal(rec.boards[0].status, 'missing')
+  assert.equal(store.snapshot(CIWEIMAO_BUY_BOARD, '2026-10-14'), null)
+  // 真夹具不受影响
+  const rows = parseBuy(JSON.parse(fx('ciweimao-buy.json')))
+  assert.ok(rows.length >= 10)
+  assert.equal(typeof rows[0].value, 'number')
+  assert.match(rows[0].url, /^https:\/\/www\.ciweimao\.com\/book\/\d+$/)
 })
 

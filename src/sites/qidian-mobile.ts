@@ -1,5 +1,6 @@
-import { MissingError, type BoardCtx, type BoardResult, type Row, type SiteAdapter } from '../scan/types.js'
+import { MissingError, type BoardCtx, type BoardResult, type BoardStatus, type Row, type SiteAdapter } from '../scan/types.js'
 import { boundedFetch } from '../scan/bounded-fetch.js'
+import { defaultRequestGate, withRateLimit, type RequestGate } from '../scan/rate-limit.js'
 
 /**
  * 起点榜适配器（移动端，免 cookie）。
@@ -66,14 +67,20 @@ export function makeQidianMobileSite(opts: {
   boardIds?: string[]
   categories?: string[]
   fetchText?: (url: string, ctx: BoardCtx) => Promise<string>
-  /** 请求最小间隔（默认 1000ms = 采集纪律） */
+  /**
+   * enrich 的**额外**本地间隔（默认 0）。采集纪律的「1s/请求」已由**全局限速器**保证（票 50），
+   * 这里留一个额外间隔的口子（需要更慢时再调），不再是唯一的限速手段。
+   */
   rateMinMs?: number
+  /** ★ 票 50：本适配器用的请求闸门（缺省 = 全局限速器；测试替身可用假时钟/假 sleep） */
+  rateGate?: RequestGate
   /** 单条失败重试次数（默认 2） */
   maxRetry?: number
 } = {}): SiteAdapter {
   const slugs = opts.boards || ['sign']
   const cats = opts.categories || ['轻小说']
-  const fetchText = opts.fetchText || (async (url: string, c?: BoardCtx) => {
+  // ★ 票 50：默认请求通道过全局限速器（榜单页/书页补全/单本取统计共用同一个闸门）
+  const fetchText = opts.fetchText || withRateLimit(async (url: string, c?: BoardCtx) => {
     const res = (await boundedFetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'zh-CN,zh;q=0.9' }, signal: c?.signal, timeoutMs: c?.requestTimeoutMs })) as unknown as {
       status: number
       ok: boolean
@@ -82,8 +89,8 @@ export function makeQidianMobileSite(opts: {
     if (res.status === 202) throw new MissingError('起点反爬挑战（202）')
     if (!res.ok) throw new MissingError('HTTP ' + res.status)
     return await res.text()
-  })
-  const rateMinMs = typeof opts.rateMinMs === 'number' ? opts.rateMinMs : 1000
+  }, () => opts.rateGate || defaultRequestGate())
+  const rateMinMs = typeof opts.rateMinMs === 'number' ? opts.rateMinMs : 0
   const maxRetry = typeof opts.maxRetry === 'number' ? opts.maxRetry : 2
   const boards: string[] = opts.boardIds && opts.boardIds.length ? opts.boardIds.slice() : []
   if (!boards.length) {
@@ -102,10 +109,20 @@ export function makeQidianMobileSite(opts: {
       const t0 = Date.now()
       const html = await fetchText(url, ctx)
       const parsed = parseRankPage(html)
+      /**
+       * ★ 票 49：条数异常是「可疑」不是「没抓到」。
+       *   旧实现 `!= 20` 直接抛 MissingError ⇒ 站点少一条（局部改版、分页预览）就把整榜判成 missing、
+       *   当天这个榜彻底没数据。现在按实际条数落盘 + 标 truncated + 记 warning（面板一眼看出少了几条）；
+       *   只有 **0 条** 才是真的没抓到（missing）。
+       */
+      const warnings: string[] = []
+      let status: BoardStatus = 'ok'
       if (parsed.rows.length !== BOARD_PAGE_ROWS) {
-        throw new MissingError('条数异常：' + parsed.rows.length + '（期望 ' + BOARD_PAGE_ROWS + '）')
+        if (!parsed.rows.length) throw new MissingError('榜单为空（records 0 条）')
+        status = 'truncated'
+        warnings.push('条数异常：' + parsed.rows.length + '（期望 ' + BOARD_PAGE_ROWS + '）—— 站点改版/分页预览，已按实际条数落盘')
       }
-      return { boardId: id, status: 'ok', rows: parsed.rows, requests: 1, durationMs: Date.now() - t0, warnings: [] }
+      return { boardId: id, status, rows: parsed.rows, requests: 1, durationMs: Date.now() - t0, warnings }
     },
     async enrich(_boardId: string, rows: Row[], ctx: BoardCtx): Promise<{ rows: Row[]; requests: number }> {
       let requests = 0

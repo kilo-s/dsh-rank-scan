@@ -9,6 +9,8 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
     const API = '/api/rank-scan'
+    /** ★ 入口 id 与 main 面板 key 必须**一致**：宿主 PanelRow 点击时直接 layout.selectPanel(入口 id) */
+    const PANEL_ID = 'rank-scan-panel'
     const jget = (p) => fetch(API + p, { headers: { Accept: 'application/json' } }).then((r) => r.json())
     // ⚠️ 之前这里**丢掉了 body**（调用方写的 {captures:…} 全被忽略）⇒ 面板里所有「保存」实际都没带参数：
     //    抓取集保存不动、每榜深度存不进去。现在统一带 JSON body。
@@ -41,11 +43,22 @@ const sel = (function () {
 const SHARED = (window.__rankScanShared = window.__rankScanShared || {})
 const LS_OPEN = 'rank-scan-panel:open:v1'
     const LS_AUTOOPENED = 'rank-scan-panel:autoopened:v1'
-    /** 首次装载 ⇒ true（并立刻打标记）；之后一律读用户上次的开/关状态 */
-    const loadPanelOpen = function () {
+    /** 用户上次的开/关（纯读，无副作用） */
+    const readPanelOpen = function () {
+      try { return localStorage.getItem(LS_OPEN) === '1' } catch (e) { return false }
+    }
+    /**
+     * ★ 2026-10-16 审计：首次安装「自动弹一次」的标记**必须在这一刻**才落。
+     *   旧写法在模块求值期就 setItem(LS_AUTOOPENED,'1')，而那时 apply 还没跑、槽位可能根本不在
+     *   ⇒ 插件没激活也把标记烧掉了，之后永远不再自动弹（现场症状：「标记落了但从不弹」）。
+     *   现在由 apply() 在真的打开浮窗时调用一次；返回 true 表示本次是首次装载。
+     */
+    const claimAutoOpen = function () {
       try {
-        if (!localStorage.getItem(LS_AUTOOPENED)) { localStorage.setItem(LS_AUTOOPENED, '1'); return true }
-        return localStorage.getItem(LS_OPEN) === '1'
+        if (localStorage.getItem(LS_AUTOOPENED)) return false
+        localStorage.setItem(LS_AUTOOPENED, '1')
+        localStorage.setItem(LS_OPEN, '1')
+        return true
       } catch (e) { return false }
     }
     const C = {
@@ -98,17 +111,55 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const p = (x) => String(x).padStart(2, '0')
       return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
     }
+    /**
+     * ★ 2026-10-16 审计-2（Q23 跨时区）：宿主落盘的时间戳一律是**绝对时刻**
+     *   （`new Date().toISOString()`，UTC）。面板必须按**本地时刻**渲染 ——
+     *   旧写法是把 ISO 串里第 12–16 个字符（UTC 的 HH:MM）切出来当本地时刻，东八区用户看到的早 8 小时。
+     */
+    const asDate = (v) => (v instanceof Date ? v : new Date(v === null || v === undefined || v === '' ? NaN : v))
+    const pad2 = (x) => String(x).padStart(2, '0')
+    /** 本地 HH:MM（不可解析 ⇒ 空串，调用方自行兜底） */
+    const fmtLocalHM = function (v) {
+      const d = asDate(v)
+      if (isNaN(d.getTime())) return ''
+      return pad2(d.getHours()) + ':' + pad2(d.getMinutes())
+    }
+    /** 本地 MM-DD HH:MM */
+    const fmtLocalStamp = function (v) {
+      const d = asDate(v)
+      if (isNaN(d.getTime())) return ''
+      return pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + fmtLocalHM(d)
+    }
     function tone(status) { return status === 'ok' ? 'ok' : status === 'stale' ? 'warn' : 'bad' }
+
+    /**
+     * ★ 2026-10-16 审计：位置/尺寸是**上一次会话**写进 localStorage 的。换了更小的分辨率、
+     *   浏览器缩放变了、或者手改成了垃圾值，读回来就可能把浮窗放到屏幕外（甚至算出 NaN 宽高）。
+     *   所以读回后、写回前都夹取一次，渲染用的 rect 保证合法。
+     */
+    const clampRect = function (raw) {
+      const vw = Math.max(320, Number(window.innerWidth) || 1200)
+      const vh = Math.max(240, Number(window.innerHeight) || 800)
+      const num = (v, fb) => (Number.isFinite(Number(v)) ? Number(v) : fb)
+      const r = raw && typeof raw === 'object' ? raw : {}
+      const w = Math.min(Math.max(420, num(r.w, 660)), Math.max(420, vw - 16))
+      const h = Math.min(Math.max(240, num(r.h, 480)), Math.max(240, vh - 16))
+      const x = Math.min(Math.max(0, num(r.x, Math.max(8, vw - 700))), Math.max(0, vw - 80))
+      const y = Math.min(Math.max(0, num(r.y, 64)), Math.max(0, vh - 48))
+      return { x: x, y: y, w: w, h: h }
+    }
 
     function useRect() {
       const st = React.useState(() => {
-        try { const raw = localStorage.getItem(LS_POS); if (raw) return JSON.parse(raw) } catch (e) {}
-        return null
+        let raw = null
+        try { const s = localStorage.getItem(LS_POS); if (s) raw = JSON.parse(s) } catch (e) { raw = null }
+        return clampRect(raw)
       })
-      const rect = st[0] || { x: Math.max(8, (window.innerWidth || 1200) - 700), y: 64, w: 660, h: Math.min(760, (window.innerHeight || 800) - 120) }
+      const rect = clampRect(st[0])
       const setRect = (next) => {
-        st[1](next)
-        try { localStorage.setItem(LS_POS, JSON.stringify(next)) } catch (e) {}
+        const safe = clampRect(next)
+        st[1](safe)
+        try { localStorage.setItem(LS_POS, JSON.stringify(safe)) } catch (e) {}
       }
       return [rect, setRect]
     }
@@ -286,19 +337,45 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       }, busy ? '…' : on ? '★' : '☆')
     }
 
+    /**
+     * ★ 2026-10-16 审计：拖动/缩放的 mousemove·mouseup 挂在 window 上，必须在**三处**都摘干净 ——
+     *   ① 正常 mouseup；② 指针移出窗口后松开（只认 mouseup 会永久残留一个 mousemove）；
+     *   ③ 组件卸载（收起浮窗 / 热重载）。
+     *   旧写法只处理 ①：②③ 之后每次鼠标移动都还在改一个已经卸载的浮窗的 rect。
+     */
+    function useWindowDrag() {
+      const active = React.useRef(null)
+      const stop = React.useCallback(function () {
+        const a = active.current
+        if (!a) return
+        active.current = null
+        window.removeEventListener('mousemove', a.move)
+        window.removeEventListener('mouseup', a.stop)
+        window.removeEventListener('blur', a.stop)
+      }, [])
+      React.useEffect(function () { return function () { stop() } }, [stop])
+      return React.useCallback(function (move) {
+        stop()
+        const a = { move: move, stop: null }
+        a.stop = function () { stop() }
+        active.current = a
+        window.addEventListener('mousemove', a.move)
+        window.addEventListener('mouseup', a.stop)
+        window.addEventListener('blur', a.stop)
+      }, [stop])
+    }
+
     function DragBar(props) {
+      const beginDrag = useWindowDrag()
       const start = (e) => {
         if (e.button !== undefined && e.button !== 0) return
         if (e.target && e.target.closest && e.target.closest('button')) return
         const r0 = props.rect
         const sx = e.clientX
         const sy = e.clientY
-        const move = (ev) => {
+        beginDrag((ev) => {
           props.setRect({ ...r0, x: Math.max(0, r0.x + (ev.clientX - sx)), y: Math.max(0, r0.y + (ev.clientY - sy)) })
-        }
-        const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
-        window.addEventListener('mousemove', move)
-        window.addEventListener('mouseup', up)
+        })
         e.preventDefault()
       }
       return h('div', { style: C.titlebar, onMouseDown: start },
@@ -308,14 +385,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
     }
 
     function ResizeHandle(props) {
+      const beginDrag = useWindowDrag()
       const start = (e) => {
         const r0 = props.rect
         const sx = e.clientX
         const sy = e.clientY
-        const move = (ev) => props.setRect({ ...r0, w: Math.max(420, r0.w + (ev.clientX - sx)), h: Math.max(240, r0.h + (ev.clientY - sy)) })
-        const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
-        window.addEventListener('mousemove', move)
-        window.addEventListener('mouseup', up)
+        beginDrag((ev) => props.setRect({ ...r0, w: Math.max(420, r0.w + (ev.clientX - sx)), h: Math.max(240, r0.h + (ev.clientY - sy)) }))
         e.preventDefault()
       }
       return h('div', { style: C.handle, onMouseDown: start, title: '拖动调整大小' })
@@ -462,7 +537,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               return h('tr', { key: b.boardId },
                 h('td', { style: { ...C.td, paddingLeft: '16px' } }, (b.status === 'ok' ? '' : '⚠ ') + b.name + (b.displayed ? '' : ' · 未显示')),
                 h('td', { style: C.td }, noBase ? '—' : '涨 ' + dash(b.up) + ' / 新 ' + dash(b.newCount) + ' / 退 ' + dash(b.out)),
-                h('td', { style: C.td }, b.lastCapture ? String(b.lastCapture).slice(11, 16) : '—'),
+                h('td', { style: C.td }, (b.lastCapture ? fmtLocalHM(b.lastCapture) : '') || '—'),
                 h('td', { style: C.td }, dash(b.note)))
             })
             return [head].concat(rows)
@@ -535,7 +610,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       React.useEffect(function () {
         let alive = true
         let id = null
-        const every = function (ms) { if (id) clearInterval(id); id = setInterval(tick, ms) }
+        // ★ 2026-10-16 审计：卸载后不许再排下一轮。旧写法在 catch 分支里无条件 every(180000)，
+        //   组件已经卸载、cleanup 也跑过了，它又挂上一个新 interval 永久残留（每 3 分钟打一次接口）。
+        const every = function (ms) { if (!alive) return; if (id) clearInterval(id); id = setInterval(tick, ms) }
         const tick = function () {
           jget('/timer-plan').then(function (r) {
             if (!alive) return
@@ -613,7 +690,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               const slr = (tLast && tLast.siteLastRun) || {}
               const scan = pl.siteLastScan || (tLast && tLast.siteLastScan) || {}
               const hit = scan[key] || null
-              const hhmmss = hit && hit.at ? String(hit.at).slice(11, 16) : ''
+              const hhmmss = hit && hit.at ? fmtLocalHM(hit.at) : ''
               const doneTag = hit
                 ? '今天已抓（' + (hit.by === 'timer' ? '定时' : hit.by === 'manual' ? '手动' : hit.by || '扫描') + (hhmmss ? ' ' + hhmmss : '') + '）'
                 : slr[key] === today ? '今天已跑（定时）' : '今天已抓'
@@ -657,7 +734,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               ? h('div', { style: { ...C.muted, marginTop: '2px' } }, '★ 今天刚安装：新装默认开着定时，但**安装当天不自动跑**，明天起按上面的时刻执行。')
               : null),
           h('div', { style: C.muted },
-            (tLast && tLast.lastRun ? '上次定时扫描：' + tLast.lastRun + '（' + (tLast.lastState || '?') + '）' + (tLast.lastRunAt ? ' @' + tLast.lastRunAt : '') : '本地还没跑过定时扫描') +
+            (tLast && tLast.lastRun ? '上次定时扫描：' + tLast.lastRun + '（' + (tLast.lastState || '?') + '）' + (tLast.lastRunAt ? ' @' + fmtLocalStamp(tLast.lastRunAt) : '') : '本地还没跑过定时扫描') +
             '　·　定时器' + ((tLast && !tLast.enabled)
               ? '未接线（定时开关关着）'
               : (tLast && tLast.wired) ? '已接线' : '未接线（宿主 timer 服务不可用）') +
@@ -671,7 +748,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('span', { style: C.muted }, '起点任何榜单页都没有收藏，只能逐本进作品页（约 103 KB/本）。开启后靠书页缓存跳过重复的书，只有新入榜/缓存过期的才真打请求。')),
           h('div', { style: C.muted },
             '缓存：' + (qdCache && qdCache.cache ? qdCache.cache.books : 0) + ' 本' +
-            (qdCache && qdCache.cache && qdCache.cache.newest ? '（最近 ' + qdCache.cache.newest.slice(0, 16).replace('T', ' ') + '）' : '') +
+            (qdCache && qdCache.cache && qdCache.cache.newest ? '（最近 ' + (fmtLocalStamp(qdCache.cache.newest) || qdCache.cache.newest.slice(0, 16)) + '）' : '') +
             '　·　有效期 ' + ((qdCache && qdCache.ttlDays) || 7) + ' 天'),
           h('div', { style: C.row },
             h('button', {
@@ -722,16 +799,23 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const [chk, setChk] = React.useState(null)
       const [busy, setBusy] = React.useState('')
       const [note, setNote] = React.useState('')
+      /**
+       * ★ 2026-10-16 审计：一键更新的轮询链最多 30 次 × 2s（§runUpdate 的 poll）。
+       *   旧写法没有任何取消令牌 ⇒ 组件卸载（收起浮窗/切页签/热重载）后旧链还在 setTimeout 里
+       *   继续打 /update-check 并 setState。用 ref 当令牌，cleanup 时置 false。
+       */
+      const aliveRef = React.useRef(true)
       function refresh(opId) {
         return jget('/update-check' + (opId ? '?operationId=' + encodeURIComponent(opId) : ''))
-          .then(function (j) { setChk(j); return j })
-          .catch(function (e) { setNote('检查更新失败：' + String(e).slice(0, 80)); return null })
+          .then(function (j) { if (aliveRef.current) setChk(j); return j })
+          .catch(function (e) { if (aliveRef.current) setNote('检查更新失败：' + String(e).slice(0, 80)); return null })
       }
       React.useEffect(function () {
+        aliveRef.current = true
         let alive = true
         jget('/version').then(function (j) { if (alive) setInfo(j) }).catch(function () { if (alive) setInfo({ version: null }) })
         refresh()
-        return function () { alive = false }
+        return function () { alive = false; aliveRef.current = false }
       }, [])
       function runUpdate() {
         setBusy('update'); setNote('已请求更新…')
@@ -740,10 +824,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           if (!id) { setNote((r && r.error) || '更新提供方没有返回 operationId'); return refresh() }
           let n = 0
           function poll() {
+            if (!aliveRef.current) return null
             n += 1
             return refresh(id).then(function (j) {
+              if (!aliveRef.current) return j
               const st = j && j.state
-              if (n < 30 && (st === 'busy' || st === 'update-available')) return new Promise(function (res) { setTimeout(res, 2000) }).then(poll)
+              if (n < 30 && (st === 'busy' || st === 'update-available')) {
+                return new Promise(function (res) { setTimeout(res, 2000) }).then(function () { return aliveRef.current ? poll() : j })
+              }
               if (st === 'failed') setNote('更新未成功：' + ((j && j.reason) || '未知原因'))
               else if (j && j.action === 'refresh') setNote('更新完成，刷新页面即可生效')
               else if (j && j.action === 'restart') setNote('更新完成，按提示重启 DSH 生效')
@@ -753,8 +841,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             })
           }
           return poll()
-        }).catch(function (e) { setNote('更新请求失败：' + String(e).slice(0, 80)) })
-          .then(function () { setBusy('') })
+        }).catch(function (e) { if (aliveRef.current) setNote('更新请求失败：' + String(e).slice(0, 80)) })
+          .then(function () { if (aliveRef.current) setBusy('') })
       }
       const st = chk ? chk.state : null
       const src = chk && chk.latestSource ? '（来源 ' + chk.latestSource + '）' : ''
@@ -763,7 +851,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         : st === 'update-available' ? '当前 ' + chk.current + ' → 可更新到 ' + (chk.latest || '?') + src
         : st === 'failed' ? '更新失败：' + (chk.reason || '未知原因')
         : st === 'latest' ? '当前 ' + chk.current + '，已是最新' + src
-        : '当前 ' + chk.current + '（' + (chk.reason || '更新检查不可用') + '）' + (chk.latest ? '；registry 最新 ' + chk.latest : '')
+        // ★ Q26（ticket 44）：dsh-rank-scan 尚未发布到 npm（registry 404）⇒「一键更新」这条路
+        //   本来就不存在；如实告诉用户去哪儿更新，不要显示一句含混的「更新检查不可用」。
+        : (chk.latestSource == null && !chk.latest)
+          ? '当前 ' + chk.current + '：未发布到 npm，请用 Release 附件或仓库链接更新'
+          : '当前 ' + chk.current + '（' + (chk.reason || '更新检查不可用') + '）' + (chk.latest ? '；registry 最新 ' + chk.latest : '')
       const canClick = !!(chk && (chk.canUpdateInPlace || chk.action === 'refresh' || chk.action === 'restart'))
       return h('div', { style: { margin: '8px 0', padding: '7px 9px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '8px', background: 'rgba(128,128,128,.05)' } },
         h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '版本'),
@@ -1291,7 +1383,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
      *   放模块级 + window 锚 ⇒ 无论几个实例都共用一份。
      */
     const panelOpen = SHARED.panelOpen || (SHARED.panelOpen = {
-      value: loadPanelOpen(),
+      value: readPanelOpen(),
       subs: new Set(),
       set: function (v) {
         this.value = v
@@ -1309,35 +1401,28 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       },
     })
 
-    /** 左栏入口（sidebar.panellist 末尾 = 会话列表下面）：点一下开关面板，带当前榜数 */
-    function SidebarEntry() {
-      const [open, setOpen] = panelOpen.use()
-      const [n, setN] = React.useState(null)
-      React.useEffect(function () {
-        // 显示**抓取集数量**（与「抓什么」勾选一致）；外面显示的榜数不再跟「今天扫描成功几个」混用
-        const load = function () { jget('/catalog').then(function (c) { setN((c.captures || []).length) }).catch(function () {}) }
-        load()
-        // ★ 2026-10-16（票 27）：页面隐藏时不再轮询，回到前台补一次
-        const tick = function () { if (document.visibilityState === 'hidden') return; load() }
-        const t = setInterval(tick, 60000)
-        const onVis = function () { if (document.visibilityState === 'visible') load() }
-        document.addEventListener('visibilitychange', onVis)
-        const onSaved = function () { load() }
-        window.addEventListener('rank-scan:saved', onSaved)
-        return function () {
-          clearInterval(t)
-          document.removeEventListener('visibilitychange', onVis)
-          window.removeEventListener('rank-scan:saved', onSaved)
-        }
-      }, [])
-      // 左栏可能被收成窄条（图标栏）⇒ 入口必须窄、可截断，别把侧栏撑破
-      return h('div', { style: { padding: '4px 6px', width: '100%', boxSizing: 'border-box', overflow: 'hidden' } },
-        h('button', {
-          style: { ...C.btn, width: '100%', boxSizing: 'border-box', textAlign: 'left', display: 'block', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', padding: '4px 6px' },
-          // 幂等打开（不是 toggle）：万一入口被注册了两份，toggle 会一个开一个关互相打架
-          onClick: function () { setOpen(true) },
-          title: (open ? '收起扫榜面板' : '展开扫榜面板') + (n == null ? '' : '（今天 ' + n + ' 个榜有数据）'),
-        }, open ? '扫榜 ▾' : '扫榜 ▸' + (n == null ? '' : ' ' + n + '榜')))
+    /**
+     * 左栏入口 occupant（sidebar.panellist 槽）。
+     * ★ 宿主契约（@deepseek-ai/dsh-client-ui-sidebar 的 PanelRow）：
+     *     <button aria-label={label} onClick={selectPanel(id)}>{ renderSlot('sidebar.panellist', { size, active }, { only: id }) }</button>
+     *   所以 occupant 必须是**只吃 size 的纯图标**：
+     *     · 自己再渲染 <button> = 按钮套按钮，内层点击还会冒泡再触发一次 selectPanel；
+     *     · 把整块 UI（页签/说明/计数）塞进图标位会把侧栏撑破；
+     *     · 无障碍名由注册项的 label 提供（宿主做 aria-label + tooltip），不是内部 id。
+     *   开关浮窗的入口在下方的「薄 main 面板」里（Q29）。
+     */
+    function SidebarEntryIcon(props) {
+      const size = Number(props && props.size) || 16
+      const active = !!(props && props.active)
+      return h('svg', {
+        width: size, height: size, viewBox: '0 0 16 16', fill: 'none',
+        stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round',
+        style: { display: 'block', opacity: active ? 1 : 0.78 },
+        'aria-hidden': 'true', focusable: 'false',
+      },
+        // 三条由长到短的横杠 + 一个对勾：一眼认出是「榜单」，不是别的面板
+        h('path', { d: 'M2 3.5h12M2 8h9M2 12.5h6' }),
+        h('path', { d: 'M12.2 9.4l1.6 1.6 2-2.6' }))
     }
 
     function Panel(props) {
@@ -1431,22 +1516,18 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         hasTabs: !!(ctx && ctx.sidebarRightTabs && typeof ctx.sidebarRightTabs.register === 'function'),
       }
     }
-    try {
-      window.__rankScanLinkDiag = diagLink(ctx)
-      const winEl = document.createElement('div')
-      winEl.className = 'rank-scan-bundle-marker'
-      winEl.style.display = 'none'
-      winEl.textContent = JSON.stringify({
-        diag: window.__rankScanLinkDiag,
-        ctxKeys: ctx && Object.keys(ctx).slice(0, 25),
-        hasSidebarRight: !!(ctx && ctx.sidebarRight),
-        hasInject: !!(ctx && typeof ctx.inject === 'function'),
-      })
-      ;(document.body || document.documentElement).appendChild(winEl)
-    } catch (e) {}
+    /**
+     * ★ 2026-10-16 审计（加载期死码）：这里原来在**模块求值期**跑 diagLink(ctx) 并往 DOM 里塞一个
+     *   自检标记节点，而 `ctx` 只作为 apply(ctx) 的形参存在 ⇒ 每次加载都抛 ReferenceError，
+     *   又被紧跟的空 catch 吞掉：标记永远不出现（自检形同虚设），还在加载路径上白留一个 try/catch，
+     *   并把「模块求值期碰了宿主作用域」这类缺陷藏起来。要查侧栏浏览器可见性，看 apply 里捕获的
+     *   sidebarSvc / window.__rankScanLinkSvc 即可（diagLink 保留，供 apply 内按需调用）。
+     */
 
     const inject = ['slots']
     function apply(ctx) {
+      // ★ 首次安装自动弹一次：认领点从「模块求值期」移到这里（apply 真的跑到了才算数）
+      if (claimAutoOpen()) panelOpen.set(true)
       // 可选依赖晚绑定：侧栏浏览器服务可用后捕获（不在 inject 列表里，避免服务缺失时整个面板挂不上）
       if (typeof ctx.inject === 'function') {
         try {
@@ -1456,29 +1537,41 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           })
         } catch (e) {}
       }
+      // 自检：此刻 ctx 是真的，记下侧栏浏览器服务可见性（排查「打开作品页退化到新标签」用）
+      try { window.__rankScanLinkDiag = diagLink(ctx) } catch (e) {}
       ctx.slots.inject('shell.overlay', function () {
-        return ctx.slots.register({ name: 'shell.overlay', id: 'rank-scan-panel', order: 900 }, function RankScanPanel() { return h(Panel, { openLink: function (u) { openLink(ctx, u) } }) })
+        return ctx.slots.register({ name: 'shell.overlay', id: PANEL_ID, order: 900 }, function RankScanPanel() { return h(Panel, { openLink: function (u) { openLink(ctx, u) } }) })
       })
+      /**
+       * ★ 薄 main 面板（Q29 / 审计-2 2026-10-16）：
+       *   宿主 PanelRow 点击时调 layout.selectPanel(id)，而 layout.selectPanel 对**没有注册的 main 面板
+       *   id** 是直接抛异常的（`main panel "x" is not registered`）。所以入口 id 必须与 main 槽的 key 一致。
+       *   这里只放「一行说明 + 打开浮窗」：浮窗的拖动/缩放/位置记忆全部保留，不迁进主面板。
+       */
+      try {
+        ctx.slots.inject('main', function () {
+          return ctx.slots.register({ name: 'main', key: PANEL_ID, order: 900 }, function RankScanMainPanel() {
+            return h('div', { style: { padding: '16px', fontSize: '13px', lineHeight: 1.7 } },
+              h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '扫榜面板'),
+              h('div', { style: C.muted }, '榜单以可拖动、可缩放的浮窗显示，位置与尺寸会本地记忆。'),
+              h('div', { style: { ...C.row, marginTop: '8px' } },
+                h('button', { style: C.btn, onClick: function () { panelOpen.set(true) } }, '打开浮窗')))
+          })
+        })
+      } catch (e) { console.warn('[dsh-rank-scan] 注册 main 面板失败（宿主 layout 未就绪？）', e) }
       // 入口放 DSH **左侧栏会话列表下方**（使用方 2026-10-15 口径：收起按钮不要浮在对话上）
+      // id 与 main 面板一致（PANEL_ID）⇒ 宿主那一行的 selectPanel(id) 不会抛；label 给宿主做 aria-label。
       try {
         const reg = function (slot) {
           try {
             ctx.slots.inject(slot, function () {
-              /**
-               * ★ 已知问题（2026-10-15 夜记录，未改，属既有行为）：
-               *   DSH 外壳会额外渲染一条面板行（它在我的入口按钮**外面**又包了一层 button），
-               *   点那一条会调 layout.selectPanel('rank-scan-entry')，但主面板注册的 id 是
-               *   'rank-scan-panel' ⇒ 抛「main panel "rank-scan-entry" is not registered」。
-               *   试过把这里改成 'rank-scan-panel' 对齐，但当时浏览器代理挂了、无法当场验证改动效果，
-               *   而这是**改动既有行为**，故回滚，只留记录。真正开关面板请点里面那个按钮（带 title 的）。
-               */
-              return ctx.slots.register({ name: slot, id: 'rank-scan-entry', order: 900 }, function RankScanEntry() { return h(SidebarEntry, null) })
+              return ctx.slots.register({ name: slot, id: PANEL_ID, order: 900, label: '扫榜面板' }, SidebarEntryIcon)
             })
             return true
-          } catch (e) { return false }
+          } catch (e) { console.warn('[dsh-rank-scan] 入口槽位注册失败：' + slot, e); return false }
         }
         window.__rankScanEntry = reg('sidebar.panellist') ? 'sidebar.panellist' : reg('sidebar.footer.action') ? 'sidebar.footer.action' : null
-      } catch (e) {}
+      } catch (e) { console.warn('[dsh-rank-scan] 入口注册失败：', e) }
     }
     return { name: 'dsh-rank-scan', inject: inject, apply: apply }
   },

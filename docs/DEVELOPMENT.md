@@ -16,7 +16,7 @@ client/client.js      面板 bundle 的**源**（手写，不经 tsc；只 requi
 lib/                  tsc 产物 + 复制过来的面板 bundle（**不进仓库**：注释会被复制、sourcemap 带绝对路径）
 tests/*.test.mjs      离线测试（node:test，零依赖，不联网）
 tests/fixtures/       站点响应快照，供解析器回归
-scripts/              构建、测试、安装、卸载、验收闸门
+scripts/              构建、测试、安装、卸载、patch 救援（repair-patch）、npm 占位、验收闸门
 ```
 
 ## 构建
@@ -31,7 +31,9 @@ npm run build      # = node scripts/build.mjs：tsc 编 host + 把 client/client
 
 - `lib/` **不入库**：编译产物会把源码注释复制一份，sourcemap 还带构建机的绝对路径；同时产物与源码会各自漂移。
 - **面板 bundle 的源是 `client/client.js`**（入库），构建时被**复制**到 `lib/client.js` —— 它是手写的，不编译、不打包；所以「clone → `npm run build`」能产出与发布包一致的 `lib/`。
-- 代价是**不能 clone 仓库直装**（只有源码，宿主加载会 `did not activate`）。对外分发只有两种形态：Release 附件里的 tgz（`.github/workflows/build.yml` 打 tag 时从源码构建）与 `npm pack`。
+- **可以 clone / 仓库链接直装**（`dsh plugin add github:kilo-s/dsh-rank-scan`）：仓库不含 `lib/`，靠 `prepare` 在安装时现场构建。
+- pnpm 默认拦截依赖的构建脚本 ⇒ **直装首次会被拦住**（不是不能装）：`dsh` 会打印需要放行的确切键，加进 `~/.dsh/profiles/<profile>/pnpm-workspace.yaml` 的 `allowBuilds` 后**重跑同一条命令**即可。
+- 对外分发共三种形态：仓库链接直装、Release 附件里的 tgz（`.github/workflows/build.yml` 打 tag 时从源码构建）、`npm pack`。
 - 产出包自查：`tar -tzf <tgz>` 必须能看到 `package/lib/index.js`、`package/lib/client.js`、`package/cordis.patch.yml`。
 
 ## 测试
@@ -41,7 +43,7 @@ pwsh -File scripts/test-local.ps1     # 逐个文件跑（node --test 会 spawn 
 node tests/diff.test.mjs              # 单个文件
 ```
 
-测试里的时间戳是 **+08:00 语义**（「数据日期」取本地自然日），运行环境假定 `Asia/Shanghai` —— CI 用 `env: TZ: Asia/Shanghai` 固定；在别的时区跑要自己设，否则「凌晨 01:30 也算当天」这类断言会失败。
+测试里的时间戳是 **+08:00 语义**（「数据日期」取本地自然日），运行环境假定 `Asia/Shanghai` —— CI 用 `env: TZ: Asia/Shanghai` 固定；在别的时区跑要自己设，否则「凌晨 01:30 也算当天」这类断言会失败。**非 +08:00 时区未测**：落盘时间戳已绝对化、面板显示本地时刻，但 CI 与本地测试只覆盖 `Asia/Shanghai`。
 
 全部是 `node:test` 离线测试，不联网：五态判定 / 幂等覆盖 / 取消 · 适配器端到端与夹具解析 · 派生榜自然周边界 · 变化集与跨期保护 · 列口径与排序 · 定时判据与开关迁移 · 书签原子写 · 客户端 bundle 解析。
 
@@ -72,6 +74,14 @@ node tests/diff.test.mjs              # 单个文件
 
 `package.json` 的 `dsh.bundle.patch` 指向 `cordis.patch.yml`（最小 insert 补丁）；`dsh.client.platform = web`，`exports` 必须有 `./client`。装配相关断言在验收闸门的「装配闸」三组里。
 
+## 卸载与 patch 安全（口径 Q24 / Q31）
+
+- **卸载脚本永不重写 patch**：`scripts/uninstall.ps1|sh` 只做三件事 —— `dsh plugin remove` → 按 `package.json` 的 `name` 算 junction 路径并删（旧 scope 名 `@dsh-external/<name>` 一并试删）→ 打印 patch 的只读检查结果与数据目录。对 `~/.dsh/profiles/<p>/cordis.patch.yml` 只有「读 + 存在性判断 + 打印说明」。
+- 为什么：宿主对非法/空 patch 是 **fail-loud** —— `dsh-plugin-manager` 写 patch 前先要求「顶层是 YAML 数组」（`Profile patch must be a YAML sequence`），文件一旦被删坏，下次启动 `exit=1` 且**宿主自己也修不了**。删 YAML 条目（正则/行删）恰恰是主要破坏源。
+- `dsh plugin remove` **非零即中止**（Q31）：不删 junction、不动任何文件，打印手动命令并以非零退出。
+- 已损坏的 profile 走救援通道 `scripts/repair-patch.ps1|sh`：先备份 → 判定目标 profile 的 patch 是否可解析（合法顶层数组）→ 不可解析才以 `[]` 保底回写（提示可用 `.bak` 还原）→ 打印做了什么与怎么验证。用户视角的说明在 [README 排障](../README.md#排障)。
+- 改这两个脚本后，用**「临时 `USERPROFILE` 指向夹具目录 + PATH 里放假 `dsh`」**的夹具回归四种 patch 形态（只剩注释 / 孤儿行 / 合法两行 / `- insert:` 包裹）；**不要拿真实 `~/.dsh` 试**。
+
 ## 依赖纪律（零运行时依赖）
 
 本插件 host 侧只允许 `node:` 内建与相对路径 import（`package.json` 里没有 `dependencies`，也不声明 `peerDependencies`），面板只 `require('react')`。理由：某些受限环境禁止 symlink，`npm install` 的依赖链装不上，带依赖的插件直接构建失败。
@@ -91,10 +101,13 @@ pwsh -File scripts/acceptance.ps1             # 加上在线探针（需要插�
 
 ## 发布
 
+0. **npm 名占位（一次性，Q26）**：`pwsh -File scripts\publish-npm-placeholder.ps1 -DryRun` 先预览（查 npm 登录态 + 名字是否被占），去掉 `-DryRun` 真正执行（`npm login` → 发布一个 `0.0.0` 占位包，不含任何代码）。这是**防同名抢注，不是分发渠道** —— 插件内容只走 Release 附件 / 仓库链接；面板里的「一键更新」因此不适用（文案写明「未发布到 npm」）。脚本失败即停、中文输出，跑完自己打印验证方式。
 1. 改 `package.json` 的版本位；
 2. 双闸门全绿（`scripts/test-local.ps1` + `scripts/acceptance.ps1`）；
 3. 打 tag（`v<version>`）并推送 —— `.github/workflows/build.yml` 会从源码构建、跑离线自测、校验包内是否有 `lib/index.js` / `lib/client.js` / `cordis.patch.yml`，然后挂到同名 Release；
 4. 本地 `npm pack` 前先**释放文件认领**（或删掉根目录的 `README*.dshclaim` / `CHANGELOG*.dshclaim`）—— npm 会无条件收录 `README*`/`CHANGELOG*`/`LICENSE*`，认领标记会被一起打进包；CI 从干净检出构建，不受影响。
-5. 发布说明写「安装：先完全退出 DSH，再执行 `dsh plugin --profile desktop add <附件 tgz 的本地路径>` 或解压后跑 `scripts/install.ps1`」。
+5. 发布说明写「安装：先完全退出 DSH，再执行 `dsh plugin --profile desktop add <附件 tgz 的本地路径>` 或解压后跑 `scripts/install.ps1`；**仓库链接直装同样可以**（首次会被 pnpm `allowBuilds` 拦住，按提示放行后重跑同一条命令）」。
+   ⚠ 生成 Release 说明的模板在 `.github/workflows/build.yml` 的 notes heredoc 里 —— 它必须与 README「安装 / 更新」保持一致（历史上模板写过「不要用仓库 URL 直接安装」，与 README 的直装口径相反）。改口径时两处一起改。
+6. 卸载脚本与 patch 的安全边界（不重写用户 patch、remove 失败即中止）见上面「卸载与 patch 安全」小节，别在发布前顺手「优化」成删条目。
 
 包名与分发渠道的决定（含改名与 scope 注意事项）记在开发机的私有文档里，不入库。

@@ -6,7 +6,7 @@
  */
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { localDate, runScan } from './scan/run.js'
 import { requestAllowed } from './scan/guard.js'
@@ -28,6 +28,7 @@ import { BookmarkService, BookmarkStore } from './scan/bookmark.js'
 import { displayLabel, extractTags, parseBookInput, urlFor, type SiteId } from './scan/bookmark-parse.js'
 import { decodeIfPua } from './scan/fontmap.js'
 import { computeBoardDiff, daysOnBoard, guardCrossPeriod } from './scan/diff.js'
+import { boundedFetch } from './scan/bounded-fetch.js'
 /**
  * ★ 2026-10-16：更新链路。
  *   - 纯判定在 scan/update-check.ts（版本比较 / 能力三态 / 五态状态机，全部单测覆盖）；
@@ -48,6 +49,7 @@ import {
   previousDataDate,
   readSlim,
   runRetention,
+  sweepTmp,
   writeReport,
   writeSlim,
 } from './scan/files.js'
@@ -208,7 +210,9 @@ export function apply(ctx: PluginCtx, config: any): void {
    */
   try {
     const st0: any = readJson(statePath, {})
-    const keep = st0 && st0.retentionDays !== undefined ? st0.retentionDays : 180
+    // ★ 审计-2/39：启动路径原来直接取原始值 ⇒ config.json 手写成 0/负数会把**全部历史日期**删掉
+    //   （面板接口有 7–3650 校验，启动路径没有）。这里过与面板同一个归一化函数。
+    const keep = normalizeRetention(st0 ? st0.retentionDays : 180) ?? 180
     if (keep !== 'forever') {
       const today0 = clock.now().getFullYear() + '-' + String(clock.now().getMonth() + 1).padStart(2, '0') + '-' + String(clock.now().getDate()).padStart(2, '0')
       const res = runRetention(root, today0, keep)
@@ -219,6 +223,11 @@ export function apply(ctx: PluginCtx, config: any): void {
   } catch (e) {
     ctx.logger?.info?.('[' + name + '] 保留策略清理失败（不影响启动）：' + String(e).slice(0, 80))
   }
+  // ★ 审计-2/39：清扫原子写中途留下的 *.tmp（旧实现只写不扫，失败残留永不清理）
+  try {
+    const tmpN = sweepTmp(root)
+    if (tmpN) ctx.logger?.info?.('[' + name + '] 启动清理：删除 ' + tmpN + ' 个残留 .tmp')
+  } catch { /* 清扫失败不影响启动 */ }
   // 启动清理：物理清除超过 30 天的软删除条目（幂等，失败不影响启动）
   try {
     const pruned = BOOKMARKS.pruneTrash()
@@ -690,7 +699,8 @@ export function apply(ctx: PluginCtx, config: any): void {
         st2.lastTimerRunAt = startedAt
         st2.lastTimerState = state
         st2.lastTimerNote = note.slice(0, 300)
-        ;(st2 as any).timerSchemaV = 3
+        // ★ 审计-2/39：迁移判据是 !== 6（见下方 v6 迁移），这里原来写回 3 ⇒ 每次启动都重跑一遍迁移
+        ;(st2 as any).timerSchemaV = 6
         // ★ 按站分时：记「这个站今天跑过了」，下一个 tick 才会轮到别的站
         const slr: any = { ...((st2 as any).siteLastRun || {}) }
         slr[target] = today
@@ -787,12 +797,13 @@ export function apply(ctx: PluginCtx, config: any): void {
     return rec ? rec.boards.map((b: any) => b.boardId) : []
   }
 
-  function diffFor(boardId: string, date: string, prevDate: string | null, jitter?: number) {
+  function diffFor(boardId: string, date: string, prevDate: string | null, jitter?: number, slimAll?: any[]) {
     const store = new FileStore(root)
     const current = store.readSnapshot(date, boardId)
     if (!current) return { boardId, status: 'missing', note: '当天没有该榜快照' }
     const previous = prevDate ? store.readSnapshot(prevDate, boardId) : null
-    const indexes = listSlim(root).map((d) => readSlim(root, d)).filter(Boolean) as any[]
+    // ★ 审计-2/38（Q11「同一请求内只读一次」）：调用方可以一次读好传进来，避免每个榜都全量重读。
+    const indexes = slimAll ?? (listSlim(root).map((d) => readSlim(root, d)).filter(Boolean) as any[])
     const history = historyFor(indexes, boardId, date)
     /**
      * ★ 2026-10-16（跨期不可比保护）：周期榜的「期」用**快照里记的真实期号**，不用本地推算的日期。
@@ -985,12 +996,13 @@ export function apply(ctx: PluginCtx, config: any): void {
     const store = new FileStore(root)
     const rec: any = latest ? await store.readScan(latest) : null
     const prevDate = latest ? previousDataDate(dates, latest) : null
+    const slimAll = listSlim(root).map(d => readSlim(root, d)).filter(Boolean) as any[]
     const rows: any[] = []
     for (const boardId of st.boards as string[]) {
       const meta = boardMeta(boardId)
       const b = rec && rec.boards ? rec.boards.find((x: any) => x.boardId === boardId) : null
       const snap = latest ? store.readSnapshot(latest, boardId) : null
-      const diff = snap && latest && prevDate ? diffFor(boardId, latest, prevDate) : null
+      const diff = snap && latest && prevDate ? diffFor(boardId, latest, prevDate, undefined, slimAll) : null
       const c = diff && (diff as any).counts ? (diff as any).counts : null
       rows.push({
         boardId,
@@ -1413,6 +1425,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     const useDate = dateArg && dates.includes(dateArg) ? dateArg : latest
     const prevDate = previousDataDate(dates, useDate)
     const store = new FileStore(root)
+    const slimAll = listSlim(root).map(d => readSlim(root, d)).filter(Boolean) as any[]
     const entries: any[] = []
     let firstEver = true
     for (const boardId of st.boards as string[]) {
@@ -1422,7 +1435,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       if (!snap) continue
       const meta = boardMeta(boardId)
       if (!prevDate) continue
-      const d: any = diffFor(boardId, useDate, prevDate)
+      const d: any = diffFor(boardId, useDate, prevDate, undefined, slimAll)
       if (d.firstEver) continue
       firstEver = false
       const push = (group: string, list: any[], sign: string) => {
@@ -1532,6 +1545,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       const timer = setTimeout(() => done({}), 10_000)
       let raw = ''
       try {
+        if (typeof req.setEncoding === 'function') req.setEncoding('utf8')
         req.on('data', (c: any) => { raw += String(c); if (raw.length > 65536) raw = raw.slice(0, 65536) })
         req.on('end', () => { try { done(raw ? JSON.parse(raw) : {}) } catch { done({}) } })
         req.on('error', () => done({}))
@@ -1743,7 +1757,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       if (r.url && need) {
         try {
           if (requests > 0) await new Promise((res) => setTimeout(res, 1000))
-          const resp = await fetch(String(r.url), { signal: ctxBoard.signal, headers: ua as any })
+          const resp = await boundedFetch(String(r.url), { rateLimit: true, timeoutMs: 15000, signal: ctxBoard.signal, headers: ua as any })
           requests += 1
           const html = await (resp as any).text()
           if (kind === 'ciweimao') {
@@ -1813,8 +1827,8 @@ export function apply(ctx: PluginCtx, config: any): void {
       let next = { ...r, extra: { ...(r.extra || {}) } }
       try {
         if (requests > 0) await new Promise((res) => setTimeout(res, 1000)) // 采集纪律：1s/请求
-        const resp = await fetch('https://fanqienovel.com/api/book/info?bookId=' + encodeURIComponent(String(r.key)), {
-          signal: ctxBoard.signal,
+        const resp = await boundedFetch('https://fanqienovel.com/api/book/info?bookId=' + encodeURIComponent(String(r.key)), {
+          rateLimit: true, timeoutMs: 15000, signal: ctxBoard.signal,
           headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15' },
         })
         requests += 1
@@ -1837,8 +1851,8 @@ export function apply(ctx: PluginCtx, config: any): void {
         // 接口偶尔不吐书名 ⇒ 退一步抓书页 og:title / description（同 1s 限速内）
         if (next.extra.titleSuspect !== false) {
           await new Promise((res) => setTimeout(res, 1000))
-          const page = await fetch('https://fanqienovel.com/page/' + encodeURIComponent(String(r.key)), {
-            signal: ctxBoard.signal,
+          const page = await boundedFetch('https://fanqienovel.com/page/' + encodeURIComponent(String(r.key)), {
+            rateLimit: true, timeoutMs: 15000, signal: ctxBoard.signal,
             headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15' },
           })
           requests += 1
@@ -1884,7 +1898,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         return { ok: true, words: stx.wordsCnt, collect: stx.collect }
       }
       if (site === 'fanqie') {
-        const resp: any = await fetch('https://fanqienovel.com/api/book/info?bookId=' + encodeURIComponent(String(id)), { headers: { 'User-Agent': ua['User-Agent'] } } as any)
+        const resp: any = await boundedFetch('https://fanqienovel.com/api/book/info?bookId=' + encodeURIComponent(String(id)), { headers: { 'User-Agent': ua['User-Agent'] }, rateLimit: true, timeoutMs: 15000 })
         const json: any = await resp.json().catch(() => null)
         const info = json && json.data && (json.data.book_info || json.data.bookInfo || json.data)
         if (!info) return { ok: false, error: '番茄接口没有返回书信息' }
@@ -1908,7 +1922,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       }
       const url = urlHint || (site === 'ciweimao' ? 'https://www.ciweimao.com/book/' + id : site === 'sfacg' ? 'https://book.sfacg.com/Novel/' + id + '/' : '')
       if (!url) return { ok: false, error: '这个站没有书页地址' }
-      const resp: any = await fetch(url, { headers: ua as any })
+      const resp: any = await boundedFetch(url, { headers: ua as any, rateLimit: true, timeoutMs: 15000 })
       const html = await resp.text()
       if (site === 'ciweimao') {
         const blk = html.match(/class="book-grade"[\s\S]{0,400}?<\/p>/)
@@ -2502,7 +2516,9 @@ export function apply(ctx: PluginCtx, config: any): void {
             const body2 = await readBody(req)
             const format = body2.format === 'md' ? 'md' : body2.format === 'csv' ? 'csv' : 'json'
             const keys = Array.isArray(body2.bookKeys) ? body2.bookKeys.map(String) : null
-            const dest = String(body2.dest || '').trim() || join(homedir(), 'Documents', 'rank-scan-export')
+            const dest = resolve(String(body2.dest || '').trim() || join(homedir(), 'Documents', 'rank-scan-export'))
+            const rel0 = relative(resolve(homedir()), dest)
+            if (!rel0 || rel0 === '..' || rel0.startsWith('..' + (process.platform === 'win32' ? '\\' : '/')) || isAbsolute(rel0)) return send(400, { error: '导出目录必须位于用户目录的子目录内' })
             const data = svc2.exportData(format as any, { bookKeys: keys, includeTrash: body2.includeTrash === true })
             // ★ 2026-10-16（疑问「是不是会覆盖」）：文件名带**到秒的时间戳**，同名再自动加序号
             //   ⇒ 同一天多次导出、不同选择集导出都不会互相覆盖。
@@ -2528,7 +2544,9 @@ export function apply(ctx: PluginCtx, config: any): void {
             if (!existsSync(dir)) return send(400, { error: '目录还不存在：' + dir + '（先导出一次就会创建）' })
             const cmd = process.platform === 'win32' ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open'
             try {
-              spawn(cmd, [dir], { detached: true, stdio: 'ignore' }).unref()
+              const child = spawn(cmd, [dir], { detached: true, stdio: 'ignore' })
+              child.on('error', (err: Error) => { ctx.logger?.info?.('[' + name + '] 打开目录失败：' + String(err.message).slice(0, 120)) })
+              child.unref()
               return send(200, { ok: true, opened: dir })
             } catch (e) {
               return send(500, { error: '打不开：' + (e instanceof Error ? e.message : String(e)) })
@@ -2566,4 +2584,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       ctx.logger?.info?.('[' + name + '] timer 接线失败：' + String(e).slice(0, 80))
     }
   }
+  if (typeof ctx.effect === 'function') ctx.effect(() => () => {
+    try { timerState.disposer?.() } finally { timerState.disposer = null }
+  })
 }

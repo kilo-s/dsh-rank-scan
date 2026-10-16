@@ -1,5 +1,6 @@
 import { MissingError, type BoardCtx, type BoardResult, type Row, type SiteAdapter } from '../scan/types.js'
 import { boundedFetch } from '../scan/bounded-fetch.js'
+import { defaultRequestGate, withRateLimit, type RequestGate } from '../scan/rate-limit.js'
 import { hasPua } from '../scan/fontmap.js'
 
 /**
@@ -35,34 +36,61 @@ export function fanqieBoardId(gender: 'm' | 'f', mold: 'read' | 'new', catId: nu
  * 解析榜单接口。`decode` = 字体映射解码器（见 scan/fontmap.ts）：
  * 原始文本存进 extra.titlePua / authorPua，供补全时学映射；解码后若仍有私用区码点 ⇒ titleSuspect 仍为 true。
  */
+/**
+ * ★ 票 48：数值字段统一过这道 —— **缺失一律 null，绝不补 0**。
+ * 审计实证：`Number(null) === 0`、`Number('') === 0`，且 `Number.isFinite(0) === true`，
+ * 所以旧写法 `Number.isFinite(Number(b.read_count))` 会把「站点没给」写成**真实的 0**。
+ */
+function numOrNull(v: unknown): number | null {
+  if (v == null) return null
+  if (typeof v === 'string' && v.trim() === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * ★ 票 48：有效书号 = 纯数字。字段改名（`bookId` → `bid`）时旧写法产出 `key="undefined"`、
+ * url 指向 `/page/undefined`，全榜 key 相同 ⇒ 被 `seen` 去重后**整榜塌成 1 行且 status=ok**，
+ * 覆盖掉当天真实快照。跳过这种行（整页都无效时由 fetchBoard 判 missing）。
+ */
+function bookIdOf(v: unknown): string | null {
+  if (v == null) return null
+  const s = String(v).trim()
+  return /^\d+$/.test(s) ? s : null
+}
+
 export function parseRankApi(json: any, decode?: (s: string) => string): Row[] {
   const list = json && json.data && json.data.book_list
   if (!Array.isArray(list)) return []
   const dec = (s: string): string => (decode ? decode(s) : s)
-  return list.map((b: any) => {
-    const rawTitle = String(b.bookName || '')
+  const rows: Row[] = []
+  for (const b of list) {
+    const id = bookIdOf(b && b.bookId)
+    if (!id) continue
+    const rawTitle = String((b.bookName == null ? '' : b.bookName))
     const rawAuthor = b.author ? String(b.author) : null
     const title = dec(rawTitle)
     const author = rawAuthor ? dec(rawAuthor) : null
-    return {
-      key: String(b.bookId),
-      rank: Number.isFinite(Number(b.currentPos)) ? Number(b.currentPos) : null,
-      value: Number.isFinite(Number(b.read_count)) ? Number(b.read_count) : null,
+    rows.push({
+      key: id,
+      rank: numOrNull(b.currentPos),
+      value: numOrNull(b.read_count),
       title,
       author,
-      url: 'https://fanqienovel.com/page/' + b.bookId,
+      url: 'https://fanqienovel.com/page/' + id,
       extra: {
-        wordNumber: b.wordNumber != null ? Number(b.wordNumber) : null,
-        rankPosDiff: b.rankPosDiff != null ? Number(b.rankPosDiff) : null,
-        lastChapterUpdateTime: b.lastChapterUpdateTime != null ? Number(b.lastChapterUpdateTime) : null,
-        uid: b.uid != null ? String(b.uid) : null,
-        catId: b.curent_category_id != null ? Number(b.curent_category_id) : null,
+        wordNumber: numOrNull(b.wordNumber),
+        rankPosDiff: numOrNull(b.rankPosDiff),
+        lastChapterUpdateTime: numOrNull(b.lastChapterUpdateTime),
+        uid: b.uid != null && String(b.uid).trim() !== '' ? String(b.uid) : null,
+        catId: numOrNull(b.curent_category_id),
         titlePua: hasPua(rawTitle) ? rawTitle : undefined,
         authorPua: rawAuthor && hasPua(rawAuthor) ? rawAuthor : undefined,
         titleSuspect: hasPua(title) || hasPua(author),
       },
-    }
-  })
+    })
+  }
+  return rows
 }
 
 export function makeFanqieSite(opts: {
@@ -73,10 +101,14 @@ export function makeFanqieSite(opts: {
   decode?: (s: string) => string
   /** 每个榜取多少条（面板可逐分类调，上限 30；默认 10 = 1 页） */
   depthOf?: (boardId: string) => number
+  /** ★ 票 50：本适配器用的请求闸门（缺省 = 全局限速器；测试替身可用假时钟/假 sleep） */
+  rateGate?: RequestGate
 } = {}): SiteAdapter {
   const boards = opts.boards && opts.boards.length ? opts.boards : []
   const limit = typeof opts.limit === 'number' ? opts.limit : 10
-  const fetchJson = opts.fetchJson || (async (url: string, c?: BoardCtx) => {
+  // ★ 票 50：默认请求通道过全局限速器（相邻真实请求 ≥1s，翻页也算）；
+  //   注入的 fetchJson 是测试替身，刻意不过闸门（闸门管的是真实网络请求）
+  const fetchJson = opts.fetchJson || withRateLimit(async (url: string, c?: BoardCtx) => {
     const res = (await boundedFetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'zh-CN,zh;q=0.9' }, signal: c?.signal, timeoutMs: c?.requestTimeoutMs })) as unknown as {
       status: number
       ok: boolean
@@ -84,7 +116,7 @@ export function makeFanqieSite(opts: {
     }
     if (!res.ok) throw new MissingError('HTTP ' + res.status)
     return JSON.parse(await res.text())
-  })
+  }, () => opts.rateGate || defaultRequestGate())
   return {
     id: 'fanqie',
     site: '番茄',
@@ -111,6 +143,7 @@ export function makeFanqieSite(opts: {
         offset
       const t0 = Date.now()
       let requests = 0
+      let skipped = 0
       const seen = new Set<string>()
       const rows: Row[] = []
       for (let page = 0; page < pages; page++) {
@@ -118,6 +151,9 @@ export function makeFanqieSite(opts: {
         requests += 1
         if (json && json.code !== 0) throw new MissingError('接口 code=' + json.code + ' ' + (json.message || ''))
         const part = parseRankApi(json, opts.decode)
+        // ★ 票 48：book_list 非空但一行都没解析出来 ⇒ 是「字段改名」这种结构变化，不是「榜为空」
+        const rawCount = json && json.data && Array.isArray(json.data.book_list) ? json.data.book_list.length : 0
+        if (rawCount > part.length) skipped += rawCount - part.length
         if (!part.length) break
         for (const r of part) {
           if (seen.has(r.key)) continue
@@ -126,8 +162,15 @@ export function makeFanqieSite(opts: {
         }
         if (part.length < limit) break
       }
-      if (!rows.length) throw new MissingError('榜单为空（book_list 空）')
+      if (!rows.length) {
+        throw new MissingError(
+          skipped > 0
+            ? 'book_list 非空但无有效书号（bookId 字段改名？' + skipped + ' 行被跳过）'
+            : '榜单为空（book_list 空）',
+        )
+      }
       const warnings = ['书名/作者可能因番茄字体反爬缺字（titleSuspect）']
+      if (skipped > 0) warnings.push('有 ' + skipped + ' 行缺有效 bookId（字段改名？）—— 已跳过该行，未参与落盘')
       if (depth > limit) warnings.push('已取前 ' + Math.min(depth, rows.length) + ' 条（' + requests + ' 页）')
       return {
         boardId: id,

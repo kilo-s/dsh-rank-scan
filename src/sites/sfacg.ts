@@ -1,5 +1,6 @@
 import { MissingError, type BoardCtx, type BoardResult, type Row, type SiteAdapter } from '../scan/types.js'
 import { boundedFetch } from '../scan/bounded-fetch.js'
+import { defaultRequestGate, withRateLimit, type RequestGate } from '../scan/rate-limit.js'
 
 /**
  * 菠萝包轻小说（book.sfacg.com）适配器 —— 首页 SSR 的三个榜（2026-10-14 使用者定）。
@@ -83,10 +84,14 @@ export function parseHomeBoard(html: string, title: string, tab: string): Row[] 
         words: num(words),
         collect: num(collect),
         titleTruncated: /\.\.\.$/.test(title2),
+        // ★ 票 49：名次到底来自页面还是按位置补号 —— 让上面那条「位置补号」不再不可见
+        //   （夹具曾经把 <i class="num"> 裁掉，于是这条路径从没被走过）
+        rankFromPage: rankM != null,
       },
     })
   }
-  // 前两名是图文形态，没有显式名次 ⇒ 按出现顺序补 1、2
+  // 前两名是图文形态（li.figure），页面**确实没有**名次 ⇒ 只能按出现顺序补 1、2（1-2 名的既定口径）；
+  // 第 3 名起页面给了 <i class="num">03</i> ⇒ 名次来自页面，不该再走这条补号路径
   let auto = 1
   for (const r of rows) {
     if (r.rank == null) r.rank = auto
@@ -98,9 +103,12 @@ export function parseHomeBoard(html: string, title: string, tab: string): Row[] 
 export function makeSfacgSite(opts: {
   boards?: string[]
   fetchText?: (url: string, ctx: BoardCtx) => Promise<string>
+  /** ★ 票 50：本适配器用的请求闸门（缺省 = 全局限速器；测试替身可用假时钟/假 sleep） */
+  rateGate?: RequestGate
 } = {}): SiteAdapter {
   const boards = opts.boards && opts.boards.length ? opts.boards : Object.keys(SFACG_BOARDS)
-  const fetchText = opts.fetchText || (async (url: string, c?: BoardCtx) => {
+  // ★ 票 50：默认请求通道过全局限速器
+  const fetchText = opts.fetchText || withRateLimit(async (url: string, c?: BoardCtx) => {
     const res = (await boundedFetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'zh-CN,zh;q=0.9' }, signal: c?.signal, timeoutMs: c?.requestTimeoutMs })) as unknown as {
       status: number
       ok: boolean
@@ -108,7 +116,7 @@ export function makeSfacgSite(opts: {
     }
     if (!res.ok) throw new MissingError('HTTP ' + res.status)
     return await res.text()
-  })
+  }, () => opts.rateGate || defaultRequestGate())
   return {
     id: 'sfacg',
     site: '菠萝包',
@@ -126,6 +134,10 @@ export function makeSfacgSite(opts: {
       if (!rows.length) throw new MissingError('该 tab 无条目')
       const warnings: string[] = []
       if (rows.some((r) => r.extra && r.extra.titleTruncated)) warnings.push('书名被站点截断（首页榜通病）：点面板「补全本榜」可换成全名并补作者（约 10 请求）')
+      // ★ 票 49：第 3 名起本该有名次（<i class="num">），没了就是改版 —— 补号照旧，但必须说出来
+      if (rows.some((r) => r.extra && r.extra.rankFromPage === false && (r.rank || 0) >= 3)) {
+        warnings.push('第 3 名起有名次不是页面给的（<i class="num"> 缺失？）—— 已按出现顺序补号，请核对')
+      }
       return { boardId: id, status: 'ok', rows, requests: 1, durationMs: Date.now() - t0, warnings }
     },
   }
