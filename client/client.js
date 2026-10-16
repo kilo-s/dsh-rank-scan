@@ -1418,7 +1418,21 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
     function SidebarEntryIcon(props) {
       const size = Number(props && props.size) || 16
       const active = !!(props && props.active)
-      return h('svg', {
+      /**
+       * ★ 2026-10-16（使用者反馈「我点开就跳到扫榜面板、会话被顶掉」）：
+       *   点这个图标要**就地弹出浮窗**，而不是把主区域切到薄 main 面板。做法：
+       *     · 外层用 <div> 承接点击（不再嵌 <button>，避免按钮套按钮）；
+       *     · onClick 里 stopPropagation() ⇒ 挡掉宿主 PanelRow 那个 selectPanel(id)，会话视图不被顶走；
+       *     · 浮窗由 panelOpen 打开 ⇒ 一次点击就出窗。薄 main 面板照旧注册（键盘/无障碍路径仍有落点）。
+       */
+      return h('div', {
+        onClick: function (e) {
+          if (e && typeof e.stopPropagation === 'function') e.stopPropagation()
+          panelOpen.set(true)
+        },
+        title: '打开扫榜浮窗',
+        style: { display: 'block', cursor: 'pointer', lineHeight: 0 },
+      }, h('svg', {
         width: size, height: size, viewBox: '0 0 16 16', fill: 'none',
         stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round',
         style: { display: 'block', opacity: active ? 1 : 0.78 },
@@ -1426,7 +1440,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       },
         // 三条由长到短的横杠 + 一个对勾：一眼认出是「榜单」，不是别的面板
         h('path', { d: 'M2 3.5h12M2 8h9M2 12.5h6' }),
-        h('path', { d: 'M12.2 9.4l1.6 1.6 2-2.6' }))
+        h('path', { d: 'M12.2 9.4l1.6 1.6 2-2.6' })))
     }
 
     function Panel(props) {
@@ -1555,14 +1569,6 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       try {
         ctx.slots.inject('main', function () {
           return ctx.slots.register({ name: 'main', key: PANEL_ID, order: 900 }, function RankScanMainPanel() {
-            /**
-             * ★ 2026-10-16（使用者反馈「为什么要多点两下才出浮窗」）：
-             *   宿主把侧栏那一行包在**它自己的** button 里（点击 = layout.selectPanel(id)），我们的图标
-             *   不能再套一层 button（嵌套 button，审计票 43 已点出）。所以「点入口」必然先落到这个 main 面板。
-             *   那就在这里**顺手把浮窗一起打开**：一次点击 = 过去的两步效果；下面的按钮保留，
-             *   供用户主动关掉浮窗后再开。
-             */
-            React.useEffect(function () { panelOpen.set(true) }, [])
             return h('div', { style: { padding: '16px', fontSize: '13px', lineHeight: 1.7 } },
               h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '扫榜面板'),
               h('div', { style: C.muted }, '榜单以可拖动、可缩放的浮窗显示，位置与尺寸会本地记忆。'),

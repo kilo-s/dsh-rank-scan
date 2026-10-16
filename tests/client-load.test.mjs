@@ -162,7 +162,7 @@ test('★ apply(ctx) 真跑一遍：入口 id 必须落在 main 面板注册集�
   assert.ok(entry.options.label, '入口必须带 label（宿主 PanelRow 用它做 aria-label / tooltip）')
 })
 
-test('★ 入口 occupant 是纯图标：只吃 size，且不自己套 button（宿主 PanelRow 已经包了一层）', function () {
+test('★ 入口 occupant：就地弹浮窗的可点图标（不套 button、不把会话顶走）', function () {
   const { exportsObj } = loadBundle()
   const { ctx, registrations, drain } = makeFakeCtx()
   exportsObj.apply(ctx)
@@ -172,9 +172,24 @@ test('★ 入口 occupant 是纯图标：只吃 size，且不自己套 button（
   assert.ok(el && typeof el === 'object', '入口 occupant 必须能直接用 { size, active } 渲染出元素')
   assert.notEqual(el.type, 'button', '入口 occupant 不许自己渲染 button（宿主 PanelRow 会再包一层 = 按钮套按钮）')
   assert.ok(!containsType(el, 'button'), '入口 occupant 子树里不许有 button')
-  assert.equal(el.props.width, 16, '入口图标必须按宿主给的 size 渲染尺寸')
-  const el18 = entry.comp({ size: 18, active: true })
-  assert.equal(el18.props.width, 18, 'size 变化必须跟随')
+  // 尺寸挂在图标本体上（外层是可点的 div 包装）——递归找 svg 的 width
+  const svgWidth = function (node) {
+    let w = null
+    ;(function walk(n) {
+      if (!n || typeof n !== 'object' || w != null) return
+      if (n.type === 'svg') { w = (n.props || {}).width; return }
+      ;(n.children || []).forEach(walk)
+    })(node)
+    return w
+  }
+  assert.equal(svgWidth(el), 16, '入口图标必须按宿主给的 size 渲染尺寸')
+  assert.equal(svgWidth(entry.comp({ size: 18, active: true })), 18, 'size 变化必须跟随')
+  // ★ 2026-10-16（使用者口径）：点入口要**就地弹浮窗**，且必须先 stopPropagation 挡住宿主 PanelRow 的
+  //   selectPanel(id) —— 否则主区域被切到薄 main 面板，正在看的会话被顶走（这正是被投诉的行为）。
+  assert.equal(typeof el.props.onClick, 'function', '入口必须可点（点了就地弹浮窗）')
+  let stopped = false
+  el.props.onClick({ stopPropagation: function () { stopped = true } })
+  assert.ok(stopped, 'onClick 必须先 stopPropagation，挡掉宿主 selectPanel')
 })
 
 test('★ 薄 main 面板：一行说明 + 「打开浮窗」按钮（Q29）', function () {
