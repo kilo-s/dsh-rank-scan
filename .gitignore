@@ -9,3 +9,7 @@ node_modules/
 *.dshpending/
 .tmp-types/
 scripts/build-local.ps1
+
+# npm 凭据（granular token）绝不进仓库
+.npmrc
+.npmrc.local
