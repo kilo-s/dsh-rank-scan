@@ -1,4 +1,4 @@
-﻿# 发布到 npm（属主在自己终端执行；需要你的 npm 登录态与 OTP）
+﻿# 发布到 npm（在你自己的终端执行；需要 npm 登录态与 OTP）
 #   pwsh -File scripts\publish-npm.ps1 -DryRun        # 只检查 + 打包预览，不发布
 #   pwsh -File scripts\publish-npm.ps1               # 真发布
 #   pwsh -File scripts\publish-npm.ps1 -Otp 123456   # 有 2FA 时一步到位

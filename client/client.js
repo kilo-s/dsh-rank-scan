@@ -1428,8 +1428,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
        *     · onClick 里 stopPropagation() ⇒ 挡掉宿主 PanelRow 那个 selectPanel(id)，会话视图不被顶走；
        *     · 浮窗由 panelOpen 打开 ⇒ 一次点击就出窗。薄 main 面板照旧注册（键盘/无障碍路径仍有落点）。
        */
-      // ★ 2026-10-16（使用者反馈「入口太不明显」）：图标 + 「扫榜」文字 + 满不透明度，
-      //   一眼能看出这里可以点；点了就地弹浮窗（stopPropagation 挡掉宿主的 selectPanel）。
+      // ★ 2026-10-16 定稿（使用者两轮反馈后）：**纯图标**（文字由宿主那行自己的 label 提供），
+      //   点击时四种事件全部吃掉 ⇒ 就地弹浮窗、不切主区域。
       const openHere = function (e) {
         if (e && typeof e.stopPropagation === 'function') e.stopPropagation()
         if (e && typeof e.preventDefault === 'function') e.preventDefault()
@@ -1452,8 +1452,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         },
           // 三条由长到短的横杠 + 一个对勾：一眼认出是「榜单」，不是别的面板
           h('path', { d: 'M2 3.5h12M2 8h9M2 12.5h6' }),
-          h('path', { d: 'M12.2 9.4l1.6 1.6 2-2.6' })),
-        h('span', null, '扫榜'))
+          h('path', { d: 'M12.2 9.4l1.6 1.6 2-2.6' })))
+      // ★ 2026-10-16：这里原来还挂了一个「扫榜」文字 span，结果左边我们一个「扫榜」、右边宿主的
+      //   label「扫榜面板」，重复啰嗦。改为**纯图标**：文字由宿主那行自己的 label 提供。
     }
 
     function Panel(props) {
