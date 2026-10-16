@@ -69,7 +69,7 @@ test('★ 票 30：并发与长任务 —— 扫描锁真的置位、readBody �
   assert.match(HOST, /setTimeout\(\(\) => done\(\{\}\), 10_000\)/, 'readBody 缺超时（半开连接会挂住请求）')
 })
 
-test('★ 手动扫描也带补全（2026-10-16 维护者口径），且补全限定本次范围', () => {
+test('★ 手动扫描也带补全（2026-10-16 既定口径），且补全限定本次范围', () => {
   assert.match(HOST, /enrichAfter: body\.enrichAfter !== false/, '手动 /scan 默认应带补全（可显式 false 关掉）')
   assert.match(HOST, /const inScope = \(b: string\) =>/, '补全必须按本次扫描范围过滤（否则按站跑会抓别站书页）')
 })

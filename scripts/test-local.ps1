@@ -1,4 +1,4 @@
-﻿# 本机自测：按文件直接跑（node --test 会 spawn 子进程，被沙箱拒 EPERM）
+﻿# 本地自测：按文件直接跑（node --test 会 spawn 子进程，被沙箱拒 EPERM）
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root

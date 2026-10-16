@@ -21,7 +21,7 @@ export function periodStartOf(d: Date): string {
 }
 
 /** 统一的本地日期串。★ **必须补零**：`/shouding/2026-10-1` 只返回 26 字节空页
- *  ⇒ 会被误判成「该日期无数据」（2026-10-15 维护者截图里就是这个）。 */
+ *  ⇒ 会被误判成「该日期无数据」（2026-10-15 使用者截图里就是这个）。 */
 export function ymd(d: Date): string {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
 }
@@ -109,7 +109,7 @@ const num = (s: string | null | undefined): number | null => {
 /**
  * 首订榜（/shouding/）：表头 = [#, [分类]书名, 首订, 收藏, 收订比, 字数, 粉丝, 作者, 首V时刻]。
  * ★ 口径（与三江一致）：**首订是计数类 —— 负值/0 ⇒ null**，页面偶尔出现的负数行不是「负首订」，
- *   面板一律显示「—」，绝不把负数当数值展示（维护者 2026-10-14 反馈）。
+ *   面板一律显示「—」，绝不把负数当数值展示（使用者 2026-10-14 反馈）。
  */
 export function parseShouding(html: string): { date: string | null; rows: Row[] } {
   // 日期在日期选择器的 value 里（标题不含日期）
@@ -119,7 +119,7 @@ export function parseShouding(html: string): { date: string | null; rows: Row[] 
     const info = tr.match(/<a href="\/info\/(\d+)[^"]*"[^>]*>([^<]+)<\/a>/)
     if (!info) continue
     const cells = cellsOf(tr)
-    // 计数类：负值 / 0 一律 null（本页实测有负值行；维护者反馈过「怎么还有负数」）
+    // 计数类：负值 / 0 一律 null（本页实测有负值行；使用反馈过「怎么还有负数」）
     const cnt = (s?: string | null): number | null => {
       const n = num(s)
       return n == null || n <= 0 ? null : n
@@ -134,7 +134,7 @@ export function parseShouding(html: string): { date: string | null; rows: Row[] 
       author: authorM
         ? authorM[1].trim()
         : ((cells[7] && cells[7].text) || '').replace(/^\s*(?:Lv\.\s*\d+|白金|大神|长约|品牌作家|资深作家)\s*/, '').trim() || null,
-      // 维护者口径（2026-10-15）：起点图的作品要跳到**起点作品页**，不是起点图的 /info 页
+      // 既定口径（2026-10-15）：起点图的作品要跳到**起点作品页**，不是起点图的 /info 页
       //   起点图 bookId 与起点 bookId 同源（均为起点书号）⇒ 直接拼起点书页
       url: 'https://www.qidian.com/book/' + info[1] + '/',
       extra: {
@@ -216,7 +216,7 @@ export function makeQidiantuSite(opts: {
         }
       }
       // 起点图支持按日期直查：/shouding/<YYYY-MM-DD>（当日 = /shouding/）
-      // 维护者口径：面板要能看「之前的日期数据」，不必依赖本地是否存过那天的快照
+      // 既定口径：面板要能看「之前的日期数据」，不必依赖本地是否存过那天的快照
       const day = ctx.now()
       const want = ymd(day)
       /**

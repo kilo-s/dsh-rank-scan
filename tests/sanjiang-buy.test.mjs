@@ -112,7 +112,7 @@ test('刺猬猫首订(约)：当期为空 ⇒ 回退上一期（最多 2 期）'
   assert.equal(calls, 2, '第一次空 + 回退一次')
   assert.ok(rec.boards[0].warnings.some((w) => w.includes('回退到第 499 期')))
   assert.ok(rec.boards[0].warnings.some((w) => w.includes('第三方约值')))
-  assert.equal(CIWEIMAO_BUY_URL.startsWith('http://'), true, '必须用 http（https 在本机被重置）')
+  assert.equal(CIWEIMAO_BUY_URL.startsWith('http://'), true, '必须用 http（https 在部分环境会被重置）')
   assert.equal(store.snapshot(CIWEIMAO_BUY_BOARD, '2026-10-14').metric, 'value', '首订榜是数值型（覆盖刺猬猫站点级 rank）')
   const other = makeCiweimaoSite({ boards: ['ciweimao.no-vip-click.week'], fetchText: async () => '<html><title>刺猬猫</title></html>' })
   const recOther = await runScan({ sites: [other], clock, store: new MemoryStore() })

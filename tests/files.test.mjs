@@ -33,7 +33,7 @@ test('applyCleanup：删除并给出释放字节数', () => {
 
 test('exportRange：按区间导出快照与报告（含嵌套子目录，逐文件递归复制）', () => {
   const root = tmpRoot()
-  // 嵌套子目录：本机 fs.cpSync({recursive:true}) 曾在此形态下报 EIO，导出必须逐文件复制
+  // 嵌套子目录：本地 fs.cpSync({recursive:true}) 曾在此形态下报 EIO，导出必须逐文件复制
   mkdirSync(join(root, '2026-10-14', 'nested'), { recursive: true })
   writeFileSync(join(root, '2026-10-14', 'nested', 'deep.json'), '{"deep":true}')
   writeReport(root, '2026-10-13', '# 报告')

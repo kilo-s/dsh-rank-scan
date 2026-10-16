@@ -14,7 +14,7 @@ export function hhmm(d: Date): string {
   return pad2(d.getHours()) + ':' + pad2(d.getMinutes())
 }
 
-/** 本地自然日 → 'YYYY-MM-DD'（与 index.ts 的 localDate 同口径：Asia/Shanghai 本机时区） */
+/** 本地自然日 → 'YYYY-MM-DD'（与 index.ts 的 localDate 同口径：Asia/Shanghai 本地时区） */
 export function localYmd(d: Date): string {
   return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
 }
@@ -50,7 +50,7 @@ export function shouldFireTimer(i: FireInput): boolean {
 }
 
 /**
- * ★ 2026-10-16（维护者授权自定抓取时刻）：**按站分时抓取**的纯函数部分。
+ * ★ 2026-10-16（允许自定抓取时刻）：**按站分时抓取**的纯函数部分。
  *
  * 为什么按站分：各站当天刷新榜单的时刻不一样（起点凌晨换榜、起点图中午结算…）。
  * 原来只有一个全局 scanTime，抓早了的站会拿到「昨天那版却记在今天」⇒ 变化列出现假持平。

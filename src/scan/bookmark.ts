@@ -397,7 +397,7 @@ export class BookmarkService {
 
   /**
    * 导出：★ 默认不含回收站；损坏时可用部分照常导出。
-   * 2026-10-16（维护者需求）：① 可按**选择集**导出（bookKeys，空=全部）② 支持 csv ③ 可选含回收站。
+   * 2026-10-16（使用者需求）：① 可按**选择集**导出（bookKeys，空=全部）② 支持 csv ③ 可选含回收站。
    */
   exportData(
     format: 'json' | 'md' | 'csv' = 'json',

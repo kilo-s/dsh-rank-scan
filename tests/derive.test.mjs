@@ -161,7 +161,7 @@ test('★ 逐日增量：中间缺一天 ⇒ 那一天和它的下一天都算�
   assert.equal(v.rows[0].extra.periodDelta, 900, '期累计仍按期首算（不受中间缺口影响）')
 })
 
-test('★ 字数/分类要带进派生行（维护者 2026-10-15：在读周榜也要显示作品字数）', () => {
+test('★ 字数/分类要带进派生行（使用者 2026-10-15：在读周榜也要显示作品字数）', () => {
   const withMeta = (key, title, value, rank, wordNumber, catId) => ({
     key, rank, value, title, author: 'A' + key, url: 'https://x/' + key, extra: { wordNumber, catId },
   })

@@ -64,7 +64,7 @@ test('★ 回归：healStore 必须能把「上一代的旧 store」补成当前
   assert.equal(healStore(withData).filters.q, '仙')
 })
 
-test('★ 页签顺序：概览 → 当前榜单 → 我的书签 → 抓什么（维护者口径）', () => {
+test('★ 页签顺序：概览 → 当前榜单 → 我的书签 → 抓什么（既定口径）', () => {
   const src = readFileSync(BUNDLE, 'utf8')
   const order = ['ov', 'board', 'bm', 'pick'].map((k) => src.indexOf("switchTab('" + k + "')"))
   order.forEach((idx, i) => assert.ok(idx >= 0, '页签 ' + ['ov', 'board', 'bm', 'pick'][i] + ' 不见了'))
@@ -82,7 +82,7 @@ test('★ 收藏/在读：卡片必须按站取标签，且说明数据来源', 
 })
 test('★ 书签卡「打开」必须与榜单页书名同路（DSH 侧栏浏览器），不是裸 target=_blank', () => {
   const src = readFileSync(BUNDLE, 'utf8')
-  // 书签页签必须拿到 openLink —— 否则又会退回新标签（维护者 2026-10-16 反馈的不一致）
+  // 书签页签必须拿到 openLink —— 否则又会退回新标签（使用者 2026-10-16 反馈的不一致）
   assert.match(src, /h\(BookmarksTab, \{ openLink: props\.openLink \}\)/, 'BookmarksTab 没拿到 openLink ⇒ 书签卡会退回新标签')
   assert.match(src, /\(props\.openLink \|\| function \(u\) \{ window\.open\(u, '_blank', 'noopener,noreferrer'\) \}\)\(b\.url\)/, '书签卡「打开」没有走 props.openLink')
   const bm = src.slice(src.indexOf('function BookmarksTab'), src.indexOf('function BoardTab'))

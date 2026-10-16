@@ -13,7 +13,7 @@ export const CIWEIMAO_BOARDS: Record<string, string> = {
   'ciweimao.yp_new.week': '/rank-index/yp_new-week',
 }
 
-/** 首订（约）：**第三方**接口，不在刺猬猫站上。注意是 http（https 在本机会被重置） */
+/** 首订（约）：**第三方**接口，不在刺猬猫站上。注意是 http（https 在本地会被重置） */
 export const CIWEIMAO_BUY_URL = 'http://newmmapi.yukirus.com/CiweiMaoRank/GetFavorite10KBuyRank'
 export const CIWEIMAO_BUY_BOARD = 'ciweimao.buy.latest'
 

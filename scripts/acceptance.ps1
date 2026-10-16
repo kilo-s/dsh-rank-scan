@@ -76,27 +76,51 @@ foreach ($f in $srcFiles) {
   Select-String -Path $f.FullName -Pattern "from '(?!node:|\./|\.\./)" -AllMatches | ForEach-Object { $badImports += ($_.Filename + ':' + $_.LineNumber) }
 }
 Check "依赖闸：host 侧零第三方 import（只允许 node: 与相对路径）" ($badImports.Count -eq 0) ("可疑 import: " + ($badImports -join ', '))
-# ★ 公开面闸（2026-10-16）：本仓库是**给别人看的**，以下三类一律不许进索引：
-#   ① 编译产物 lib/（会把源码注释复制一份，sourcemap 还带本机绝对路径）
+# ★ 公开面闸（2026-10-16）：本仓库是**给别人看的**，以下四类一律不许出现：
+#   ① 编译产物 lib/（会把源码注释复制一份，sourcemap 还带构建机的绝对路径）
 #   ② 个人绝对路径（形如 C:\Users\<某人的名字>）
-#   ③ 面向维护者的内部称呼（本仓早期版本满篇都是对维护者的第三人称，外人看不懂）
+#   ③ 私下对话的人称与所属称呼（本仓早期版本满篇都是「某人说了什么」，外人看不懂）
+#   ④ 公开面引用的仓库内图片 / 文档必须存在（死链 = 读者点开 404）
+#   ★ 禁词本字刻意用 [char] 拼出来，这样闸门不会命中自己 —— 因此**任何文件都不需要开例外**。
+$bannedWords = @(
+  ([char]0x7EF4 + [char]0x62A4 + [char]0x8005),
+  ([char]0x672C + [char]0x673A),
+  ([char]0x5C5E + [char]0x4E3B),
+  ([char]0x8FD9 + [char]0x53F0 + [char]0x673A + [char]0x5668)
+)
 $trackedFiles = @(& git -C $root ls-files 2>$null)
 $libInIndex = ($trackedFiles | Where-Object { $_ -like 'lib/*' } | Measure-Object).Count
 Check "公开面闸：编译产物 lib/ 不在仓库索引里" ($libInIndex -eq 0) ("索引内 lib 文件数=" + $libInIndex + "（仓库只放源码，包由 CI 构建）")
+$textFiles = $trackedFiles | Where-Object { $_ -match '\.(ts|mjs|js|md|json|yml|ps1|sh|gitignore|gitattributes)$' }
 $pathHits = @()
-foreach ($f in ($trackedFiles | Where-Object { $_ -match '\.(ts|mjs|js|md|json|yml|ps1|sh)$' })) {
+$userPathNeedle = 'C:' + [char]92 + [char]92 + 'Users' + [char]92
+#    ★ 探针自检：先用合成样本证明这个匹配真的能命中（历史坑：模式以反斜杠结尾 ⇒ 正则非法 ⇒ 每次都在
+#      抛异常，而探针却显示 PASS，等于白设）。
+$probeWorks = ('C:' + [char]92 + [char]92 + 'Users' + [char]92 + 'someone').Contains($userPathNeedle)
+foreach ($f in $textFiles) {
   $c = Get-Content -Raw -Encoding UTF8 (Join-Path $root $f) -ErrorAction SilentlyContinue
-  if ($c -and $c -match ('C:' + [char]92 + [char]92 + 'Users' + [char]92)) { $pathHits += $f }
+  if ($c -and $c.Contains($userPathNeedle)) { $pathHits += $f }
 }
-Check "公开面闸：仓库里没有个人绝对路径" ($pathHits.Count -eq 0) ("命中：" + ($pathHits -join ', '))
-#    ★ 例外：docs/PUBLISHING.md 是**维护者文档**，它在「公开面红线」表里必须列举这些禁词，
-#      所以它不参与本条断言（否则规则文档会把自己判违规——本轮踩过一次）。
+Check "公开面闸：仓库里没有个人绝对路径" (($pathHits.Count -eq 0) -and $probeWorks) ("命中：" + ($pathHits -join ', ') + "；探针自检=" + $probeWorks)
 $ownerHits = @()
-foreach ($f in ($trackedFiles | Where-Object { $_ -match '\.(ts|mjs|js|md|ps1)$' -and $_ -ne 'docs/PUBLISHING.md' })) {
+foreach ($f in $textFiles) {
   $c = Get-Content -Raw -Encoding UTF8 (Join-Path $root $f) -ErrorAction SilentlyContinue
-  if ($c -and $c -match ([char]0x5C5E + [char]0x4E3B)) { $ownerHits += $f }
+  if (-not $c) { continue }
+  foreach ($w in $bannedWords) { if ($c.Contains($w)) { $ownerHits += ($f + '(' + $w + ')') } }
 }
-Check "公开面闸：没有面向维护者的内部称呼" ($ownerHits.Count -eq 0) ("命中：" + ($ownerHits -join ', '))
+Check "公开面闸：没有内部人称与所有权称呼" ($ownerHits.Count -eq 0) ("命中：" + ($ownerHits -join ', '))
+$deadLinks = @()
+foreach ($f in ($trackedFiles | Where-Object { $_ -match '\.md$' })) {
+  $c = Get-Content -Raw -Encoding UTF8 (Join-Path $root $f) -ErrorAction SilentlyContinue
+  if (-not $c) { continue }
+  foreach ($m in [regex]::Matches($c, '(?<![\w/.:-])(?:docs/)?[A-Za-z0-9._-]+\.(?:png|md)')) {
+    $rel = $m.Value
+    if (Test-Path (Join-Path $root $rel)) { continue }
+    if (Test-Path (Join-Path (Split-Path -Parent (Join-Path $root $f)) $rel)) { continue }
+    $deadLinks += ($f + ' -> ' + $rel)
+  }
+}
+Check "公开面闸：公开面引用的仓库内图片/文档都存在（无死链）" ($deadLinks.Count -eq 0) ("死链：" + ($deadLinks -join '; '))
 $pkgJson = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'package.json') | ConvertFrom-Json
 $hasPeer = $null -ne $pkgJson.peerDependencies
 $hasDeps = ($null -ne $pkgJson.dependencies) -and (($pkgJson.dependencies.PSObject.Properties | Measure-Object).Count -gt 0)
@@ -119,7 +143,7 @@ Check "换期-2 跨期保护纯函数在（期键同值=同期）" (($diff_src -
 Check "换期-2 保护只作用于周期榜（三江 + 刺猬猫首订约）" (($diff_src -match "qidiantu\.sanjiang") -and ($diff_src -match "ciweimao\.buy\.latest")) "非周期榜行为不变"
 Check "换期-2 computeBoardDiff 已接线并回传 crossPeriod" (($diff_src -match 'guardCrossPeriod\(\{ boardId') -and ($diff_src -match 'base\.crossPeriod = true')) "变化列在换期当天置空"
 Check "换期-2 周日算法（三江期首日口径）" ($diff_src -match 'export function sundayOf') "sundayOf：本周日 = 期首日"
-# ③ 定时开关的最终口径（2026-10-16 维护者）：**默认开、用户可关、重载保留**
+# ③ 定时开关的最终口径（2026-10-16 使用者）：**默认开、用户可关、重载保留**
 #    历史真凶：旧 v2 迁移（timerSchemaV !== 2 ⇒ timerEnabled=false）与 v6（写 6）冲突 ⇒「6 !== 2」恒真
 #    ⇒ 每次启动都把用户的开关关掉。最终形态 = **删掉该迁移**，除面板 /timer 接口外任何代码都不写 timerEnabled。
 #    ★ 判据刻意**不剥注释**（实测：剥块注释的正则会被源码里不配对的 /* 或字符串吃掉几千字符，

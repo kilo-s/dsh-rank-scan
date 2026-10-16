@@ -1,10 +1,10 @@
-# 编译产物（不进仓库：里面会复制源码注释，且 sourcemap 含本机绝对路径）
+# 编译产物（不进仓库：里面会复制源码注释，且 sourcemap 含本地绝对路径）
 lib/
 *.tsbuildinfo
 *.tgz
 build.log
 node_modules/
-# 本机/工具临时物
+# 本地/工具临时物
 *.dshclaim
 *.dshpending/
 .tmp-types/

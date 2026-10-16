@@ -64,7 +64,7 @@ export function applyCleanup(root: string, dates: string[]): number {
 
 /**
  * 递归复制目录（逐文件 copyFileSync）。
- * 刻意不用 fs.cpSync({recursive:true})：本机沙箱下递归复制目录实测报 EIO 'Access is denied'，
+ * 刻意不用 fs.cpSync({recursive:true})：本地沙箱下递归复制目录实测报 EIO 'Access is denied'，
  * 而逐个文件复制正常（2026-10-14 T12-8 验收实测）。
  */
 function copyDirDeep(src: string, dest: string): void {
@@ -90,7 +90,7 @@ export function runRetention(root: string, today: string, keepDays: number | 'fo
 }
 
 /**
- * ★ 2026-10-16（维护者提的缺口）：保留策略的**输入规范化**。
+ * ★ 2026-10-16（使用者提的缺口）：保留策略的**输入规范化**。
  * 面板以前只能显示「保留 N 天」，改不了；现在可选 7–3650 天或永久（'forever'）。
  * 返回 null 表示输入非法（调用方回 400）。
  */

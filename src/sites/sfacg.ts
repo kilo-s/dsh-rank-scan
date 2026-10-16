@@ -2,7 +2,7 @@ import { MissingError, type BoardCtx, type BoardResult, type Row, type SiteAdapt
 import { boundedFetch } from '../scan/bounded-fetch.js'
 
 /**
- * 菠萝包轻小说（book.sfacg.com）适配器 —— 首页 SSR 的三个榜（2026-10-14 维护者定）。
+ * 菠萝包轻小说（book.sfacg.com）适配器 —— 首页 SSR 的三个榜（2026-10-14 使用者定）。
  * 实测事实：
  * - 首页 15 个区块，用 span.main-title 的文本定位；周期 tab 是**同页 div.tab-item**（不是 URL 参数），
  *   两个 tab 的数据都在 SSR 里；每个 tab 固定 10 条
