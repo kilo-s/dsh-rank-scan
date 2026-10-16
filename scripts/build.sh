@@ -18,4 +18,10 @@ if [ -z "$TSC" ]; then
 fi
 
 "$TSC" -p tsconfig.json
-echo "build: 完成 → $ROOT/lib（面板是手写 lib/client.js，不参与构建，也不会被覆盖）"
+
+# 面板 bundle 的源在 client/client.js（手写，不经 tsc）。构建的职责是把它**复制**到产物目录，
+# 这样从仓库 clone 出来就能构建出与发布包一致的 lib/client.js。
+[ -f "$ROOT/client/client.js" ] || { echo "build: 缺 client/client.js（面板源）" >&2; exit 1; }
+mkdir -p "$ROOT/lib"
+cp "$ROOT/client/client.js" "$ROOT/lib/client.js"
+echo "build: 完成 → $ROOT/lib（host 由 tsc 产出；面板 bundle 由 client/client.js 复制而来）"

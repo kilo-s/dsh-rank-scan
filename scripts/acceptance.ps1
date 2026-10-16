@@ -128,7 +128,13 @@ Check "依赖闸：package.json 无 peerDependencies、无运行时 dependencies
 Check "装配闸：cordis.patch.yml 存在且是 dsh.bundle.patch 指向的文件" ((Test-Path (Join-Path $root 'cordis.patch.yml')) -and ($pkgJson.dsh.bundle.patch -eq './cordis.patch.yml')) "最小 insert 补丁"
 Check "装配闸：dsh.client.platform=web 且 exports 有 ./client" (($pkgJson.dsh.client.platform -eq 'web') -and ($null -ne $pkgJson.exports.'./client')) "面板注入路径"
 Check "装配闸：inject 声明的服务都在宿主已知集合（timer/webServer）" ((($pkgJson.dsh.client.inject | Measure-Object).Count -eq 0) -or (& { $ok=$true; foreach ($s in $pkgJson.dsh.client.inject) { if (@('timer','webServer','tools') -notcontains $s) { $ok=$false } }; $ok })) ("client.inject=" + ($pkgJson.dsh.client.inject -join ','))
-Check "轻量闸：面板产物不会再被构建覆盖（无 src/client、无 tsdown 配置）" ((-not (Test-Path (Join-Path $root 'src\client'))) -and (-not (Test-Path (Join-Path $root 'tsdown.config.ts')))) "手写 lib/client.js"
+Check "轻量闸：面板产物不会再被构建覆盖（无 src/client、无 tsdown 配置）" ((-not (Test-Path (Join-Path $root 'src\client'))) -and (-not (Test-Path (Join-Path $root 'tsdown.config.ts')))) "手写 client/client.js + 构建复制"
+#   ★ 面板源必须在仓库里：此前它只存在于开发机的 lib/client.js 里（lib/ 不入库），
+#     于是 CI 从源码构建出的 tgz 没有面板，build.yml 的产物校验必然失败。
+$clientSrcPath = Join-Path $root 'client\client.js'
+$clientOutPath = Join-Path $root 'lib\client.js'
+$clientSame = if (Test-Path $clientOutPath) { (Get-FileHash $clientSrcPath).Hash -eq (Get-FileHash $clientOutPath).Hash } else { $true }
+Check "装配闸：面板源入库（client/client.js），且 lib/client.js 与它内容一致" ((Test-Path $clientSrcPath) -and $clientSame) ("源在=" + (Test-Path $clientSrcPath) + " 产物存在=" + (Test-Path $clientOutPath) + " 内容一致=" + $clientSame)
 $tgz = Get-ChildItem -Path $root -Filter '*.tgz' -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($tgz) { Check "分发闸：tgz 体积 <= 400 KB" ($tgz.Length -le 409600) ($tgz.Name + ' = ' + [math]::Round($tgz.Length / 1024) + ' KB') } else { Check "分发闸：tgz 存在" $false "还没 npm pack（可接受，但分发前要产出）" }
 Check "迁移闸：state 迁移不动用户开关（v6 迁移里没有 timerEnabled 赋值）" (-not ($host_src -match 'st1\.timerEnabled')) "老配置保持原样"

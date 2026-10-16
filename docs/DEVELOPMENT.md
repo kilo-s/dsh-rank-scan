@@ -12,8 +12,8 @@ src/scan/*.ts         纯逻辑（可单测）：derive 派生榜 / diff 变化�
                       schedule 定时判据 / store 落盘 / files 复制与导出 / fontmap 字体映射 /
                       update 与 update-check 更新通道 / guard 来源与日期校验 / bounded-fetch 超时
 src/sites/*.ts        站点适配器：qidian-mobile / qidiantu / ciweimao / fanqie / sfacg
-lib/client.js         面板 bundle（**手写**，不经构建；只 require('react')）
-lib/                  tsc 产物目录（**不进仓库**）
+client/client.js      面板 bundle 的**源**（手写，不经 tsc；只 require('react')）
+lib/                  tsc 产物 + 复制过来的面板 bundle（**不进仓库**：注释会被复制、sourcemap 带绝对路径）
 tests/*.test.mjs      离线测试（node:test，零依赖，不联网）
 tests/fixtures/       站点响应快照，供解析器回归
 scripts/              构建、测试、安装、卸载、验收闸门
@@ -23,10 +23,12 @@ scripts/              构建、测试、安装、卸载、验收闸门
 
 ```bash
 npm install            # 只为拿 typescript / @types/node（运行期零依赖）
-npx tsc -p tsconfig.json   # 或 bash scripts/build.sh（会按 DSH_CHECKOUT / PATH 找 tsc）
+bash scripts/build.sh  # tsc 编译 host + 把 client/client.js 复制成 lib/client.js
+                       # 单跑 npx tsc 只编 host，面板要自己 cp client/client.js lib/client.js
 ```
 
 - `lib/` **不入库**：编译产物会把源码注释复制一份，sourcemap 还带构建机的绝对路径；同时产物与源码会各自漂移。
+- **面板 bundle 的源是 `client/client.js`**（入库），构建时被**复制**到 `lib/client.js` —— 它是手写的，不编译、不打包；所以「clone → `npm run build`」能产出与发布包一致的 `lib/`。
 - 代价是**不能 clone 仓库直装**（只有源码，宿主加载会 `did not activate`）。对外分发只有两种形态：Release 附件里的 tgz（`.github/workflows/build.yml` 打 tag 时从源码构建）与 `npm pack`。
 - 产出包自查：`tar -tzf <tgz>` 必须能看到 `package/lib/index.js`、`package/lib/client.js`、`package/cordis.patch.yml`。
 
@@ -52,7 +54,7 @@ node tests/diff.test.mjs              # 单个文件
 
 ## 面板与宿主路由
 
-面板是**手写 bundle**（`lib/client.js`，`window.__ModuleLoader__.load({ id, factory })` 形态），注册到 `shell.overlay`，入口挂在 `sidebar.panellist`。宿主侧路由用 `ctx.inject(['webServer'], ...)` 注册 `/api/rank-scan` 前缀。
+面板是**手写 bundle**（源在 `client/client.js`，构建复制为 `lib/client.js`；`window.__ModuleLoader__.load({ id, factory })` 形态），注册到 `shell.overlay`，入口挂在 `sidebar.panellist`。宿主侧路由用 `ctx.inject(['webServer'], ...)` 注册 `/api/rank-scan` 前缀。
 
 三条踩过的坑：
 
@@ -79,7 +81,7 @@ pwsh -File scripts/acceptance.ps1             # 加上在线探针（需要插�
 
 分五组：**不连累本体**（回调兜底 / 入参校验 / 扫描锁 / 超时）· **轻量**（定时惰性接线 / 占用统计走缓存 / 收起不轮询）· **坏了也没事**（书签原子写与备份恢复）· **轻量/轻依赖/易安装 闸门**（依赖闸 / 装配闸 / 轻量闸 / 分发闸 / 迁移闸 / 通道闸 / **公开面闸**）· **周期榜换期**与**版本一键更新**。
 
-**公开面闸**（本仓库是给别人看的）在提交前必须全绿：编译产物不进索引 · 无个人绝对路径 · 无面向维护者的内部称呼 · 公开面引用的 `docs/*.png` 与 `docs/*.md` 必须存在（防死链）。
+**公开面闸**（本仓库是给别人看的）在提交前必须全绿：编译产物不进索引 · 无个人绝对路径 · 无内部人称与所有权称呼 · 公开面引用的 `docs/*.png` 与 `docs/*.md` 必须存在（防死链）。
 
 ## 发布
 
@@ -88,4 +90,4 @@ pwsh -File scripts/acceptance.ps1             # 加上在线探针（需要插�
 3. 打 tag（`v<version>`）并推送 —— `.github/workflows/build.yml` 会从源码构建、跑离线自测、校验包内是否有 `lib/index.js` / `lib/client.js` / `cordis.patch.yml`，然后挂到同名 Release；
 4. 发布说明写「安装：先完全退出 DSH，再执行 `dsh plugin --profile desktop add <附件 tgz 的本地路径>` 或解压后跑 `scripts/install.ps1`」。
 
-包名与分发渠道的决定（含改名与 scope 注意事项）记在本机维护者文档里，不入库。
+包名与分发渠道的决定（含改名与 scope 注意事项）记在开发机的私有文档里，不入库。

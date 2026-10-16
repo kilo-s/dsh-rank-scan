@@ -16,10 +16,23 @@ import { fileURLToPath } from 'node:url'
  * 所以必须有一个「真的把它当 JS 解析一遍」的测试，并且顺手守住几个结构特征。
  */
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const BUNDLE = join(ROOT, 'lib', 'client.js')
+// 面板源在 client/client.js（入库，是唯一真源）；lib/client.js 由构建复制而来（不入库）。
+// 优先测「真正会发货的那一份」，没有构建过时退回源文件，避免 clone 后未构建就整片红。
+const SOURCE = join(ROOT, 'client', 'client.js')
+const BUNDLE = existsSync(join(ROOT, 'lib', 'client.js')) ? join(ROOT, 'lib', 'client.js') : SOURCE
 
-test('lib/client.js 必须能被 JS 解析（防 edit 留下孤立 token 变成语法错误）', () => {
-  assert.ok(existsSync(BUNDLE), 'lib/client.js 不存在')
+test('面板源在仓库里（client/client.js）', () => {
+  assert.ok(existsSync(SOURCE), 'client/client.js 不在：面板源必须入库，否则 CI 从源码构建出的包装不上面板')
+})
+
+test('lib/client.js 与 client/client.js 内容一致（构建只是复制，不许各自漂移）', () => {
+  const out = join(ROOT, 'lib', 'client.js')
+  if (!existsSync(out)) return // 未构建：由 CI / 双闸门先构建后再查
+  assert.equal(readFileSync(out, 'utf8'), readFileSync(SOURCE, 'utf8'), 'lib/client.js 与面板源不一致：先跑 scripts/build.sh')
+})
+
+test('客户端 bundle 必须能被 JS 解析（防 edit 留下孤立 token 变成语法错误）', () => {
+  assert.ok(existsSync(BUNDLE), BUNDLE + ' 不存在')
   const src = readFileSync(BUNDLE, 'utf8')
   assert.ok(src.length > 1000, 'bundle 太小，不像完整产物')
   // new Function 会真的走一遍解析（语法错误会抛 SyntaxError）
