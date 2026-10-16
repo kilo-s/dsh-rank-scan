@@ -83,9 +83,8 @@ jobs:
           仓库不含编译产物，**不要**用仓库 URL 直接安装。详见 README 的「安装 / 更新」。
           NOTES
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "Release 已存在：覆盖附件与说明"
+            echo "Release 已存在：只覆盖附件（人工写的发布说明优先）"
             gh release upload "${GITHUB_REF_NAME}" "$tgz" --repo "${GITHUB_REPOSITORY}" --clobber
-            gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file /tmp/release-notes.md
           else
             gh release create "${GITHUB_REF_NAME}" "$tgz" \
               --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file /tmp/release-notes.md
