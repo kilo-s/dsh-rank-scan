@@ -76,9 +76,25 @@ foreach ($f in $srcFiles) {
   Select-String -Path $f.FullName -Pattern "from '(?!node:|\./|\.\./)" -AllMatches | ForEach-Object { $badImports += ($_.Filename + ':' + $_.LineNumber) }
 }
 Check "依赖闸：host 侧零第三方 import（只允许 node: 与相对路径）" ($badImports.Count -eq 0) ("可疑 import: " + ($badImports -join ', '))
-# 分发形式闸（2026-10-16）：仓库要支持「一条命令从仓库直装」⇒ 编译产物 lib/ 必须随源码提交
-Check "分发闸：编译产物 lib/ 在仓库里（仓库 URL 直装的前提）" ((Test-Path (Join-Path $root 'lib\index.js')) -and (Test-Path (Join-Path $root 'lib\client.js'))) "lib/index.js + lib/client.js"
-Check "分发闸：README 顶部有仓库直装命令" ((Get-Content -Raw -Encoding UTF8 (Join-Path $root 'README.md')) -match 'dsh plugin --profile desktop add') "一条命令即可安装"
+# ★ 公开面闸（2026-10-16）：本仓库是**给别人看的**，以下三类一律不许进索引：
+#   ① 编译产物 lib/（会把源码注释复制一份，sourcemap 还带本机绝对路径）
+#   ② 个人绝对路径（形如 C:\Users\<某人的名字>）
+#   ③ 面向维护者的内部称呼（本仓早期版本满篇都是对维护者的第三人称，外人看不懂）
+$trackedFiles = @(& git -C $root ls-files 2>$null)
+$libInIndex = ($trackedFiles | Where-Object { $_ -like 'lib/*' } | Measure-Object).Count
+Check "公开面闸：编译产物 lib/ 不在仓库索引里" ($libInIndex -eq 0) ("索引内 lib 文件数=" + $libInIndex + "（仓库只放源码，包由 CI 构建）")
+$pathHits = @()
+foreach ($f in ($trackedFiles | Where-Object { $_ -match '\.(ts|mjs|js|md|json|yml|ps1|sh)$' })) {
+  $c = Get-Content -Raw -Encoding UTF8 (Join-Path $root $f) -ErrorAction SilentlyContinue
+  if ($c -and $c -match ('C:' + [char]92 + [char]92 + 'Users' + [char]92)) { $pathHits += $f }
+}
+Check "公开面闸：仓库里没有个人绝对路径" ($pathHits.Count -eq 0) ("命中：" + ($pathHits -join ', '))
+$ownerHits = @()
+foreach ($f in ($trackedFiles | Where-Object { $_ -match '\.(ts|mjs|js|md|ps1)$' })) {
+  $c = Get-Content -Raw -Encoding UTF8 (Join-Path $root $f) -ErrorAction SilentlyContinue
+  if ($c -and $c -match ([char]0x5C5E + [char]0x4E3B)) { $ownerHits += $f }
+}
+Check "公开面闸：没有面向维护者的内部称呼" ($ownerHits.Count -eq 0) ("命中：" + ($ownerHits -join ', '))
 $pkgJson = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'package.json') | ConvertFrom-Json
 $hasPeer = $null -ne $pkgJson.peerDependencies
 $hasDeps = ($null -ne $pkgJson.dependencies) -and (($pkgJson.dependencies.PSObject.Properties | Measure-Object).Count -gt 0)
