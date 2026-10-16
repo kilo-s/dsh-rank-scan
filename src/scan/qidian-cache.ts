@@ -42,7 +42,8 @@ export function cachedBook(root: string, bid: string, ttlMs: number): { hit: boo
   const e = load(root).books[String(bid)]
   if (!e || !e.fetchedAt) return { hit: false, hitAt: null, stat: null }
   const at = Date.parse(e.fetchedAt)
-  if (!Number.isFinite(at) || Date.now() - at > ttlMs) return { hit: false, hitAt: e.fetchedAt, stat: null }
+  // ★ 边界用 >=：ttlMs=0 必须在**同一毫秒**内也判过期（用 > 时 age=0 会判命中 ⇒ 该用例在快机器上随机变红）
+  if (!Number.isFinite(at) || Date.now() - at >= ttlMs) return { hit: false, hitAt: e.fetchedAt, stat: null }
   return { hit: true, hitAt: e.fetchedAt, stat: e }
 }
 
