@@ -4,14 +4,18 @@ DSH 扫榜插件（定时 + HTTP 路由 + 面板；**不注册 DSH 工具**）�
 
 ## 0. 快速开始（一页版，先看这个）
 
-**装**（把 tgz 拷到目标机器，然后一条命令）：
+### 装：三条路，任选一条
 
-```powershell
-pwsh -File scripts\install.ps1 -Spec "D:\dsh-external-dsh-rank-scan-0.0.1.tgz"
-```
+| 方式 | 命令 | 说明 |
+|---|---|---|
+| **① 从仓库直接装（最省事）** | `dsh plugin --profile desktop add https://github.com/kilo-s/dsh-rank-scan.git` | 仓库里**带着编译好的 `lib/`**，所以不需要你本地构建 |
+| ② 下载 Release 的包再装 | `pwsh -File scripts\install.ps1 -Spec "<解压后的目录或 tgz 路径>"` | 适合不熟悉命令行的朋友；包在 [Releases](https://github.com/kilo-s/dsh-rank-scan/releases) |
+| ③ 开发/本地目录 | `pwsh -File scripts\install.ps1 -Spec "link:<插件目录>"` | 改完代码要自己构建（见 §本机构建） |
 
-（macOS / Linux 用 `bash scripts/install.sh desktop <tgz 路径>`；开发时用 `-Spec "link:<插件目录>"` 直装目录。）
-装之前请**完全退出桌面版 DSH** —— `dsh plugin` 在桌面版运行时会被拒绝。
+> ⚠ **装之前必须完全退出桌面版 DSH**（`dsh plugin` 在桌面版运行时会被拒绝 —— 官方原话：*profile "desktop" is managed exclusively by the Electron application*）。
+> 流程就三步：**关掉 DSH → 跑上面那条命令 → 重新打开 DSH**。装完之后日常使用不需要再关。
+>
+> macOS / Linux：把 `dsh plugin --profile desktop add …` 换成你那边 profile 的名字即可。
 
 **验**：重开 DSH → 左侧栏会话列表下面应出现「扫榜」入口；或访问 `http://127.0.0.1:19387/api/rank-scan/health`，返回 `{ok:true,...}` 即通。
 

@@ -76,6 +76,9 @@ foreach ($f in $srcFiles) {
   Select-String -Path $f.FullName -Pattern "from '(?!node:|\./|\.\./)" -AllMatches | ForEach-Object { $badImports += ($_.Filename + ':' + $_.LineNumber) }
 }
 Check "依赖闸：host 侧零第三方 import（只允许 node: 与相对路径）" ($badImports.Count -eq 0) ("可疑 import: " + ($badImports -join ', '))
+# 分发形式闸（2026-10-16）：仓库要支持「一条命令从仓库直装」⇒ 编译产物 lib/ 必须随源码提交
+Check "分发闸：编译产物 lib/ 在仓库里（仓库 URL 直装的前提）" ((Test-Path (Join-Path $root 'lib\index.js')) -and (Test-Path (Join-Path $root 'lib\client.js'))) "lib/index.js + lib/client.js"
+Check "分发闸：README 顶部有仓库直装命令" ((Get-Content -Raw -Encoding UTF8 (Join-Path $root 'README.md')) -match 'dsh plugin --profile desktop add') "一条命令即可安装"
 $pkgJson = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'package.json') | ConvertFrom-Json
 $hasPeer = $null -ne $pkgJson.peerDependencies
 $hasDeps = ($null -ne $pkgJson.dependencies) -and (($pkgJson.dependencies.PSObject.Properties | Measure-Object).Count -gt 0)
