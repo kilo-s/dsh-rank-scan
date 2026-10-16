@@ -89,8 +89,10 @@ foreach ($f in ($trackedFiles | Where-Object { $_ -match '\.(ts|mjs|js|md|json|y
   if ($c -and $c -match ('C:' + [char]92 + [char]92 + 'Users' + [char]92)) { $pathHits += $f }
 }
 Check "公开面闸：仓库里没有个人绝对路径" ($pathHits.Count -eq 0) ("命中：" + ($pathHits -join ', '))
+#    ★ 例外：docs/PUBLISHING.md 是**维护者文档**，它在「公开面红线」表里必须列举这些禁词，
+#      所以它不参与本条断言（否则规则文档会把自己判违规——本轮踩过一次）。
 $ownerHits = @()
-foreach ($f in ($trackedFiles | Where-Object { $_ -match '\.(ts|mjs|js|md|ps1)$' })) {
+foreach ($f in ($trackedFiles | Where-Object { $_ -match '\.(ts|mjs|js|md|ps1)$' -and $_ -ne 'docs/PUBLISHING.md' })) {
   $c = Get-Content -Raw -Encoding UTF8 (Join-Path $root $f) -ErrorAction SilentlyContinue
   if ($c -and $c -match ([char]0x5C5E + [char]0x4E3B)) { $ownerHits += $f }
 }
