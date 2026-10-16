@@ -1430,19 +1430,33 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
        */
       // ★ 2026-10-16 定稿（使用者两轮反馈后）：**纯图标**（文字由宿主那行自己的 label 提供），
       //   点击时四种事件全部吃掉 ⇒ 就地弹浮窗、不切主区域。
-      const openHere = function (e) {
-        if (e && typeof e.stopPropagation === 'function') e.stopPropagation()
-        if (e && typeof e.preventDefault === 'function') e.preventDefault()
-      }
+      // ★ 2026-10-16 定稿（使用者：「为什么要两个按钮，统一一个不就行了」）：整行只保留宿主的
+      //   那个 <button>。图标这里降级为**纯展示节点**（不挂任何点击处理器），点击接管只有一处：
+      //   下面这个 effect 在「标记节点所在根节点」的捕获阶段注册一次 —— 图标/文字/行内空白行为一致。
+      React.useEffect(function () {
+        if (typeof document === 'undefined' || !document.addEventListener) return undefined
+        const mark = document.querySelector('[data-rank-scan-entry]')
+        const root = (mark && mark.getRootNode && mark.getRootNode()) || document
+        if (!root.addEventListener || root.__rankScanRowHooked) return undefined
+        root.__rankScanRowHooked = true
+        const onRowActivate = function (e) {
+          try {
+            const t = e.target
+            const btn = t && t.closest ? t.closest('button, [role="button"]') : null
+            const node = document.querySelector('[data-rank-scan-entry]')
+            if (!btn || !node || !btn.contains(node)) return
+            if (e.stopPropagation) e.stopPropagation()
+            if (e.preventDefault) e.preventDefault()
+            panelOpen.set(true)
+          } catch (err) { /* 宿主 DOM 变了也不该把插件带崩 */ }
+        }
+        root.addEventListener('click', onRowActivate, true)
+        root.addEventListener('pointerdown', onRowActivate, true)
+        return undefined
+      }, [])
       return h('div', {
-        // ★ 2026-10-16（使用者口径 B）：宿主的「切主区域」可能挂在 click / mousedown / pointerdown
-        //   任一事件上，所以三种全部就地吃掉：只弹浮窗，绝不换页。
-        onClick: function (e) { openHere(e); panelOpen.set(true) },
-        onMouseDown: openHere,
-        onPointerDown: openHere,
-        onMouseUp: openHere,
         title: '打开扫榜浮窗',
-        // 给宿主那一行按钮里的我们的节点打个标记：document 捕获阶段靠它认出「这一行是我们的」
+        // 行标记：捕获阶段靠它认出「这一行是我们的」（只此一处接管）
         'data-rank-scan-entry': '1',
         style: { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', lineHeight: 1, fontSize: '12px', opacity: active ? 1 : 0.92, whiteSpace: 'nowrap' },
       },
@@ -1596,22 +1610,6 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           //   那个 <button> 里，点文字走的是宿主的 selectPanel(入口 id)；而我们的入口 id 没有对应
           //   main 面板 ⇒ 什么都不会发生。这里在 document 的**捕获阶段**接管：只要点击（或指针按下）
           //   落在「含我们入口标记的那个 button」内，就就地弹浮窗并阻断宿主处理 —— 图标与文字整行一致。
-          if (typeof document !== 'undefined' && document.addEventListener) {
-            const onRowActivate = function (e) {
-              try {
-                const mark = document.querySelector('[data-rank-scan-entry]')
-                if (!mark) return
-                const btn = e.target && e.target.closest ? e.target.closest('button') : null
-                if (btn && btn.contains(mark)) {
-                  if (e.stopPropagation) e.stopPropagation()
-                  if (e.preventDefault) e.preventDefault()
-                  panelOpen.set(true)
-                }
-              } catch (err) { /* 宿主 DOM 变了也不该把插件带崩 */ }
-            }
-            document.addEventListener('click', onRowActivate, true)
-            document.addEventListener('pointerdown', onRowActivate, true)
-          }
           return ctx.slots.register({ name: slot, id: ENTRY_ID, order: 900, label: '扫榜面板' }, SidebarEntryIcon)
             })
             return true

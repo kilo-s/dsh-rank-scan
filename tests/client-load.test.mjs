@@ -186,28 +186,27 @@ test('★ 入口 occupant：就地弹浮窗的可点图标（不套 button、不
   }
   assert.equal(svgWidth(el), 16, '入口图标必须按宿主给的 size 渲染尺寸')
   assert.equal(svgWidth(entry.comp({ size: 18, active: true })), 18, 'size 变化必须跟随')
-  // ★ 2026-10-16（使用者口径）：点入口要**就地弹浮窗**，且必须先 stopPropagation 挡住宿主 PanelRow 的
-  //   selectPanel(id) —— 否则主区域被切到薄 main 面板，正在看的会话被顶走（这正是被投诉的行为）。
-  assert.equal(typeof el.props.onClick, 'function', '入口必须可点（点了就地弹浮窗）')
-  let stopped = false
-  el.props.onClick({ stopPropagation: function () { stopped = true } })
-  assert.ok(stopped, 'onClick 必须先 stopPropagation，挡掉宿主 selectPanel')
+  // ★ 2026-10-16 定稿（使用者：「为什么要两个按钮，统一一个不就行了」）：图标节点降级为纯展示，
+  //   整行只保留宿主那一个 button；点击接管统一在捕获阶段（见下一条测试）⇒ 这里不该再挂处理器。
+  assert.equal(typeof el.props.onClick, 'undefined', '图标节点不该自己挂 onClick（整行只走捕获阶段一处）')
+  assert.equal(el.props['data-rank-scan-entry'], '1', '必须带行标记，捕获阶段靠它认行')
 })
 
-test('★ 入口点击：四种事件全部就地吃掉，只弹浮窗、不切主区域（口径 B）', function () {
+test('★ 整行只有一个按钮：图标节点不挂点击处理器，接管只在捕获阶段一处（2026-10-16 定稿）', function () {
   const { exportsObj } = loadBundle()
   const { ctx, registrations, drain } = makeFakeCtx()
   exportsObj.apply(ctx)
   drain()
   const entry = registrations.find(function (r) { return r.options && r.options.name === 'sidebar.panellist' })
   const el = entry.comp({ size: 16, active: false })
-  const seen = []
-  const evt = { stopPropagation: function () { seen.push('stop') }, preventDefault: function () { seen.push('prevent') } }
   for (const k of ['onClick', 'onMouseDown', 'onPointerDown', 'onMouseUp']) {
-    assert.equal(typeof el.props[k], 'function', '入口必须处理 ' + k + '（宿主可能挂在任一事件上）')
-    el.props[k](evt)
+    assert.ok(!el.props[k], '图标节点不该再挂 ' + k + '（整行只保留宿主那一个按钮，接管统一在捕获阶段）')
   }
-  assert.equal(seen.filter(function (x) { return x === 'stop' }).length, 4, '四种事件都必须 stopPropagation，实际 ' + JSON.stringify(seen))
+  assert.equal(el.props['data-rank-scan-entry'], '1', '必须带行标记，捕获阶段靠它认行')
+  const src = readFileSync(SOURCE, 'utf8')
+  const hooks = src.match(/addEventListener\('click', onRowActivate, true\)/g) || []
+  assert.equal(hooks.length, 1, '行点击接管必须只注册一处，实际 ' + hooks.length)
+  assert.match(src, /closest\('button, \[role="button"\]'\)/, '认行时按钮选择器要兼容 role=button')
 })
 
 test('★ 首次安装自动弹一次：标记只在**真的打开**的那一刻落（不再「标记落了但从不弹」）', function () {
