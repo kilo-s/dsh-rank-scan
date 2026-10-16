@@ -21,7 +21,7 @@ dsh plugin --profile desktop add github:kilo-s/dsh-rank-scan
 
 - 安装时会**现场从源码构建**：仓库不含编译产物，靠 `package.json` 的 `prepare` 在安装时跑 `scripts/build.mjs` 生成 `lib/`。
 - pnpm 默认拦截依赖的构建脚本，首次会失败 —— `dsh` 会打印需要放行的确切键，把它加进 `~/.dsh/profiles/desktop/pnpm-workspace.yaml` 的 `allowBuilds` 下，再重跑同一条命令即可。
-- 需要本机有 git、pnpm 与网络。
+- 需要你的机器上有 git、pnpm 与网络。
 
 ### 二、装 Release 附件（离线可用）
 
