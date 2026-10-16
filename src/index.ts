@@ -97,7 +97,7 @@ function defaultState() {
   return {
     scanTime: '01:30',
     /**
-     * ★ 2026-10-16：**按站分时抓取**（属主授权自定时刻）。scanTime 退化为兜底时刻。
+     * ★ 2026-10-16：**按站分时抓取**（维护者授权自定时刻）。scanTime 退化为兜底时刻。
      * 每个站放它自己刷新点之后：抓早了会把「昨天那版」记在今天，变化列出现假持平。
      */
     siteTimes: { ...DEFAULT_SITE_TIMES } as Record<string, string>,
@@ -107,7 +107,7 @@ function defaultState() {
     /** 每个榜最近一次扫描（含手动）：面板可显示「这个榜上次什么时候抓的」 */
     boardLastScan: {} as Record<string, { date: string; at: string; outcome: string }>,
     /**
-     * ★ 2026-10-16（属主口径，最终）：**定时默认【开】；用户可关；重载保留用户的选择**。
+     * ★ 2026-10-16（维护者口径，最终）：**定时默认【开】；用户可关；重载保留用户的选择**。
      *   - 新安装 = 开（但安装当天不自动跑，见 checkTimer 的 installedToday 分支）；
      *   - 用户关掉后，config.json 里的 false 会一直生效 —— **任何迁移都不许再写 timerEnabled**；
      *   - 升级上来的老配置：文件里已经有值就沿用，没有值（老版本没存过这个字段）则按新默认 = 开。
@@ -124,7 +124,7 @@ function defaultState() {
     retentionDays: 180,
     maxRequests: 600,
     /**
-     * 起点书页补全（收藏/精确字数）总开关 —— **默认关**（属主 2026-10-15 口径）。
+     * 起点书页补全（收藏/精确字数）总开关 —— **默认关**（维护者 2026-10-15 口径）。
      * 起点收藏只存在于作品页（约 103 KB/本），榜页永远给不了；勾上之后靠 state/qidian-book-cache.json
      * 的 TTL 缓存跳过重复的书，只有「新入榜/缓存过期」的真去打请求。见 postScanEnrich 与 /qidianEnrich。
      */
@@ -155,7 +155,7 @@ function defaultState() {
     ],
     /**
      * 每个榜取多少条（面板可逐榜调）。
-     * 属主口径（2026-10-15）：**番茄与刺猬猫默认 30**；
+     * 维护者口径（2026-10-15）：**番茄与刺猬猫默认 30**；
      * 起点移动端榜单单页就是 20 条（SSR 里 pageNum=1/总数 172，翻页接口在反爬挑战后面）⇒ 固定 20；
      * 菠萝包首页每 tab 固定 10 ⇒ 固定 10；起点图首订当日榜 20–35 条、三江整期 ⇒ 固定。
      */
@@ -310,7 +310,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     }
     /**
      * 起点/起点图三江 单独一条通道（走书页缓存）：受 `state.qidianEnrich` 开关控制。
-     * 属主 2026-10-15：三江的**字数**只能从起点书页取（三江表里没有字数字段），所以并入这条通道：
+     * 维护者 2026-10-15：三江的**字数**只能从起点书页取（三江表里没有字数字段），所以并入这条通道：
      * 同一个开关管「起点 收藏/精确字数」+「三江 字数」，一次勾选两处受益。
      * 不塞进上面的 targets：这里的成本模型不同（每本书页 ~92 KB，靠缓存压请求数）。
      */
@@ -353,7 +353,7 @@ export function apply(ctx: PluginCtx, config: any): void {
      */
     const artId: string = opts && (opts as any).partial && (opts as any).site ? rec.dataDate + '-' + String((opts as any).site) : rec.dataDate
     /**
-     * ★ 2026-10-16（属主：到点还没刷新怎么办）：**新鲜度自检**。
+     * ★ 2026-10-16（维护者：到点还没刷新怎么办）：**新鲜度自检**。
      * 与上一数据日的同一榜比对：key 与主指标 value 全都一样 ⇒ 判「疑似未刷新」（站点还没换榜）。
      * 只写进 state + 警告，**不在这里多发请求**；补抓由兜底时刻按 stale 重跑（见 siteRetry）。
      */
@@ -466,7 +466,7 @@ export function apply(ctx: PluginCtx, config: any): void {
   /**
    * 定时抓取：到点触发（分精度），当天已成功扫描则跳过；电脑晚开机也在当天补跑一次。
    *
-   * ★ 2026-10-15 事故后的三条硬约束（缺一不可，见 docs/handoff-2026-10-15-rank-scan-panel-v8.md）：
+   * ★ 2026-10-15 事故后的三条硬约束（缺一不可，见 git 提交记录）：
    *   ① 「今天跑过没」**必须落盘**（state.lastTimerRun）：进程级变量在宿主重启后会重置，
    *      只看 dueNow 就会变成「每次重启 ⇒ 立刻补跑一次整站扫描 ⇒ 拖死宿主 ⇒ 再重启」的自我循环。
    *   ② 起始宽限期（默认 60 秒）：宿主刚起来时不许跑重活，避免与启动过程抢资源。
@@ -531,7 +531,7 @@ export function apply(ctx: PluginCtx, config: any): void {
   }
   /**
    * 宿主起来后多久才允许跑定时扫描（宽限期）。可用 config.timerFreshMs 覆盖。
-   * ★ 2026-10-15 从 5 分钟收到 60 秒：属主设了 18:19，插件恰好在 18:18 注入
+   * ★ 2026-10-15 从 5 分钟收到 60 秒：维护者设了 18:19，插件恰好在 18:18 注入
    *   ⇒ 被 5 分钟宽限期压到 **18:23 才跑**，看着像「定时没生效」。
    *   这个宽限期的目的是躲开宿主启动期的资源竞态，60 秒足够，代价小得多。
    */
@@ -612,7 +612,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       ranToday: sitesRanToday(sites, localDate(new Date())),
     })
     /**
-     * ★ 2026-10-16（属主问「关闭状态为什么显示今天已跑」）：把「这个站今天抓过没、谁抓的、几点抓的」
+     * ★ 2026-10-16（维护者问「关闭状态为什么显示今天已跑」）：把「这个站今天抓过没、谁抓的、几点抓的」
      * 明确摆出来 —— done 只表示**已有当天快照**（手动扫也算），不等于定时跑过。
      */
     const siteLastScan: Record<string, { date: string; at: string; by: string }> = {}
@@ -632,7 +632,7 @@ export function apply(ctx: PluginCtx, config: any): void {
   }
 
   /**
-   * ★ 2026-10-16（属主授权自定时刻）：**按站分时抓取**。
+   * ★ 2026-10-16（维护者授权自定时刻）：**按站分时抓取**。
    * 每个站放它自己刷新点之后抓一次；一次 tick 只跑一个站（避免 5 站并发打满、也避免抢扫描锁）。
    * 当天没跑成的站，到 fallbackTime 再补跑一次。
    */
@@ -732,8 +732,8 @@ export function apply(ctx: PluginCtx, config: any): void {
      *
      * 2026-10-16 两次修正的最终形态：
      *   ① 最早的 v2 迁移（`timerSchemaV !== 2 ⇒ timerEnabled=false`）与 v6（写 6）冲突 ⇒「6 !== 2」恒真
-     *      ⇒ **每次启动都把用户的开关关掉**（属主反馈「我明明打开过，谁关的」，timer.log 直证）。
-     *   ② 把它改成「字段缺失才关一次」只是止血；属主最终口径是 **默认开、用户可关、重载保留**
+     *      ⇒ **每次启动都把用户的开关关掉**（维护者反馈「我明明打开过，谁关的」，timer.log 直证）。
+     *   ② 把它改成「字段缺失才关一次」只是止血；维护者最终口径是 **默认开、用户可关、重载保留**
      *      ⇒ 直接**删掉**这条迁移：任何代码路径（除面板 /timer 接口本人操作）都不许写 timerEnabled。
      *
      * 升级上来的老配置靠 defaultState 兜底（没存过 = 用新默认「开」），已存过的值原样保留。
@@ -1114,7 +1114,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         { value: 'read', label: '在读' },
       ]
     }
-    // 起点图三江（2026-10-15 属主）：默认按**期初收藏**；另给今日增量 / 期累计
+    // 起点图三江（2026-10-15 维护者）：默认按**期初收藏**；另给今日增量 / 期累计
     if (boardId === 'qidiantu.sanjiang') {
       return [
         { value: '', label: '默认（期初收藏）' },
@@ -1131,7 +1131,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     opts.push({ value: 'words', label: '字数' })
     // 收藏：起点、起点图首订，以及**靠书页补全后有收藏值**的刺猬猫/菠萝包
     if (meta.site === 'qidian' || boardId === 'qidiantu.shouding' || meta.site === 'ciweimao' || meta.site === 'sfacg') opts.push({ value: 'collect', label: '收藏' })
-    // 属主口径（2026-10-15）：排序里**不要**「在榜天数」（列仍然按需出现，但不作为排序项）
+    // 维护者口径（2026-10-15）：排序里**不要**「在榜天数」（列仍然按需出现，但不作为排序项）
     void flags.hasHistory
     if (meta.metric === 'value') opts.push({ value: 'delta', label: '变化（本地环比）' })
     // ★ 兜底过滤（2026-10-15）：排序项必须对应**该榜真实存在的列**，
@@ -1146,14 +1146,14 @@ export function apply(ctx: PluginCtx, config: any): void {
     const store = new FileStore(root)
     const useDate = dateArg && dates.includes(dateArg) ? dateArg : latest
     /**
-     * ★ 日期下拉按**该榜自己有快照的日期**过滤（2026-10-15 属主反馈）：
+     * ★ 日期下拉按**该榜自己有快照的日期**过滤（2026-10-15 维护者反馈）：
      *   之前面板用全局「所有数据日期」，于是给某个榜点一次历史查询，那个日期就会出现在**所有站点**的下拉里。
      *   过滤之后每个榜只列自己真有的日期，别的站/别的榜的历史不会串进来。
      */
     // 派生榜没有自己的快照（它按区间动态算，且始终算最新一期）⇒ 日期下拉对它无意义，给空数组让前端隐藏
     const datesFor = boardId.startsWith('fanqie.derived.') ? [] : dates.filter((d) => !!store.readSnapshot(d, boardId))
     // 「在榜天数」只在**该榜真有历史**时才占列：原判断是全站的（任何榜有历史 ⇒ 每站都挂一列空的），
-    // 属主 2026-10-15 点名起点图不要这一列 ⇒ 改成按榜查精简索引里有没有它更早的记录。
+    // 维护者 2026-10-15 点名起点图不要这一列 ⇒ 改成按榜查精简索引里有没有它更早的记录。
     if (!latest) {
       const colsNone = applyColumnPolicy(columnsFor(meta, { hasBaseline: false, hasHistory: false }), boardId)
       return { boardId, meta, columns: colsNone, dataDate: null, dates: [], rows: [], note: '还没有任何快照：先点「立刻扫一次」' }
@@ -1161,7 +1161,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     // 到这里 latest 一定非空 ⇒ 把日期收窄成非空的本地量（TS 不会因为 latest 非空就收窄 useDate）
     const date = useDate as string
     /**
-     * 「在榜天数」的显示条件（2026-10-15 属主二次反馈后改）：
+     * 「在榜天数」的显示条件（2026-10-15 维护者二次反馈后改）：
      *   判据是**这个榜自己有没有 ≥2 个数据日**，而不是「精简索引里出现过」。
      *   原因：精简索引是历史产物 —— 早期抓取集只有 1 个榜时写的 slim 里只注册了那一个榜，
      *   于是其它榜（起点图/刺猬猫/菠萝包/番茄）即使两天都抓到了，也会被判成「没历史」而不出这一列。
@@ -1180,7 +1180,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       const v = views.find((x) => x.boardId === boardId) || views[0]
       // 派生榜行自带 extra.periodDelta / gain / settledDays；days 位给「池内天数」（列被 hideColumnsFor 隐藏，仅作诊断）
       let rows = (v ? v.rows : []).map((r: any) => ({ ...r, days: r.extra && r.extra.inPoolDays != null ? r.extra.inPoolDays : null }))
-      // ★ 派生榜必须**自己**应用排序（2026-10-15 属主发现「按在读排序没反应」）：
+      // ★ 派生榜必须**自己**应用排序（2026-10-15 维护者发现「按在读排序没反应」）：
       //   这个分支 return 在通用排序代码**之前**，所以 sort 参数到这里就丢了。
       const derivedSort = sort || defaultSortFor(boardId)
       if (derivedSort) rows = rows.slice().sort((a: any, b: any) => compareDesc(num(sortVal(a, derivedSort)), num(sortVal(b, derivedSort))))
@@ -1258,7 +1258,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       const v = typeof r.value === 'number' ? r.value : null
       if (v !== null) prevByKey.set(String(r.key), v)
     }
-    // ★ 名次型榜的「变化」必须用**名次差**（属主 2026-10-15）：
+    // ★ 名次型榜的「变化」必须用**名次差**（维护者 2026-10-15）：
     //   computeBoardDiff 对 value 型榜把 delta 算成「数值差」⇒ 番茄的「变化」列显示的其实是在读差，
     //   与「在读变化」列完全重复。这里按榜口径取上一数据日的真实名次重算一次。
     const useRank = usesRankDelta(boardId)
@@ -1270,7 +1270,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     }
     const today = localDate(clock.now())
     /**
-     * ★ 2026-10-16（属主反馈「菠萝包书名又变回截断」）：站方在**榜单页**就把长书名截成「…」，
+     * ★ 2026-10-16（维护者反馈「菠萝包书名又变回截断」）：站方在**榜单页**就把长书名截成「…」，
      * 只有补全（进书页）才能拿到全名；而手动「立刻扫一次」按 10-15 的口径刻意不跑补全 ⇒
      * 新一天的快照又回到截断书名。这里在**显示层**向上回溯最多 3 个数据日，找同一本书曾经补全过的
      * 全名/作者来补渲染（快照里仍保留站方原始行 —— 数据诚实，只影响显示）。
@@ -1310,15 +1310,15 @@ export function apply(ctx: PluginCtx, config: any): void {
       if (Array.isArray(extra.daily)) {
         const hit = extra.daily.find((x: any) => x && x.date === today)
         extra.dailyDelta = hit && hit.delta != null ? hit.delta : null
-        // ★ 期累计（2026-10-15 属主指出三江缺合计）：已结算各日增量之和；
+        // ★ 期累计（2026-10-15 维护者指出三江缺合计）：已结算各日增量之和；
         //   未到的天是 null ⇒ 天然不计入。全期都没结算时给 null（不是 0）。
         const settled = extra.daily.filter((x: any) => x && x.delta != null)
         extra.periodTotal = settled.length ? settled.reduce((s: number, x: any) => s + Number(x.delta), 0) : null
       }
-      // 原数据来源页（属主 2026-10-15）：起点图首订 → 起点图 /info；刺猬猫「首订（约）」→ 第三方源
+      // 原数据来源页（维护者 2026-10-15）：起点图首订 → 起点图 /info；刺猬猫「首订（约）」→ 第三方源
       if (boardId === 'ciweimao.buy.latest' && !extra.sourceUrl) extra.sourceUrl = CIWEIMAO_BUY_URL
       /**
-       * ★ 起点图三江的字数（属主 2026-10-15）：三江那个表**没有任何字数字段**，
+       * ★ 起点图三江的字数（维护者 2026-10-15）：三江那个表**没有任何字数字段**，
        *   只能从起点书页取（m.qidian.com/book/<id>/ 的 "wordsCnt"）。
        *   走「起点收藏」那套书页缓存：命中就直接补，没命中就等 postScanEnrich / 面板按钮去抓。
        *   这里只做**缓存命中**的补值，绝不在这里发请求（渲染路径不许联网）。
@@ -1373,9 +1373,9 @@ export function apply(ctx: PluginCtx, config: any): void {
         })
       }
     }
-    // ★ 排序一律**倒序**（属主 2026-10-15：按字数/收藏/首订排序要「最大的在前」）：
+    // ★ 排序一律**倒序**（维护者 2026-10-15：按字数/收藏/首订排序要「最大的在前」）：
     //   num() 把缺失值统一成 +Infinity ⇒ 倒序时缺失值会被排到最后（不是最前），这正合口径。
-    // ★ 该榜有自己的「默认排序」时，未显式选排序也按它排（属主 2026-10-15：三江默认按期初收藏）
+    // ★ 该榜有自己的「默认排序」时，未显式选排序也按它排（维护者 2026-10-15：三江默认按期初收藏）
     const effSort = sort || defaultSortFor(boardId)
     if (effSort) rows = rows.slice().sort((a: any, b: any) => compareDesc(num(sortVal(a, effSort)), num(sortVal(b, effSort))))
     if (limit > 0) rows = rows.slice(0, limit)
@@ -1564,7 +1564,7 @@ export function apply(ctx: PluginCtx, config: any): void {
      * 支持两类榜：
      * - `qidian.*`：起点自己的榜 —— 补「精确字数 + 收藏」；
      * - `qidiantu.*`（起点图）：书号就是起点书号，三江表里**没有字数字段**，
-     *   所以同样靠起点书页取「字数」——但**只取字数，不覆盖它自己的收藏**（口径不同）。属主 2026-10-15。
+     *   所以同样靠起点书页取「字数」——但**只取字数，不覆盖它自己的收藏**（口径不同）。维护者 2026-10-15。
      */
     const isQd = boardId.startsWith('qidian.')
     const isQdt = boardId.startsWith('qidiantu.')
@@ -1656,7 +1656,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     } else if (boardId === 'ciweimao.buy.latest') {
       /**
        * 第三方「首订（约）」榜（源：newmmapi.yukirus.com，只有 约值首订 + 上架时间，没有字数/收藏）。
-       * 属主 2026-10-15：**要显示字数与收藏** ⇒ 走刺猬猫书页补全同一套解析。
+       * 维护者 2026-10-15：**要显示字数与收藏** ⇒ 走刺猬猫书页补全同一套解析。
        * 这里刻意**不**抄通用 ciweimao 分支、也不再提前 return：
        *   ① 先把来源页补进每条（面板要用它跳第三方原始页）；
        *   ② 再逐本进刺猬猫书页取 字数/收藏 —— 与别的刺猬猫榜同一个口径。
@@ -1769,7 +1769,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             const t = html.match(/<title>([^<]{1,60})/)
             if (t && r.title && String(r.title).replace(/[\s…]/g, '').length <= String(t[1]).length) next.title = String(t[1]).replace(/最新章节.*$/, '').trim()
           } else {
-            // 菠萝包书页有两组数字，口径必须区分（2026-10-15 属主实测发现）：
+            // 菠萝包书页有两组数字，口径必须区分（2026-10-15 维护者实测发现）：
             //   「收藏 1280」= 总收藏（按钮）；「收藏：166」= 统计块里的另一个口径（别用）
             //   「字数：99784字[连载中]」= 总字数；「字数：26321」= 另一口径（别用）
             const w = html.match(/字数[：:]\s*([\d,]+)\s*字/)
@@ -2244,7 +2244,7 @@ export function apply(ctx: PluginCtx, config: any): void {
           if (p === '/api/rank-scan/retention') {
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })
             const body = await readBody(req)
-            // ★ 2026-10-16（属主提的缺口）：保留策略以前只能手改 config.json，现在面板可选
+            // ★ 2026-10-16（维护者提的缺口）：保留策略以前只能手改 config.json，现在面板可选
             const v = normalizeRetention(body.days)
             if (v === null) return send(400, { error: '保留天数必须是 7–3650 的整数，或 "forever"（永久）' })
             const stR = readState()
@@ -2319,7 +2319,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             // 全站扫（不指定榜）也**默认不补全**：补全是 89~100 请求的长任务，只由定时任务或手动点「补齐」按钮触发。
             // （2026-10-15 事故后收紧：此前面板「立刻扫一次」会跟着 autoEnrich 一起跑补全）
             /**
-             * ★ 2026-10-16（属主口径变更）：**手动「立刻扫一次」也带补全**。
+             * ★ 2026-10-16（维护者口径变更）：**手动「立刻扫一次」也带补全**。
              * 旧口径（10-15）是「手动不补省请求」；现在补全已在 postScanEnrich(only) 里**限定本次扫描范围**，
              * 不会顺带抓别站，所以手动扫就按同一套补全跑。要省请求可显式传 enrichAfter:false。
              */
@@ -2487,7 +2487,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             const keys = q.get('keys') ? String(q.get('keys')).split(',').map((s) => s.trim()).filter(Boolean) : null
             const data = svc.exportData(format as any, { bookKeys: keys, includeTrash: q.get('trash') === '1' })
             if (q.get('download') === '1') {
-              // ★ 2026-10-16（属主需求）：真的当文件下载 —— 旧版只在标签页里显示一段文本，用户拿不到文件
+              // ★ 2026-10-16（维护者需求）：真的当文件下载 —— 旧版只在标签页里显示一段文本，用户拿不到文件
               const fname = 'rank-scan-bookmarks-' + localDate(clock.now()) + (keys ? '-selected' : '') + '.' + format
               res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"')
               res.setHeader('Content-Type', format === 'csv' ? 'text/csv; charset=utf-8' : format === 'md' ? 'text/markdown; charset=utf-8' : 'application/json; charset=utf-8')
@@ -2504,7 +2504,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             const keys = Array.isArray(body2.bookKeys) ? body2.bookKeys.map(String) : null
             const dest = String(body2.dest || '').trim() || join(homedir(), 'Documents', 'rank-scan-export')
             const data = svc2.exportData(format as any, { bookKeys: keys, includeTrash: body2.includeTrash === true })
-            // ★ 2026-10-16（属主问「是不是会覆盖」）：文件名带**到秒的时间戳**，同名再自动加序号
+            // ★ 2026-10-16（维护者问「是不是会覆盖」）：文件名带**到秒的时间戳**，同名再自动加序号
             //   ⇒ 同一天多次导出、不同选择集导出都不会互相覆盖。
             const d0 = clock.now()
             const p2 = (n: number) => String(n).padStart(2, '0')

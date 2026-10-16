@@ -101,7 +101,7 @@ Check "换期-2 跨期保护纯函数在（期键同值=同期）" (($diff_src -
 Check "换期-2 保护只作用于周期榜（三江 + 刺猬猫首订约）" (($diff_src -match "qidiantu\.sanjiang") -and ($diff_src -match "ciweimao\.buy\.latest")) "非周期榜行为不变"
 Check "换期-2 computeBoardDiff 已接线并回传 crossPeriod" (($diff_src -match 'guardCrossPeriod\(\{ boardId') -and ($diff_src -match 'base\.crossPeriod = true')) "变化列在换期当天置空"
 Check "换期-2 周日算法（三江期首日口径）" ($diff_src -match 'export function sundayOf') "sundayOf：本周日 = 期首日"
-# ③ 定时开关的最终口径（2026-10-16 属主）：**默认开、用户可关、重载保留**
+# ③ 定时开关的最终口径（2026-10-16 维护者）：**默认开、用户可关、重载保留**
 #    历史真凶：旧 v2 迁移（timerSchemaV !== 2 ⇒ timerEnabled=false）与 v6（写 6）冲突 ⇒「6 !== 2」恒真
 #    ⇒ 每次启动都把用户的开关关掉。最终形态 = **删掉该迁移**，除面板 /timer 接口外任何代码都不写 timerEnabled。
 #    ★ 判据刻意**不剥注释**（实测：剥块注释的正则会被源码里不配对的 /* 或字符串吃掉几千字符，

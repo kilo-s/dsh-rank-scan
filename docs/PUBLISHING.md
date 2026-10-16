@@ -1,7 +1,7 @@
 # 发布与分发（PUBLISHING）
 
 > 面向维护者。**每次发版照这份走**，不要靠记忆。
-> 分发决定（2026-10-16，属主拍板）：**走 npm**（同时保留 GitHub Release + tgz 作为备选渠道）。
+> 分发决定（2026-10-16，维护者拍板）：**走 npm**（同时保留 GitHub Release + tgz 作为备选渠道）。
 
 ## 0. 一页速览
 
@@ -9,15 +9,23 @@
 ① 改版本位 → ② 双闸门绿 → ③ npm pack（产物带 lib/）→ ④ git tag + Release 挂 tgz → ⑤ npm publish → ⑥ 打 dsh-plugin topic
 ```
 
-## 1. 发布物必须自带 lib/（**最容易踩死的一条**）
+## 1. 仓库只放源码；可分发的包由 CI 构建（**最容易踩死的一条**）
 
-`.gitignore` 忽略了 `lib/`。如果用户用 `dsh plugin add <GitHub 仓库>` 拿到的是**源码**，仓库里没有 `lib/`
-⇒ 插件加载失败（宿主日志：`did not activate`）。所以：
+`lib/` **故意不进仓库**（`.gitignore` 忽略它）。原因有两条，都是实测出来的：
 
-- 对外**主推 npm**（npm 包由 `npm publish` 上传，含 `lib/`）；
-- 备选渠道是 **Release 附件里的 tgz**（`npm pack` 产物，同样含 `lib/`）；
-- README 必须写明「**不要 clone 源码直接装**」；要给源码路径，就得配 `npm i && pwsh scripts/build-local.ps1`，
-  并注明 `build-local.ps1` 是**本机专用**（它写死了本机 tsc 路径），通用构建脚本是 `scripts/build.sh`（需要 dsh checkout）。
+1. 编译产物会把**源码注释原样复制一份**，并且 `*.js.map` 里带**构建机的绝对路径** ⇒ 等于把内部注释
+   和本机信息一起公开；
+2. 产物与源码会各自漂移（改了 src 忘了重建，仓库里的 `lib/` 就是旧的）。
+
+**代价**：不能 `dsh plugin add <本仓库URL>` 直接装（那样只有源码，插件加载会失败：宿主日志 `did not activate`）。
+所以对外分发只有两种形态：
+
+- **Release 附件里的 tgz**（主推）：由 `.github/workflows/build.yml` 在**打 tag 时自动构建并挂上**，
+  包里含 `lib/` + `cordis.patch.yml`；用户下载后跑 `scripts/install.ps1 -Spec "<tgz>"`；
+- **npm**（可选，见 §3 改名步骤）：`npm publish` 上传的包含 `lib/`（`prepack` 会自动构建）。
+
+README 必须写明「**不要用仓库 URL 直接装**」，并指向 Releases。
+本地要构建时：`npm install && npx tsc -p tsconfig.json`（`scripts/build.sh` 亦可，它按 DSH_CHECKOUT/PATH 找 tsc）。
 
 ## 2. 发布检查清单（每条必须能指出证据）
 
@@ -75,11 +83,11 @@
 
 ## 5. 仍未拍板的口径（发版前要收掉）
 
-1. ~~**定时默认口径**~~ ✅ **2026-10-16 属主拍板并落地：默认开、用户可关、重载保留**。
+1. ~~**定时默认口径**~~ ✅ **2026-10-16 维护者拍板并落地：默认开、用户可关、重载保留**。
    做法：删掉那条会翻开关的 v2 迁移（`bindTimer` 里现在**没有任何**写 `timerEnabled` 的语句），
    默认值由 `defaultState` 给出（`timerEnabled: true`）；唯一能改这个键的是面板 `POST /timer`（按用户显式布尔写盘）。
    升级上来的老配置：文件里已存过就沿用，没存过就按新默认「开」。安装当天仍不自动跑（`installedToday`）。
    闸门锚点：`开关-1 / 1b / 2 / 3`。
-2. **各站刷新时刻**是经验值，未实测（做 3 天双时刻探测需要属主批准额外请求）。
-3. **菠萝包「评分」**不补全（榜页只有前 2 名有值），是否在面板标注口径由属主定。
+2. **各站刷新时刻**是经验值，未实测（做 3 天双时刻探测需要维护者批准额外请求）。
+3. **菠萝包「评分」**不补全（榜页只有前 2 名有值），是否在面板标注口径由维护者定。
 4. **卸载 .sh 与 `dsh plugin add` 真装配**都还没实测（都要先完全退出桌面版）。

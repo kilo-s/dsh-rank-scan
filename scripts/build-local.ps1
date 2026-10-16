@@ -1,13 +1,13 @@
-﻿# 本机构建（不建 junction：沙箱禁止 symlink）
-# 用 dsh checkout 自带的 tsc 直接编译 src → lib
-# 注：本文件必须带 UTF-8 BOM，否则 Windows PowerShell 5.1 会按 GBK 读中文导致解析失败
+# Local-only build script (NOT tracked: see .gitignore).
+# Generic build: npm install && npx tsc -p tsconfig.json   (or scripts/build.sh)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$tsc = 'C:\Users\Kilometer\dsh-harness\node_modules\.bin\tsc.cmd'
-if (-not (Test-Path $tsc)) { throw "tsc 不存在：$tsc" }
+$checkout = if ($env:DSH_CHECKOUT) { $env:DSH_CHECKOUT } else { 'C:\Users\Kilometer\dsh-harness' }
+$tsc = Join-Path $checkout 'node_modules\.bin\tsc.cmd'
+if (-not (Test-Path $tsc)) { throw "tsc not found: $tsc (set DSH_CHECKOUT)" }
 Push-Location $root
 try {
   & $tsc -p tsconfig.json
-  if ($LASTEXITCODE -ne 0) { throw "tsc 失败（exit $LASTEXITCODE）" }
-  Write-Host "构建完成：$root\lib"
+  if ($LASTEXITCODE -ne 0) { throw "tsc failed (exit $LASTEXITCODE)" }
+  Write-Host "built: $root\lib"
 } finally { Pop-Location }

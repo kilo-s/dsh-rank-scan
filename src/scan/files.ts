@@ -90,7 +90,7 @@ export function runRetention(root: string, today: string, keepDays: number | 'fo
 }
 
 /**
- * ★ 2026-10-16（属主提的缺口）：保留策略的**输入规范化**。
+ * ★ 2026-10-16（维护者提的缺口）：保留策略的**输入规范化**。
  * 面板以前只能显示「保留 N 天」，改不了；现在可选 7–3650 天或永久（'forever'）。
  * 返回 null 表示输入非法（调用方回 400）。
  */

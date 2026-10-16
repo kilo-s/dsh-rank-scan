@@ -20,13 +20,13 @@ test('列随榜：有历史时才出现「在榜天数」', () => {
   assert.ok(!noBase.includes('readDelta'), '无基准 ⇒ 不出现「在读变化」列')
 })
 
-test('列随榜：番茄新书榜有字数/在读/在读变化；站方升降与更新时间已按属主去掉了', () => {
+test('列随榜：番茄新书榜有字数/在读/在读变化；站方升降与更新时间已按维护者去掉了', () => {
   const keys = columnsFor(boardMeta('fanqie.m.new.1141'), { hasBaseline: true, hasHistory: true }).map((c) => c.key)
   assert.ok(keys.includes('read'))
   assert.ok(keys.includes('words'))
   assert.ok(keys.includes('readDelta'), '有基准时才有「在读变化」列')
-  assert.ok(!keys.includes('siteDelta'), '站方升降（rankPosDiff）属主已删')
-  assert.ok(!keys.includes('updated'), '更新时间属主已删')
+  assert.ok(!keys.includes('siteDelta'), '站方升降（rankPosDiff）维护者已删')
+  assert.ok(!keys.includes('updated'), '更新时间维护者已删')
   assert.ok(!keys.includes('collect'), '番茄没有收藏 ⇒ 整列不出现')
   assert.ok(!keys.includes('cat'), '番茄分类榜已限定分类')
 })
@@ -37,10 +37,10 @@ test('列随榜：起点图首订有收藏/字数/粉丝；三江有期初收藏
   assert.ok(sd.includes('collect') && sd.includes('words') && sd.includes('fans'))
   const sj = columnsFor(boardMeta('qidiantu.sanjiang')).map((c) => c.key)
   assert.ok(sj.includes('collectBase') && sj.includes('dailyDelta'))
-  // ★ 每日增量拆成 7 列（2026-10-15 属主反馈：7 天的值挤一格读不出来）
+  // ★ 每日增量拆成 7 列（2026-10-15 维护者反馈：7 天的值挤一格读不出来）
   for (let d = 0; d < 7; d++) assert.ok(sj.includes('daily' + d), '第' + (d + 1) + '天要有独立列')
   assert.ok(!sj.includes('daily'), '旧的「每日增量」聚合列要删掉，避免和 7 个分列重复')
-  assert.ok(!sj.includes('settledDays'), '三江的「已结算天数」列已去掉（属主 2026-10-15）')
+  assert.ok(!sj.includes('settledDays'), '三江的「已结算天数」列已去掉（维护者 2026-10-15）')
   assert.ok(!sj.includes('rank'), '三江去掉「名次」列（它不是名次榜）')
   assert.ok(sj.includes('cat'), '三江榜不限分类 ⇒ 分类列在')
 })
@@ -48,15 +48,15 @@ test('列随榜：起点图首订有收藏/字数/粉丝；三江有期初收藏
 test('列随榜：刺猬猫带收藏/字数（榜单页无值，靠书页补全）；菠萝包多评分/字数/收藏（前两名才有值）', () => {
   const cw = columnsFor(boardMeta('ciweimao.no-vip-click.week')).map((c) => c.key)
   // 榜单页本身没有数值字段 ⇒ 收藏/字数列留给「补全本榜」填（无历史 ⇒ 无在榜天数列）
-  // 列顺序统一（2026-10-15 属主）：全站「字数 → 收藏」
+  // 列顺序统一（2026-10-15 维护者）：全站「字数 → 收藏」
   assert.deepEqual(cw, ['rank', 'delta', 'title', 'author', 'words', 'collect'], '刺猬猫核心列 + 字数/收藏（字数在前）')
   const sc = columnsFor(boardMeta('sfacg.new.click')).map((c) => c.key)
   assert.ok(sc.includes('score') && sc.includes('words') && sc.includes('collect'))
-  // 2026-10-15 属主：首页榜没有作者，但书页 <title> 里有 ⇒ 补全后能填上，列要给
+  // 2026-10-15 维护者：首页榜没有作者，但书页 <title> 里有 ⇒ 补全后能填上，列要给
   assert.ok(sc.includes('author'), '菠萝包也要「作者」列（值靠书页补全）')
 })
 
-test('★ 列序守卫：起点图两榜的「字数」必须紧跟「分类」（属主 2026-10-15）', () => {
+test('★ 列序守卫：起点图两榜的「字数」必须紧跟「分类」（维护者 2026-10-15）', () => {
   for (const id of ['qidiantu.shouding', 'qidiantu.sanjiang']) {
     // 面板看到的是过完口径过滤的列集合（「在榜天数」就是被 applyColumnPolicy 干掉的）
     const keys = applyColumnPolicy(columnsFor(boardMeta(id), { hasBaseline: true, hasHistory: true }), id).map((c) => c.key)
@@ -84,7 +84,7 @@ test('★ 列序守卫：全站「字数」都排在「收藏」之前（统一�
   }
 })
 
-test('列随榜：刺猬猫「首订（约）」= 第三方约值 + 书页补的字数/收藏（2026-10-15 属主）', () => {
+test('列随榜：刺猬猫「首订（约）」= 第三方约值 + 书页补的字数/收藏（2026-10-15 维护者）', () => {
   const keys = columnsFor(boardMeta('ciweimao.buy.latest')).map((c) => c.key)
   assert.deepEqual(keys, ['rank', 'delta', 'title', 'author', 'buyNumRaw', 'words', 'collect'], '首订（原始）+ 字数/收藏')
   // 该榜是第三方约值榜：不出「在榜天数」
@@ -148,7 +148,7 @@ test('★ 「在榜天数」口径：起点图强制不出，其余站按该榜�
 })
 
 
-test('★ 列口径（属主 2026-10-15 逐条）：起点图不出名次变化、三江不出重复 daily、刺猬猫首订不出在榜天数', () => {
+test('★ 列口径（维护者 2026-10-15 逐条）：起点图不出名次变化、三江不出重复 daily、刺猬猫首订不出在榜天数', () => {
   // 起点图：第三方聚合源，没有「名次变化」这个概念
   assert.equal(hideColumnsFor('qidiantu.shouding').includes('delta'), true)
   assert.equal(hideColumnsFor('qidiantu.sanjiang').includes('delta'), true)
@@ -187,7 +187,7 @@ test('★ 「变化」列口径：有真实名次的榜用名次差，起点图/
 })
 
 
-test('★ 菠萝包不出「作品评分」列（无意义装饰条目，属主 2026-10-15）', () => {
+test('★ 菠萝包不出「作品评分」列（无意义装饰条目，维护者 2026-10-15）', () => {
   for (const b of ['sfacg.new.click', 'sfacg.hot.week', 'sfacg.vip.week']) {
     assert.equal(hideColumnsFor(b).includes('score'), true, b + ' 要隐藏 score')
     const keys = applyColumnPolicy(columnsFor(boardMeta(b), { hasBaseline: true, hasHistory: true }), b).map((c) => c.key)
@@ -212,7 +212,7 @@ test('★ 数值排序必须倒序（字数/收藏/首订：最大的在前）�
 
 test('★ 三江列与默认排序：期累计要有；默认排序 = 期初收藏', () => {
   const keys = applyColumnPolicy(columnsFor(boardMeta('qidiantu.sanjiang'), { hasBaseline: true, hasHistory: false }), 'qidiantu.sanjiang').map((c) => c.key)
-  // 三江原本只有今日增量 + 7 列每日增量，没有合计（属主 2026-10-15 指出）
+  // 三江原本只有今日增量 + 7 列每日增量，没有合计（维护者 2026-10-15 指出）
   assert.ok(keys.includes('periodTotal'), '三江必须有「期累计」列')
   assert.ok(keys.includes('collectBase'), '期初收藏要在')
   assert.ok(keys.includes('dailyDelta'), '今日增量要在')
@@ -227,7 +227,7 @@ test('★ 三江列与默认排序：期累计要有；默认排序 = 期初收�
 
 test('★ 番茄在读周榜列：分类/字数要在，名次不要', () => {
   const keys = applyColumnPolicy(columnsFor(boardMeta('fanqie.derived.period'), { hasBaseline: true, hasHistory: false }), 'fanqie.derived.period').map((c) => c.key)
-  assert.ok(keys.includes('words'), '在读周榜要显示字数（属主 2026-10-15）')
+  assert.ok(keys.includes('words'), '在读周榜要显示字数（维护者 2026-10-15）')
   assert.ok(keys.includes('cat'), '要显示分类')
   assert.ok(keys.includes('read') && keys.includes('periodDelta'), '在读与期累计要在')
   assert.ok(keys.includes('pday0') && keys.includes('pday6'), '七天逐日增量要在')

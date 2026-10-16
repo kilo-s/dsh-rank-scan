@@ -30,7 +30,7 @@ test('起点图 首订榜（真实夹具）：字段齐备且取 td[value] 精�
   assert.ok(r.extra.collect > 1000, '收藏取 value 而非显示文本')
   assert.ok(r.extra.wordsCnt > 10000, '字数取 value')
   assert.ok(r.extra.cat, '分类来自 [分类]')
-  // 属主口径：作品链接要跳 **起点作品页**（起点图 /info 只留作 qidiantuUrl 备用）
+  // 维护者口径：作品链接要跳 **起点作品页**（起点图 /info 只留作 qidiantuUrl 备用）
   assert.match(r.url, /^https:\/\/www\.qidian\.com\/book\/\d+\/$/)
   assert.match(r.extra.qidiantuUrl, /^https:\/\/www\.qidiantu\.com\/info\/\d+$/)
   assert.equal(r.extra.ratio, 9.4, '收订比取第 5 个 cell')
