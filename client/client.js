@@ -622,6 +622,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       // 起点书页补全（收藏/精确字数）：默认关；缓存规模用来给用户看「要不要真打请求」
       const [qdEnrich, setQdEnrich] = React.useState(false)
       const [qdCache, setQdCache] = React.useState(null)
+      /**
+       * ★ 2026-10-17（3）：真实请求之间的最小间隔（毫秒）。
+       * 那个 1s 是本项目自设的保守值（不是站点要求）；这里做成可见可改，默认不动它。
+       */
+      const [intervalMs, setIntervalMs] = React.useState(1000)
       // 定时扫描设置（默认关；新安装不自动抓）
       const [tOn, setTOn] = React.useState(false)
       const [tTime, setTTime] = React.useState('01:30')
@@ -639,6 +644,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           setAutoEnrich(c.autoEnrich !== false)
           setQdEnrich(!!(c.qidian && c.qidian.enrich))
           setQdCache(c.qidian || null)
+          // ★ 2026-10-17（3）：全局请求间隔（默认 1000ms）
+          setIntervalMs(typeof c.requestIntervalMs === 'number' ? c.requestIntervalMs : 1000)
           const t = c.timer || {}
           setTOn(t.enabled === true)
           setTTime(t.scanTime || '01:30')
@@ -722,6 +729,31 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         h('label', { style: C.row },
           h('input', { type: 'checkbox', checked: autoEnrich, onChange: function (e) { setAutoEnrich(e.target.checked); setDirty(true) } }),
           h('span', { style: C.muted }, '扫描后自动补全番茄/刺猬猫/菠萝包的字数·收藏（榜页没有这些字段，要进书页取）。**补全已移到后台**：抓榜一结束就返回，补全在后台按 1 请求/秒逐个榜补，顶部显示进度；有书页缓存时不重复进书页。起点收藏与三江字数另见下面的开关。')),
+        /**
+         * ★ 2026-10-17（3）：请求间隔（真实请求之间）。
+         * 说清楚来龙去脉：1s 是本项目自设的保守值，不是站点要求；调小 = 抓得更快、但也更容易被站点注意到。
+         */
+        h('div', { style: { ...C.row, marginTop: '4px', gap: '6px', alignItems: 'center' } },
+          h('span', { style: C.muted }, '请求间隔（相邻真实请求，含翻页/补全）：'),
+          h('select', {
+            style: { ...C.input, width: 'auto', padding: '1px 4px' },
+            value: String(intervalMs),
+            onChange: function (e) { setIntervalMs(Number(e.target.value)); setDirty(true) },
+          },
+            [200, 500, 1000, 2000, 5000].map(function (v) { return h('option', { key: v, value: String(v) }, v + ' ms' + (v === 1000 ? '（默认）' : '')) }),
+            h('option', { key: 0, value: '0' }, '不限速（仅本地测试）')),
+          h('button', {
+            style: C.btn,
+            disabled: busy,
+            onClick: function () {
+              setBusy(true)
+              jpost('/select', { requestIntervalMs: intervalMs }).then(function () {
+                setNote('请求间隔已改为 ' + (intervalMs === 0 ? '不限速' : intervalMs + 'ms') + '（立即生效）')
+                return load()
+              }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) })
+            },
+          }, '应用间隔'),
+          h('span', { style: C.muted }, '默认 1000ms 是本项目自己定的保守值（不是站点要求）；调小会更快，但也更容易被站点注意到。')),
         // ★ 2026-10-17：通用书页缓存规模（刺猬猫/菠萝包/番茄）——命中即不再进书页
         (cat && cat.bookCache) ? h('div', { style: { ...C.muted, marginTop: '2px' } },
           '通用书页缓存：' + ((cat.bookCache.stat && cat.bookCache.stat.entries) || 0) + ' 本' +

@@ -29,6 +29,7 @@ import { displayLabel, extractTags, parseBookInput, urlFor, type SiteId } from '
 import { decodeIfPua } from './scan/fontmap.js'
 import { computeBoardDiff, daysOnBoard, guardCrossPeriod } from './scan/diff.js'
 import { boundedFetch } from './scan/bounded-fetch.js'
+import { minRequestIntervalMs, setMinRequestIntervalMs as applyRequestInterval } from './scan/rate-limit.js'
 /**
  * ★ 2026-10-16：更新链路。
  *   - 纯判定在 scan/update-check.ts（版本比较 / 能力三态 / 五态状态机，全部单测覆盖）；
@@ -643,6 +644,20 @@ export function apply(ctx: PluginCtx, config: any): void {
     const d = Number(cfg.bookCacheTtlDays)
     return (Number.isFinite(d) && d > 0 ? d : 7) * 24 * 60 * 60 * 1000
   })()
+
+  /**
+   * ★ 2026-10-17（3）：全局最小请求间隔做成配置（默认 1000ms = 原纪律，不折）。
+   * 那个 1s 是本项目自设的保守值（spec-扫榜插件-v1:87 是我们自己写的），不是站点要求；
+   * 它的唯一真实保护是「别把站点打毛了」。所以降格成显式配置项 + 面板可见的取舍，
+   * 由使用者决定是否下调（下限 200ms，配置 0 视为关闭限速，仅建议在本地测试用）。
+   */
+  const REQUEST_INTERVAL_MS = (() => {
+    const n = Number(cfg.requestIntervalMs)
+    if (!Number.isFinite(n)) return 1000
+    if (n === 0) return 0
+    return Math.max(200, n)
+  })()
+  applyRequestInterval(REQUEST_INTERVAL_MS)
 
   /** 书页缓存的键：站内书号，**不用 URL**（URL 形态会变） */
   function bookIdFromUrl(u: string): string {
@@ -1666,6 +1681,11 @@ export function apply(ctx: PluginCtx, config: any): void {
       boards: rows, captures: st.boards, displays: st.display, depths: st.depths || {}, autoEnrich: st.autoEnrich !== false,
       // 起点书页补全：开关状态 + 缓存规模（面板据此显示「已缓存 N 本 / 截止时间」）
       qidian: { enrich: st.qidianEnrich === true, cache: cacheStats(root), ttlDays: Math.round(QIDIAN_CACHE_TTL_MS / 86400000) },
+      /**
+       * ★ 2026-10-17（3）：全局最小请求间隔（真实请求通道；默认 1000ms）。
+       * 面板据此显示并允许下调 —— 这是**我们自己定的保守值**，不是站点要求。
+       */
+      requestIntervalMs: minRequestIntervalMs(),
       // ★ 2026-10-17：通用书页缓存（刺猬猫/菠萝包/番茄）——面板显示规模与 TTL
       bookCache: { stat: bookCacheStats(root), ttlDays: Math.round(BOOK_CACHE_TTL_MS / 86400000) },
       // 定时设置（面板「抓什么」页可改；**默认开**，用户可关，见 defaultState）
@@ -1783,7 +1803,8 @@ export function apply(ctx: PluginCtx, config: any): void {
         continue
       }
       if (requests >= budget) { out.push(row); continue }   // 预算用完：本轮不打，保持原样（下次继续收）
-      if (requests > 0) await new Promise((r) => setTimeout(r, 1000))  // 采集纪律 1s/请求
+      // ★ 2026-10-17（1）：**删掉这里的显式 1s sleep** —— 下面的请求走 rateLimit 闸门，
+      //   闸门本身已保证「相邻真实请求 ≥1s」。原来 sleep + 闸门 = 实测每条约 2s（30 本 33 秒）。
       requests += 1
       try {
         const stx = await site.fetchBookStats(key, ctxBoard)
@@ -2112,7 +2133,8 @@ export function apply(ctx: PluginCtx, config: any): void {
     const need = force || e.fromBookPage !== true
       if (r.url && need) {
         try {
-          if (requests > 0) await new Promise((res) => setTimeout(res, 1000))
+          // ★ 2026-10-17（1）：删掉显式 1s sleep —— 下面的请求带 rateLimit 闸门，闸门已保证相邻真实请求 ≥1s；
+          //   原来 sleep + 闸门叠成实测每条约 2s。
           const resp = await boundedFetch(String(r.url), { rateLimit: true, timeoutMs: 15000, signal: ctxBoard.signal, headers: ua as any })
           requests += 1
           const html = await (resp as any).text()
@@ -2243,7 +2265,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       // ★ 2026-10-17（审查阻塞 1）：番茄这层同样吃请求预算（到额保留原行，下次续跑接着补）
       if (requests >= budget) { out.push(next); continue }
       try {
-        if (requests > 0) await new Promise((res) => setTimeout(res, 1000)) // 采集纪律：1s/请求
+        // ★ 2026-10-17（1）：显式 sleep 删除，节拍交给 rateLimit 闸门
         const resp = await boundedFetch('https://fanqienovel.com/api/book/info?bookId=' + encodeURIComponent(String(r.key)), {
           rateLimit: true, timeoutMs: 15000, signal: ctxBoard.signal,
           headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15' },
@@ -2267,7 +2289,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         }
         // 接口偶尔不吐书名 ⇒ 退一步抓书页 og:title / description（同 1s 限速内）
         if (next.extra.titleSuspect !== false) {
-          await new Promise((res) => setTimeout(res, 1000))
+          // ★ 2026-10-17（1）：同上，节拍交给闸门
           const page = await boundedFetch('https://fanqienovel.com/page/' + encodeURIComponent(String(r.key)), {
             rateLimit: true, timeoutMs: 15000, signal: ctxBoard.signal,
             headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15' },
@@ -2580,6 +2602,17 @@ export function apply(ctx: PluginCtx, config: any): void {
             if (Array.isArray(body.displays)) st3.display = body.displays.map(String)
             if (typeof body.autoEnrich === 'boolean') st3.autoEnrich = body.autoEnrich
             if (typeof body.qidianEnrich === 'boolean') st3.qidianEnrich = body.qidianEnrich
+        /**
+         * ★ 2026-10-17（3）：全局请求间隔（真实请求之间）。0 = 关闭限速（只建议本地测试）；
+         * 其余下限 200ms，避免手滑写成 1ms 变成连发。
+         */
+        if (body.requestIntervalMs !== undefined) {
+          const n = Number(body.requestIntervalMs)
+          if (!Number.isFinite(n) || n < 0) return send(400, { error: '请求间隔应为 >=0 的毫秒数' })
+          if (n > 0 && n < 200) return send(400, { error: '请求间隔最小 200ms（更小的值等于放弃限速）' })
+          st3.requestIntervalMs = n
+          applyRequestInterval(n)
+        }
             writeState(st3)
             return send(200, { ok: true, captures: st3.boards.length, displays: st3.display.length, note: '已保存 ' + st3.boards.length + ' 个榜（下次扫描生效）' })
           }
@@ -2946,7 +2979,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             for (const k of keys) {
               const bm = all.find((b) => b.bookKey === k)
               if (!bm) { out.push({ bookKey: k, ok: false, error: '没有这条书签' }); continue }
-              if (done > 0) await new Promise((res) => setTimeout(res, 1000))
+              // ★ 2026-10-17（1）：删掉显式 sleep —— refreshBookmarkByBookPage 走的 fetchBookProfile 全部带 rateLimit 闸门
               done++
               try { const ok = await refreshBookmarkByBookPage(bm); out.push({ bookKey: k, ok }) }
               catch (e) { out.push({ bookKey: k, ok: false, error: String(e).slice(0, 60) }) }

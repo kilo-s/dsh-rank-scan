@@ -298,12 +298,17 @@ test('★ 票 50 通道：一次扫描里所有站共用一个闸门 ⇒ 抓取�
     const rec = await runScan({ sites, clock, store: new MemoryStore() })
     assert.deepEqual(rec.boards.map((b) => b.status), ['ok', 'ok', 'ok', 'ok', 'ok'],
       JSON.stringify(rec.boards.map((b) => [b.boardId, b.status, b.reason])))
-    assert.equal(hitAt.length, 7, '番茄 2 页 + 刺猬猫 2 页 + 起点图/菠萝包/起点榜各 1 = 7 次真实请求，实际 ' + hitAt.length)
+    /**
+     * ★ 2026-10-17：番茄改成「一次请求取满深度」后，这里不再固定 2 页。
+     * 期望请求数直接由各榜自己的 requests 求和得出（口径变了不会再让这条断言假红）。
+     */
+    const expectedReq = rec.boards.reduce((n, b) => n + (b.requests || 0), 0)
+    assert.equal(hitAt.length, expectedReq, '真实请求数与各榜自报之和一致，实际 ' + hitAt.length + ' vs ' + expectedReq)
     for (let i = 1; i < hitAt.length; i++) {
       assert.ok(hitAt[i] - hitAt[i - 1] >= 1000,
         '第 ' + i + '→' + (i + 1) + ' 次真实请求间隔 ' + (hitAt[i] - hitAt[i - 1]) + 'ms < 1000ms（跨站/跨页都要算在一条时间线上）')
     }
-    assert.equal(t, 6000, '7 次请求 ⇒ 只等了 6 秒（假时钟，没有真等）')
+    assert.equal(t, (hitAt.length - 1) * 1000, hitAt.length + ' 次请求 ⇒ 只等了 ' + (hitAt.length - 1) + ' 秒（假时钟，没有真等）')
   } finally {
     setDefaultRequestGate(null)
     globalThis.fetch = orig
@@ -319,9 +324,10 @@ test('★ 票 50 闸门可注入：适配器用自己的闸门（测试替身不
     const site = makeFanqieSite({ boards: [fanqieBoardId('m', 'read', 1141)], depthOf: () => 20, rateGate: gate })
     const rec = await runScan({ sites: [site], clock, store: new MemoryStore() })
     assert.equal(rec.boards[0].status, 'ok')
-    assert.equal(rec.boards[0].requests, 2, '一榜两页')
-    assert.equal(gate.lastRequestAt(), 1000, '同一闸门登记的两次请求间隔 1s')
-    assert.equal(t, 1000)
+    // ★ 2026-10-17：番茄默认「一次请求取满深度」⇒ depth=20 只发 1 次（替身只回 10 条，循环即止）
+    assert.equal(rec.boards[0].requests, 1, '单请求取满，不再每页 10 条翻页')
+    assert.equal(rec.boards[0].rows.length, 10, '替身只给 10 条就落 10 条')
+    assert.equal(gate.lastRequestAt(), 0, '只有一次请求 ⇒ 闸门没有等待')
   } finally {
     globalThis.fetch = orig
   }

@@ -105,7 +105,19 @@ export function makeFanqieSite(opts: {
   rateGate?: RequestGate
 } = {}): SiteAdapter {
   const boards = opts.boards && opts.boards.length ? opts.boards : []
-  const limit = typeof opts.limit === 'number' ? opts.limit : 10
+  /**
+   * ★ 2026-10-17（实测取证）：番茄这个接口**能吃大 limit** —— 实测同一分类：
+   *   limit=10 × 3 次翻页（offset 0/10/20）取回 30 本，与 limit=30 一次请求的 30 本**书号完全一致**（首尾都相同）；
+   *   limit=100 一次能取回 100 本（total_num=100）。
+   * 所以「每页 10 条 offset 步进 10」是纯粹浪费请求数：30 本要 3 次，1 次就够了。
+   * 默认改成 100（接口上限）：一次请求取满，实际条数仍由 depth 上限截断。
+   */
+  const limit = typeof opts.limit === 'number' && opts.limit > 0 ? Math.min(100, opts.limit) : 100
+  /**
+   * 调用方显式给了 limit ⇒ 尊重它（按页拉取；测试与深度控制都靠这个）。
+   * 没给 ⇒ 走「一次取满」：单请求上限 100，实测本接口 limit=30/100 都能一次给足。
+   */
+  const explicitPageSize = typeof opts.limit === 'number' && opts.limit > 0
   // ★ 票 50：默认请求通道过全局限速器（相邻真实请求 ≥1s，翻页也算）；
   //   注入的 fetchJson 是测试替身，刻意不过闸门（闸门管的是真实网络请求）
   const fetchJson = opts.fetchJson || withRateLimit(async (url: string, c?: BoardCtx) => {
@@ -128,8 +140,14 @@ export function makeFanqieSite(opts: {
       const gender = parts[1] === 'f' ? '0' : '1'
       const mold = FANQIE_MOLDS[parts[2]] || '2'
       const catId = parts[3]
-      const depth = Math.max(limit, Math.min(100, opts.depthOf ? opts.depthOf(id) : limit))
-      const pages = Math.ceil(depth / limit)
+      /**
+       * 本榜要多少条：**面板逐分类设置（depthOf）优先**，没有才用 limit 兜底，至多 100（接口上限）。
+       * 注意不能用 `Math.max(limit, …)`：limit 现在是「单请求上限 100」，那样会把面板设的 30 顶成 100。
+       */
+      const depth = opts.depthOf ? Math.min(100, Math.max(1, opts.depthOf(id))) : limit
+      // 显式 limit ⇒ 按它分页；否则一次请求取满（旧实现固定每页 10 条 ⇒ 30 本要 3 次请求）
+      const pageSize = explicitPageSize ? Math.min(limit, depth) : depth
+      const pages = Math.ceil(depth / pageSize)
       const boardUrl = (offset: number) =>
         'https://fanqienovel.com/api/rank/category/list?app_id=1967&rank_list_type=3&rank_version=&rankMold=' +
         mold +
@@ -138,7 +156,7 @@ export function makeFanqieSite(opts: {
         '&category_id=' +
         catId +
         '&limit=' +
-        limit +
+        pageSize +
         '&offset=' +
         offset
       const t0 = Date.now()
@@ -147,7 +165,7 @@ export function makeFanqieSite(opts: {
       const seen = new Set<string>()
       const rows: Row[] = []
       for (let page = 0; page < pages; page++) {
-        const json = await fetchJson(boardUrl(page * limit), ctx)
+        const json = await fetchJson(boardUrl(page * pageSize), ctx)
         requests += 1
         if (json && json.code !== 0) throw new MissingError('接口 code=' + json.code + ' ' + (json.message || ''))
         const part = parseRankApi(json, opts.decode)
@@ -160,7 +178,7 @@ export function makeFanqieSite(opts: {
           seen.add(r.key)
           rows.push(r)
         }
-        if (part.length < limit) break
+        if (part.length < pageSize) break
       }
       if (!rows.length) {
         throw new MissingError(

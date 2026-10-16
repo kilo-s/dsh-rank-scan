@@ -85,11 +85,31 @@ export function createRequestGate(deps: RateLimitDeps = {}): RequestGate {
 }
 
 let globalGate: RequestGate | null = null
+let globalMinIntervalMs = MIN_REQUEST_INTERVAL_MS
 
 /** 全局限速器（懒建）：所有适配器的默认请求通道共用它 */
 export function defaultRequestGate(): RequestGate {
-  if (!globalGate) globalGate = createRequestGate()
+  if (!globalGate) globalGate = createRequestGate({ minIntervalMs: globalMinIntervalMs })
   return globalGate
+}
+
+/**
+ * ★ 2026-10-17：(3) 把全局最小间隔做成**可配置**（默认仍是 1000ms，即原纪律）。
+ * 为什么可以配：那个 1s 没有外部依据，是本项目当年的保守取整（spec-扫榜插件-v1:87 是我们自己写的规格，
+ * 不是站点的要求）；它的唯一真实保护是「别把站点打毛了」。所以把它降格成配置项 + 面板可见的取舍，
+ * 默认不打折，需要时由使用者显式下调（下限 200ms 兜底，防止手滑写成 0 变成连发）。
+ * 注意：改的是「真实请求通道」的间隔，不碰采集纪律里的「每日 1 次」。
+ */
+export function setMinRequestIntervalMs(ms: number | undefined | null): number {
+  const n = Number(ms)
+  globalMinIntervalMs = Number.isFinite(n) && n >= 0 ? Math.max(n === 0 ? 0 : 200, n) : MIN_REQUEST_INTERVAL_MS
+  globalGate = null // 下次取闸门时按新间隔重建（闸门自身不可变）
+  return globalMinIntervalMs
+}
+
+/** 当前生效的全局最小间隔（面板/诊断用） */
+export function minRequestIntervalMs(): number {
+  return globalMinIntervalMs
 }
 
 /** 替换全局限速器（测试用；传 null/undefined 恢复懒建的真实实现） */
