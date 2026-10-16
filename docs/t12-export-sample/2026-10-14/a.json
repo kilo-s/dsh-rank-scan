@@ -1,0 +1,15 @@
+{
+  "boardId": "a",
+  "dataDate": "2026-10-14",
+  "metric": "rank",
+  "rows": [
+    {
+      "key": "k1",
+      "rank": 1,
+      "value": null,
+      "title": "T1",
+      "author": "A",
+      "url": "u1"
+    }
+  ]
+}

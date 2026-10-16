@@ -1,0 +1,5 @@
+# dsh-rank-scan 的 profile 装配入口（dsh.bundle.patch 指向本文件）。
+# 最小合法内容：一条 insert + id + name（见 dsh-http-tools / dsh-genui 的同名文件）。
+- insert:
+    - id: dsh-rank-scan
+      name: '@dsh-external/dsh-rank-scan'

@@ -1,0 +1,43 @@
+/**
+ * ★ 2026-10-16（票 23）：插件路由的**来源校验**（同源闸）。
+ *
+ * 背景：宿主不覆盖 /api/rank-scan/* 的鉴权 —— 实测 `POST /repair` 带 `Content-Type: text/plain`
+ * 也能执行（简单请求不触发预检）。浏览器里的恶意页面正是用这一手去打 localhost 上别人的服务。
+ *
+ * 规则（属主 2026-10-16 口径）：
+ *   - 带 Origin/Referer 且 host 与本次请求的 Host 不一致 ⇒ 拒绝；
+ *   - Origin 为 `null`（沙箱 iframe / file://）⇒ 拒绝；
+ *   - 两者都没有 ⇒ **放行**（curl、PowerShell 脚本、本地进程本来就能直接操作系统，
+ *     这道闸门防的是「浏览器里的第三方页面」，不是本机可控进程）；
+ *   - localhost 与 127.0.0.1 在端口一致时互认。
+ */
+export interface SameOriginInput {
+  origin?: string | null
+  referer?: string | null
+  host?: string | null
+}
+
+const loopbackName = (n: string) => n === 'localhost' || n === '127.0.0.1' || n === '[::1]' || n === '::1'
+const portOf = (h: string) => (h.includes(':') ? h.slice(h.lastIndexOf(':')) : '')
+const nameOf = (h: string) => h.replace(/:\d+$/, '')
+
+export function sameOriginOk(input: SameOriginInput): { ok: boolean; reason: string } {
+  const raw = String(input.origin || '').trim() || String(input.referer || '').trim()
+  if (!raw) return { ok: true, reason: 'no-origin-header' }
+  if (raw === 'null') return { ok: false, reason: 'origin-null' }
+  let host = ''
+  try { host = new URL(raw).host } catch { return { ok: false, reason: 'origin-unparsable:' + raw } }
+  const expect = String(input.host || '').trim()
+  if (!expect) return { ok: true, reason: 'no-host-header' }
+  if (host === expect) return { ok: true, reason: 'same-origin' }
+  if (portOf(host) === portOf(expect) && loopbackName(nameOf(host)) && loopbackName(nameOf(expect))) {
+    return { ok: true, reason: 'loopback-alias' }
+  }
+  return { ok: false, reason: 'cross-origin:' + host + '!=' + expect }
+}
+
+/** 直接吃 Node 的 req.headers（键小写），供路由入口一行调用 */
+export function requestAllowed(headers: any): { ok: boolean; reason: string } {
+  const h = headers || {}
+  return sameOriginOk({ origin: h.origin, referer: h.referer, host: h.host })
+}

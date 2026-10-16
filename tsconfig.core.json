@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": [
+      "ES2023"
+    ],
+    "strict": true,
+    "declaration": false,
+    "outDir": "lib",
+    "rootDir": "src",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "typeRoots": [
+      "C:/Users/Kilometer/dsh-harness/node_modules/@types"
+    ]
+  },
+  "include": [
+    "src/scan",
+    "src/sites"
+  ]
+}

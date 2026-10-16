@@ -1,0 +1,4 @@
+# 生成的编译产物（随源码提交，供「从仓库直装」）。
+# 在 GitHub 上折叠 diff、在语言统计里标记为 generated。
+lib/** linguist-generated=true
+*.tgz -text

@@ -1,0 +1,9 @@
+node_modules/
+*.tsbuildinfo
+*.tgz
+build.log
+*.dshclaim
+*.dshpending/
+# ★ lib/ **故意不忽略**（2026-10-16）：仓库要支持「一条命令从仓库直装」
+#   （`dsh plugin add <仓库URL>`），所以编译产物随源码一起提交。
+#   改动 lib 之后请重新构建再提交；见 docs/PUBLISHING.md。
