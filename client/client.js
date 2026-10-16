@@ -99,6 +99,18 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       input: { padding: '3px 6px', fontSize: '12px', borderRadius: '6px', border: '1px solid rgba(128,128,128,.4)', background: 'transparent', color: 'inherit' },
     }
     const dash = (v) => (v === null || v === undefined || v === '' ? '—' : v)
+    /**
+     * ★ 2026-10-17（发布前修）：请求间隔已可配置（默认 1000ms）⇒ 所有「1 请求/秒」「1s 限速」
+     *   的文案必须跟着**当前生效值**走，否则使用者把它调成 500ms 后，面板说的和做的不一致。
+     *   lastRequestIntervalMs 由 /catalog 与 /enrich-status 的响应刷新（两处都不额外打请求）。
+     */
+    let lastRequestIntervalMs = 1000
+    const noteRequestInterval = function (v) { if (typeof v === 'number' && isFinite(v) && v >= 0) lastRequestIntervalMs = v }
+    const fmtIntervalText = function (ms) {
+      const v = typeof ms === 'number' && isFinite(ms) ? ms : lastRequestIntervalMs
+      if (v === 0) return '不限速'
+      return (v % 1000 === 0 ? (v / 1000) + 's' : v + 'ms') + '/请求'
+    }
     const fmtRead = (n) => (typeof n === 'number' ? n.toLocaleString('zh-CN') : dash(n))
     const fmtWords = (v) => {
       if (v === null || v === undefined || v === '') return '—'
@@ -438,12 +450,17 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const ov = props.ov
       /**
        * ★ 2026-10-17（补全移出阻塞路径）：后台补全的进度。
-       * 抓榜已经很快（~70 秒），补全是 1 请求/秒的长活 ⇒ 把它摘出 /scan 之后，
+       * 抓榜已经很快（~70 秒），补全是逐本 1 请求的长活 ⇒ 把它摘出 /scan 之后，
        * 面板必须让使用者看得见「还在补、补到第几个」，否则又变成「扫完了但没数据」。
        */
+      /**
+       * ★ 2026-10-17（发布前修）：以前只留 enrichRun ⇒ 顶部横幅分不清「还能续跑」和「当日已试满」，
+       *   也拿不到当前请求间隔。现在整份 /enrich-status 都留着（retryable / requestIntervalMs）。
+       */
       const enrichS = React.useState(null)
-      const enrichRun = enrichS[0]
-      const setEnrichRun = enrichS[1]
+      const enrichStatus = enrichS[0]
+      const enrichRun = enrichStatus && enrichStatus.enrichRun ? enrichStatus.enrichRun : null
+      const setEnrichStatus = enrichS[1]
       const chgS = React.useState(null)
       const setChg = chgS[1]
       const badS = React.useState(false)
@@ -465,7 +482,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           jget('/enrich-status').then(function (r) {
             if (!alive) return
             const er = (r && r.enrichRun) || null
-            setEnrichRun(er)
+            setEnrichStatus(r || null)
+            noteRequestInterval(r && r.requestIntervalMs)
             // ★ 审查（非阻塞 5）：active 由宿体现算；重启后旧记录可能没有这个字段 ⇒ 只认真的工人标志
             const active = !!(er && er.active === true)
             if (wasActive && !active) props.reload()
@@ -496,19 +514,32 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('span', null, bad === 0 ? '全部正常' : '异常 ' + bad + ' / 正常 ' + (c.ok || 0)),
           h('span', { style: C.muted }, '隐藏 ' + (ov.hiddenCount || 0) + ' 个'),
           scan ? h('span', { style: C.muted }, '上次 ' + scan.outcome + (scan.trigger ? '/' + scan.trigger : '')) : null),
-        // ★ 后台补全进度（active=false 时如果还剩待办也显示一行，说明会在下一次续跑里补）
+        // ★ 后台补全进度。三态分明：进行中 / 还能续跑 / **当日已试满**（第 3 态以前被误显示成「等下一次续跑」）
         (function () {
           if (!enrichRun) return null
           const active = !!enrichRun.active
-          if (!active && !(enrichRun.total > enrichRun.done)) return null
+          const total = enrichRun.total || 0
+          const done = enrichRun.done || 0
+          const left = Math.max(0, total - done)
+          /**
+           * ★ 2026-10-17（发布前修）：能不能再续跑，看的是宿主现算的「tried < 每榜每日上限」的待办数，
+           *   不是上一轮记录的 total - done —— 否则「当日已试满、今天不再跑」的榜会永远显示
+           *   「等下一次续跑」（实测就是这样挂着不走）。
+           */
+          const retryable = enrichStatus && typeof enrichStatus.retryable === 'number' ? enrichStatus.retryable : left
+          if (!active && retryable <= 0 && left <= 0) return null
+          const cadence = fmtIntervalText(enrichStatus && enrichStatus.requestIntervalMs)
           const label = active
-            ? '补全中 ' + (enrichRun.done || 0) + '/' + (enrichRun.total || 0) + ' 个榜（1 请求/秒，抓榜数据已可用）'
-            : '补全待续跑：还剩 ' + Math.max(0, (enrichRun.total || 0) - (enrichRun.done || 0)) + ' 个榜'
+            ? '补全中 ' + done + '/' + total + ' 个榜（' + cadence + '，抓榜数据已可用）'
+            : retryable > 0
+              ? '补全待续跑：还剩 ' + retryable + ' 个榜（' + cadence + '）'
+              : '补全已尽力：' + left + ' 个榜当日试满（明天自动再续；也可点「补全本榜」手动再试）'
+          const mark = active ? '⏳ ' : retryable > 0 ? '⏸ ' : '⏹ '
+          const bg = active ? 'rgba(33,150,243,0.10)' : retryable > 0 ? 'rgba(255,152,0,0.10)' : 'rgba(128,128,128,0.10)'
+          const bd = active ? 'rgba(33,150,243,0.40)' : retryable > 0 ? 'rgba(255,152,0,0.45)' : 'rgba(128,128,128,0.40)'
           return h('div', {
-            style: { ...C.row, padding: '4px 7px', marginTop: '2px', borderRadius: '6px',
-              background: active ? 'rgba(33,150,243,0.10)' : 'rgba(255,152,0,0.10)',
-              border: '1px solid ' + (active ? 'rgba(33,150,243,0.40)' : 'rgba(255,152,0,0.45)') },
-          }, h('span', { style: { fontWeight: 600 } }, active ? '⏳ ' : '⏸ '), h('span', null, label))
+            style: { ...C.row, padding: '4px 7px', marginTop: '2px', borderRadius: '6px', background: bg, border: '1px solid ' + bd },
+          }, h('span', { style: { fontWeight: 600 } }, mark), h('span', null, label))
         })(),
         h('div', { style: C.row },
           h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.act('/scan') } }, props.busy ? '扫描中…' : '立刻扫一次'),
@@ -584,7 +615,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             const rows = s.boards.map(function (b) {
               const noBase = b.up === null && b.newCount === null && b.out === null
               return h('tr', { key: b.boardId },
-                h('td', { style: { ...C.td, paddingLeft: '16px' } }, (b.status === 'ok' ? '' : '⚠ ') + b.name + (b.displayed ? '' : ' · 未显示')),
+                h('td', { style: { ...C.td, paddingLeft: '16px' } }, (b.status === 'ok' ? '' : '⚠ ') + b.name + (b.derived ? ' · 本地派生' : b.displayed ? '' : ' · 未显示')),
                 h('td', { style: C.td }, noBase ? '—' : '涨 ' + dash(b.up) + ' / 新 ' + dash(b.newCount) + ' / 退 ' + dash(b.out)),
                 h('td', { style: C.td }, (b.lastCapture ? fmtLocalHM(b.lastCapture) : '') || '—'),
                 h('td', { style: C.td }, dash(b.note)))
@@ -646,6 +677,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           setQdCache(c.qidian || null)
           // ★ 2026-10-17（3）：全局请求间隔（默认 1000ms）
           setIntervalMs(typeof c.requestIntervalMs === 'number' ? c.requestIntervalMs : 1000)
+          noteRequestInterval(c.requestIntervalMs)
           const t = c.timer || {}
           setTOn(t.enabled === true)
           setTTime(t.scanTime || '01:30')
@@ -728,7 +760,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           note ? h('span', { style: C.muted }, note) : null),
         h('label', { style: C.row },
           h('input', { type: 'checkbox', checked: autoEnrich, onChange: function (e) { setAutoEnrich(e.target.checked); setDirty(true) } }),
-          h('span', { style: C.muted }, '扫描后自动补全番茄/刺猬猫/菠萝包的字数·收藏（榜页没有这些字段，要进书页取）。**补全已移到后台**：抓榜一结束就返回，补全在后台按 1 请求/秒逐个榜补，顶部显示进度；有书页缓存时不重复进书页。起点收藏与三江字数另见下面的开关。')),
+          h('span', { style: C.muted }, '扫描后自动补全番茄/刺猬猫/菠萝包的字数·收藏（榜页没有这些字段，要进书页取）。**补全已移到后台**：抓榜一结束就返回，补全在后台逐个榜补（当前 ' + fmtIntervalText() + '，可在下面改），顶部显示进度；有书页缓存时不重复进书页。起点收藏与三江字数另见下面的开关。')),
         /**
          * ★ 2026-10-17（3）：请求间隔（真实请求之间）。
          * 说清楚来龙去脉：1s 是本项目自设的保守值，不是站点要求；调小 = 抓得更快、但也更容易被站点注意到。
@@ -1338,7 +1370,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       }
       const doEnrich = function () {
         setEnrichBusy(true)
-        setEnrichNote('补全中（逐本 1 请求 + 1s 限速，可能要几十秒）…')
+        setEnrichNote('补全中（逐本 1 请求 + ' + fmtIntervalText() + '，可能要几十秒）…')
         jpost('/enrich?boardId=' + encodeURIComponent(curBoard)).then(function (r) {
           setEnrichNote(r && r.note ? r.note : '补全完成')
           return reloadBoard()
@@ -1381,7 +1413,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           })
         }).catch(function (e) { setEnrichNote(String(e)) }).then(function () { setEnrichBusy(false) })
       }
-      /** 番茄全部已抓分类：逐榜补，**显示进度**（每本 1 请求 + 1s 限速，榜多就慢） */
+      /** 番茄全部已抓分类：逐榜补，**显示进度**（每本 1 请求 + 当前请求间隔，榜多就慢） */
       const doEnrichFanqie = function () {
         setEnrichBusy(true)
         jget('/catalog').then(function (cat) {
@@ -1418,10 +1450,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('input', { type: 'number', min: 1, max: info.max, value: depth, placeholder: String(info.max), disabled: !info.can, title: info.hint, onChange: function (e) { setDepth(e.target.value) }, style: { width: '56px', fontSize: '12px', padding: '2px 4px' } }),
           h('span', { style: C.muted }, info.can ? '条（上限 ' + info.max + '）' : '条 · ' + info.hint),
           h('button', { style: C.btn, disabled: !info.can || enrichBusy, onClick: saveDepth, title: '改这一榜的取数条数，并立刻重抓**当前打开的这一榜**（换榜重抓不影响别的榜）' }, '保存并重抓本榜'),
-          h('button', { style: enrichBusy ? C.btnOn : C.btn, disabled: enrichBusy, onClick: doEnrich, title: '只补**当前打开的这一榜**的行内字段：起点/起点图三江=精确字数(+收藏)（走书页缓存）；番茄=干净书名/作者；刺猬猫/菠萝包=收藏+字数（逐本 1 请求、1s 限速）' }, enrichBusy ? '补全中…' : '补全本榜'),
+          h('button', { style: enrichBusy ? C.btnOn : C.btn, disabled: enrichBusy, onClick: doEnrich, title: '只补**当前打开的这一榜**的行内字段：起点/起点图三江=精确字数(+收藏)（走书页缓存）；番茄=干净书名/作者；刺猬猫/菠萝包=收藏+字数（逐本 1 请求、' + fmtIntervalText() + '）' }, enrichBusy ? '补全中…' : '补全本榜'),
           // 只对番茄显示：这按钮是「把该站所有已抓分类一次补完」，在别的站出现是干扰（使用方 2026-10-15）
           curSite === 'fanqie'
-            ? h('button', { style: enrichBusy ? C.btnOn : C.btn, disabled: enrichBusy, onClick: doEnrichFanqie, title: '把**抓取集里所有番茄分类榜**一次补齐（逐榜、逐本 1 请求 + 1s 限速，会很慢）' }, enrichBusy ? '补全中…' : '补齐番茄全部分类')
+            ? h('button', { style: enrichBusy ? C.btnOn : C.btn, disabled: enrichBusy, onClick: doEnrichFanqie, title: '把**抓取集里所有番茄分类榜**一次补齐（逐榜、逐本 1 请求 + ' + fmtIntervalText() + '，会很慢）' }, enrichBusy ? '补全中…' : '补齐番茄全部分类')
             : null,
           /**
            * ★ 2026-10-16（补全持久化）：补全没跑完必须**可见**。

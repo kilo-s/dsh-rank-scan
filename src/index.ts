@@ -652,7 +652,16 @@ export function apply(ctx: PluginCtx, config: any): void {
    * 由使用者决定是否下调（下限 200ms，配置 0 视为关闭限速，仅建议在本地测试用）。
    */
   const REQUEST_INTERVAL_MS = (() => {
-    const n = Number(cfg.requestIntervalMs)
+    /**
+     * ★ 2026-10-17（发布前修）：**优先认面板存下来的值**。
+     *   /select 把用户选的间隔写进 state（config.json 的 requestIntervalMs），但启动只读插件配置
+     *   ⇒ 热重载/重启会把闸门悄悄退回配置默认值，state 里的值变成死数据（用户的选择无声消失）。
+     *   口径：state 有值就用它，没有才回落到插件配置，最后兜底 1000ms。
+     */
+    let stored: unknown
+    try { stored = (readState() as any).requestIntervalMs } catch { stored = undefined }
+    const raw = stored === undefined || stored === null ? cfg.requestIntervalMs : stored
+    const n = Number(raw)
     if (!Number.isFinite(n)) return 1000
     if (n === 0) return 0
     return Math.max(200, n)
@@ -1154,20 +1163,28 @@ export function apply(ctx: PluginCtx, config: any): void {
       const snap = latest ? store.readSnapshot(latest, boardId) : null
       const diff = snap && latest && prevDate ? diffFor(boardId, latest, prevDate, undefined, slimAll) : null
       const c = diff && (diff as any).counts ? (diff as any).counts : null
+      /**
+       * ★ 2026-10-17（发布前修）：**本地派生榜**（fanqie.derived.*）永远不会有 scan 记录、
+       *   也不会落快照文件（数据是打开榜页时现算的）⇒ 旧口径「b ? … : snap ? 'ok' : 'missing'」
+       *   必然把它判成 missing，备注还套用「今天还没扫（或该榜抓取失败）」，并且计入异常数
+       *   ⇒ 概览永远显示「异常 1 个榜」。它不是「没扫到」，是「不需要扫」：状态直接给 ok。
+       */
+      const derived = boardId.startsWith('fanqie.derived.')
       rows.push({
         boardId,
         name: meta.name,
         site: meta.site,
         siteName: meta.siteName,
-        status: b ? b.status : snap ? 'ok' : 'missing',
+        status: derived ? 'ok' : b ? b.status : snap ? 'ok' : 'missing',
         up: c ? c.up : null,
         newCount: c ? c.new + c.rebound : null,
         out: c ? c.out : null,
         lastCapture: rec ? rec.finishedAt || rec.startedAt || null : null,
-        note: b ? b.reason || null : snap ? null : '今天还没扫（或该榜抓取失败）',
+        note: derived ? '本地派生（0 请求，打开榜页时现算）' : b ? b.reason || null : snap ? null : '今天还没扫（或该榜抓取失败）',
         extended: !!meta.extended,
         source: meta.source || null,
         mainLabel: mainLabelOf(boardId, meta),
+        derived,
         displayed: (st.display as string[]).includes(boardId),
       })
     }
@@ -1179,7 +1196,8 @@ export function apply(ctx: PluginCtx, config: any): void {
       baselineDate: prevDate,
       firstEver: dates.length < 2,
       counts,
-      hiddenCount: rows.filter((r) => !r.displayed).length,
+      // 派生榜按设计不进 display ⇒ 不能算进「隐藏 N 个」（它不是被藏起来的，是不需要单独扫）
+      hiddenCount: rows.filter((r) => !r.displayed && !r.derived).length,
       sites: groupBySite(rows).map((s) => ({ ...s, boards: rows.filter((r) => r.site === s.site) })),
       /**
        * 数据目录占用（ticket 22 验收项：面板显示占用）。
@@ -1843,14 +1861,22 @@ export function apply(ctx: PluginCtx, config: any): void {
     if (!snap || !snap.rows || !snap.rows.length) return { ok: false, error: '这个榜当天没有快照或没有条目' }
     const ctxBoard = { now: () => clock.now(), signal: new AbortController().signal, requestTimeoutMs: 15000 }
     let out = { rows: snap.rows, requests: 0 }
-    if (boardId.startsWith('qidian.')) {
+    if (boardId.startsWith('qidian.') || boardId.startsWith('qidiantu.')) {
       /**
        * ★ 2026-10-16（补全持久化）：起点改走**书页缓存那条通道**（qidianEnrichBoard）——它按行命中缓存，
        *   续跑时只打「没缓存/缓存过期」的书；旧实现走适配器内置 enrich（无缓存），每次续跑都把整榜重打。
        *   它返回 {ok:false} 时（例如没有快照）才退回内置 enrich，保持旧行为。
+       *
+       * ★ 2026-10-17（发布前修）：**起点图（三江）也并进这条通道**。三江表里没有字数字段，
+       *   它的字数同样只能从起点书页取（`qidianEnrichBoard` 的 isQdt 分支只补 wordsCnt、不动它自己的 collect）。
+       *   以前这里只判 `qidian.` ⇒ 续跑工人与面板「补全本榜」对三江直接落到兜底
+       *   「这个榜暂不支持补全」：**一次真实请求都没打，tried 却照加** ⇒ 3 次后永久显示「补全未完成」，
+       *   概览顶部横幅也一直挂着「还剩 1 个榜」。能补三江的通道本来就有，只是没接上。
        */
       const rq: any = await qidianEnrichBoard(boardId, force, budget)
       if (rq && rq.ok) return rq
+      // 三江没有「适配器内置 enrich」那条路：取不到就如实报错，不再假装尝试过一次
+      if (!boardId.startsWith('qidian.')) return { ok: false, error: (rq && rq.error) || '起点图书页取字数失败' }
       const site: any = sitesFor([boardId], st.depths || {})[0]
       if (!site || typeof site.enrich !== 'function') return { ok: false, error: (rq && rq.error) || '起点适配器没有 enrich' }
       out = await site.enrich(boardId, snap.rows, ctxBoard)
@@ -1942,6 +1968,26 @@ export function apply(ctx: PluginCtx, config: any): void {
   }
 
   /**
+   * ★ 2026-10-17（发布前修）：**还能续跑的**补全待办数（tried < 每榜每日上限）。
+   *   面板顶部横幅以前按「上一轮的 total - done」算 ⇒ 「当日已试满、今天不再跑」的榜也被写成
+   *   「等下一次续跑」，于是横幅永远挂着。这里跟续跑判定（enrichAttemptPolicy）用同一把尺子。
+   *   日期对不上的条目按 1 记（它会被 stale 清掉，或有新一天的快照等着补）。
+   */
+  function retryablePendingCount(): number {
+    try {
+      const pe: any = (readState() as any).enrichPending || {}
+      const latest = latestDataDate()
+      let n = 0
+      for (const b of Object.keys(pe)) {
+        const rec = pe[b]
+        if (!rec || rec.date !== latest) { n += 1; continue }
+        if ((rec.tried || 0) < ENRICH_TRIES_PER_DAY) n += 1
+      }
+      return n
+    } catch { return 0 }
+  }
+
+  /**
    * ★ 2026-10-17（补全移出阻塞路径）：后台补全工人。
    * 由「手动扫描收尾」与定时 tick 启动：延迟 3 秒起跑（让 /scan 的响应先出去），
    * 逐个补 pending 里的榜，每次最多 ENRICH_RUN_REQUEST_CAP 个请求，跑完即退出。
@@ -2014,7 +2060,13 @@ export function apply(ctx: PluginCtx, config: any): void {
         try {
           const s4 = readState()
           const left = Object.keys(((s4 as any).enrichPending) || {}).length
-          s4.enrichRun = { startedAt, done, total: done + left, active: false, note: left ? (reason + '（还剩 ' + left + ' 个榜，等下一次续跑）') : reason }
+          // ★ 2026-10-17（发布前修）：note 说清「还剩」到底是「还能续跑」还是「当日已试满」，
+          //   否则面板/日志会把 giveup 的榜说成「等下一次续跑」（今天根本不会再跑）。
+          const again = retryablePendingCount()
+          const tail = left
+            ? (again > 0 ? '（还剩 ' + left + ' 个榜，等下一次续跑）' : '（还剩 ' + left + ' 个榜，当日已试满，明天再续）')
+            : ''
+          s4.enrichRun = { startedAt, done, total: done + left, active: false, note: reason + tail }
           writeState(s4)
         } catch { /* 同上 */ }
         timerState.enrichWorker = false
@@ -2574,6 +2626,9 @@ export function apply(ctx: PluginCtx, config: any): void {
               //   面板会一直显示「补全中 0/N」但根本没人在跑。
               enrichRun: stE.enrichRun ? { ...stE.enrichRun, active: timerState.enrichWorker } : null,
               pending: Object.keys((stE.enrichPending) || {}).length,
+              // ★ 2026-10-17（发布前修）：横幅要区分「还能续跑」与「当日已试满」；间隔用于把文案写成真实节拍
+              retryable: retryablePendingCount(),
+              requestIntervalMs: minRequestIntervalMs(),
               worker: timerState.enrichWorker,
               cache: bookCacheStats(root),
               ttlDays: Math.round(BOOK_CACHE_TTL_MS / 86400000),
@@ -2770,7 +2825,9 @@ export function apply(ctx: PluginCtx, config: any): void {
             if (bid) return send(200, await qidianEnrichBoard(bid, forceQ))
             // 不带 boardId = 把抓取集里的起点榜逐个补（仍受每榜请求上限保护）
             const stQ = readState()
-            const list = (stQ.boards as string[]).filter((b) => b.startsWith('qidian.'))
+                    // ★ 2026-10-17（发布前修）：三江的字数走同一条起点书页通道 ⇒ 批量补全也必须带上它，
+              //   否则面板「起点补全」按钮永远漏掉三江（与「一个开关管起点收藏 + 三江字数」的口径不符）。
+              const list = (stQ.boards as string[]).filter((b) => b.startsWith('qidian.') || b.startsWith('qidiantu.'))
             const results: any[] = []
             const tQ = Date.now()
             const skippedQ: string[] = []
