@@ -7,6 +7,11 @@ on:
   push:
   pull_request:
 
+# 测试里的时间戳是 +08:00 语义（数据日期 = 本地自然日），把运行环境固定成 Asia/Shanghai，
+# 否则 UTC runner 上「凌晨 01:30 也算当天」这类断言会整片变红。
+env:
+  TZ: Asia/Shanghai
+
 jobs:
   offline:
     runs-on: ubuntu-latest

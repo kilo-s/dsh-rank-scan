@@ -39,6 +39,8 @@ pwsh -File scripts/test-local.ps1     # 逐个文件跑（node --test 会 spawn 
 node tests/diff.test.mjs              # 单个文件
 ```
 
+测试里的时间戳是 **+08:00 语义**（「数据日期」取本地自然日），运行环境假定 `Asia/Shanghai` —— CI 用 `env: TZ: Asia/Shanghai` 固定；在别的时区跑要自己设，否则「凌晨 01:30 也算当天」这类断言会失败。
+
 全部是 `node:test` 离线测试，不联网：五态判定 / 幂等覆盖 / 取消 · 适配器端到端与夹具解析 · 派生榜自然周边界 · 变化集与跨期保护 · 列口径与排序 · 定时判据与开关迁移 · 书签原子写 · 客户端 bundle 解析。
 
 新增测试时：把它放进 `tests/`，文件名以 `.test.mjs` 结尾即可被两个闸门收集（`scripts/test-local.ps1` 与 `scripts/acceptance.ps1`）。
