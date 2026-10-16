@@ -156,9 +156,11 @@ test('★ apply(ctx) 真跑一遍：入口 id 必须落在 main 面板注册集�
   const mains = registrations.filter(function (r) { return r.options && r.options.name === 'main' })
   const entry = registrations.find(function (r) { return r.options && r.options.name === 'sidebar.panellist' })
   assert.ok(entry, '必须注册 sidebar.panellist 入口（左栏面板行）')
-  assert.ok(mains.length > 0, '必须注册一个 main 面板，否则宿主 layout.selectPanel(id) 抛「is not registered」')
-  const mainKeys = mains.map(function (r) { return r.options.key })
-  assert.ok(mainKeys.includes(entry.options.id), '入口 id ' + entry.options.id + ' 不在 main 面板集合 ' + JSON.stringify(mainKeys) + ' 内')
+  // ★ 2026-10-16 使用者口径 B：审计前点入口就是直接弹浮窗、没有中间页 ⇒ 不再注册 main 面板。
+  assert.equal(mains.length, 0, '不得注册 main 面板（点入口不该切出一个页面）')
+  const overlay = registrations.find(function (r) { return r.options && r.options.name === 'shell.overlay' })
+  assert.ok(overlay, '浮窗 overlay 必须注册')
+  assert.notEqual(entry.options.id, overlay.options.id, '入口 id 必须与浮窗 overlay id 区分开')
   assert.ok(entry.options.label, '入口必须带 label（宿主 PanelRow 用它做 aria-label / tooltip）')
 })
 
@@ -192,18 +194,20 @@ test('★ 入口 occupant：就地弹浮窗的可点图标（不套 button、不
   assert.ok(stopped, 'onClick 必须先 stopPropagation，挡掉宿主 selectPanel')
 })
 
-test('★ main 面板只作宿主契约落点：不渲染界面、装载即弹浮窗（2026-10-16 使用者改口径）', function () {
+test('★ 入口点击：四种事件全部就地吃掉，只弹浮窗、不切主区域（口径 B）', function () {
   const { exportsObj } = loadBundle()
   const { ctx, registrations, drain } = makeFakeCtx()
   exportsObj.apply(ctx)
   drain()
-  const main = registrations.find(function (r) { return r.options && r.options.name === 'main' && r.options.key === 'rank-scan-panel' })
-  assert.ok(main, '必须注册 id=rank-scan-panel 的 main 面板（宿主 layout.selectPanel 对未注册的 main id 会抛）')
-  const tree = main.comp({})
-  assert.equal(tree, null, 'main 面板不再渲染任何界面（使用者口径：不要「多一个界面再点里面的按钮」）')
-  // 防漂移：装载时必须自动把浮窗打开（否则键盘/宿主路径落到这里会是一片空白）
-  const src = readFileSync(SOURCE, 'utf8')
-  assert.match(src, /RankScanMainPanel[\s\S]{0,240}panelOpen\.set\(true\)/, 'main 面板装载时必须自动打开浮窗')
+  const entry = registrations.find(function (r) { return r.options && r.options.name === 'sidebar.panellist' })
+  const el = entry.comp({ size: 16, active: false })
+  const seen = []
+  const evt = { stopPropagation: function () { seen.push('stop') }, preventDefault: function () { seen.push('prevent') } }
+  for (const k of ['onClick', 'onMouseDown', 'onPointerDown', 'onMouseUp']) {
+    assert.equal(typeof el.props[k], 'function', '入口必须处理 ' + k + '（宿主可能挂在任一事件上）')
+    el.props[k](evt)
+  }
+  assert.equal(seen.filter(function (x) { return x === 'stop' }).length, 4, '四种事件都必须 stopPropagation，实际 ' + JSON.stringify(seen))
 })
 
 test('★ 首次安装自动弹一次：标记只在**真的打开**的那一刻落（不再「标记落了但从不弹」）', function () {

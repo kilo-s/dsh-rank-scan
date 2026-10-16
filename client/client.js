@@ -11,6 +11,9 @@ window.__ModuleLoader__.load({
     const API = '/api/rank-scan'
     /** ★ 入口 id 与 main 面板 key 必须**一致**：宿主 PanelRow 点击时直接 layout.selectPanel(入口 id) */
     const PANEL_ID = 'rank-scan-panel'
+    // ★ 2026-10-16（使用者口径 B）：入口 id 恢复成审计前的独立值 —— 不复用浮窗 id，
+    //   免得宿主把侧栏这一行当成「面板页」去 selectPanel 切主区域。
+    const ENTRY_ID = 'rank-scan-entry'
     const jget = (p) => fetch(API + p, { headers: { Accept: 'application/json' } }).then((r) => r.json())
     // ⚠️ 之前这里**丢掉了 body**（调用方写的 {captures:…} 全被忽略）⇒ 面板里所有「保存」实际都没带参数：
     //    抓取集保存不动、每榜深度存不进去。现在统一带 JSON body。
@@ -1427,11 +1430,17 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
        */
       // ★ 2026-10-16（使用者反馈「入口太不明显」）：图标 + 「扫榜」文字 + 满不透明度，
       //   一眼能看出这里可以点；点了就地弹浮窗（stopPropagation 挡掉宿主的 selectPanel）。
+      const openHere = function (e) {
+        if (e && typeof e.stopPropagation === 'function') e.stopPropagation()
+        if (e && typeof e.preventDefault === 'function') e.preventDefault()
+      }
       return h('div', {
-        onClick: function (e) {
-          if (e && typeof e.stopPropagation === 'function') e.stopPropagation()
-          panelOpen.set(true)
-        },
+        // ★ 2026-10-16（使用者口径 B）：宿主的「切主区域」可能挂在 click / mousedown / pointerdown
+        //   任一事件上，所以三种全部就地吃掉：只弹浮窗，绝不换页。
+        onClick: function (e) { openHere(e); panelOpen.set(true) },
+        onMouseDown: openHere,
+        onPointerDown: openHere,
+        onMouseUp: openHere,
         title: '打开扫榜浮窗',
         style: { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', lineHeight: 1, fontSize: '12px', opacity: active ? 1 : 0.92, whiteSpace: 'nowrap' },
       },
@@ -1565,33 +1574,22 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         return ctx.slots.register({ name: 'shell.overlay', id: PANEL_ID, order: 900 }, function RankScanPanel() { return h(Panel, { openLink: function (u) { openLink(ctx, u) } }) })
       })
       /**
-       * ★ 薄 main 面板（Q29 / 审计-2 2026-10-16）：
+       * ★ 2026-10-16 使用者口径 B：**这里不再注册 main 面板**。审计时我按「宿主 selectPanel 对未注册
+       *   main id 会抛」的顾虑加了那个中间页，但事实是：审计前一直直接弹浮窗、用得好好的。
+       *   现在恢复原状：点入口只弹浮窗，不产生任何可切换的页面。
+       *   （保留原注释备查）
+       * ★ 旧口径（Q29 / 审计-2 2026-10-16）：
        *   宿主 PanelRow 点击时调 layout.selectPanel(id)，而 layout.selectPanel 对**没有注册的 main 面板
        *   id** 是直接抛异常的（`main panel "x" is not registered`）。所以入口 id 必须与 main 槽的 key 一致。
        *   这里只放「一行说明 + 打开浮窗」：浮窗的拖动/缩放/位置记忆全部保留，不迁进主面板。
        */
-      try {
-        ctx.slots.inject('main', function () {
-          /**
-           * ★ 2026-10-16（使用者反馈「为什么要多一个界面再点里面的按钮」）：
-           *   这个 main 面板只是**宿主契约的落点**（PanelRow 的 selectPanel(id) 要求 main 槽有同名 key，
-           *   否则 layout 会抛「main panel "x" is not registered」）。正常路径下点侧栏图标已被
-           *   stopPropagation 挡掉、根本不会走到这里；只有键盘/无障碍路径会落到本面板。
-           *   所以这里**不再放任何界面**：装载即把浮窗打开，然后渲染 null。
-           */
-          return ctx.slots.register({ name: 'main', key: PANEL_ID, order: 900 }, function RankScanMainPanel() {
-            React.useEffect(function () { panelOpen.set(true) }, [])
-            return null
-          })
-        })
-      } catch (e) { console.warn('[dsh-rank-scan] 注册 main 面板失败（宿主 layout 未就绪？）', e) }
       // 入口放 DSH **左侧栏会话列表下方**（使用方 2026-10-15 口径：收起按钮不要浮在对话上）
       // id 与 main 面板一致（PANEL_ID）⇒ 宿主那一行的 selectPanel(id) 不会抛；label 给宿主做 aria-label。
       try {
         const reg = function (slot) {
           try {
             ctx.slots.inject(slot, function () {
-              return ctx.slots.register({ name: slot, id: PANEL_ID, order: 900, label: '扫榜面板' }, SidebarEntryIcon)
+              return ctx.slots.register({ name: slot, id: ENTRY_ID, order: 900, label: '扫榜面板' }, SidebarEntryIcon)
             })
             return true
           } catch (e) { console.warn('[dsh-rank-scan] 入口槽位注册失败：' + slot, e); return false }
