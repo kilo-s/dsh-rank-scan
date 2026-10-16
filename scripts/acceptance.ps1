@@ -121,6 +121,11 @@ foreach ($f in ($trackedFiles | Where-Object { $_ -match '\.md$' })) {
   }
 }
 Check "公开面闸：公开面引用的仓库内图片/文档都存在（无死链）" ($deadLinks.Count -eq 0) ("死链：" + ($deadLinks -join '; '))
+#   ⑤ 提交信息也是公开面：GitHub 的文件列表 / 提交列表会把每条信息直接显示给读者。
+$logText = (& git -C $root log --format='%B' HEAD 2>$null | Out-String)
+$logHits = @()
+foreach ($w in $bannedWords) { if ($logText.Contains($w)) { $logHits += $w } }
+Check "公开面闸：提交信息里没有内部称呼（Git 元数据同样是公开面）" ($logHits.Count -eq 0) ("命中：" + (($logHits | Select-Object -Unique) -join ', '))
 $pkgJson = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'package.json') | ConvertFrom-Json
 $hasPeer = $null -ne $pkgJson.peerDependencies
 $hasDeps = ($null -ne $pkgJson.dependencies) -and (($pkgJson.dependencies.PSObject.Properties | Measure-Object).Count -gt 0)
