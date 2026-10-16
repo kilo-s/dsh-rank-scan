@@ -10,6 +10,21 @@ DeepSeek Harness 扫榜插件：定时 + 按需采集多站小说榜单，算变
 
 ## 安装 / 更新
 
+两条路任选一条。**两条都要求先完全退出 DSH 桌面版** —— 这是宿主自己的规矩（profile 由桌面应用独占管理），不是本插件的要求，也不需要重启电脑。装完重开 DSH 即可。
+
+### 一、从仓库链接直装（不用先下载文件）
+
+```sh
+dsh plugin --profile desktop add github:kilo-s/dsh-rank-scan
+# 想钉版本：github:kilo-s/dsh-rank-scan#v0.2.1
+```
+
+- 安装时会**现场从源码构建**：仓库不含编译产物，靠 `package.json` 的 `prepare` 在安装时跑 `scripts/build.mjs` 生成 `lib/`。
+- pnpm 默认拦截依赖的构建脚本，首次会失败 —— `dsh` 会打印需要放行的确切键，把它加进 `~/.dsh/profiles/desktop/pnpm-workspace.yaml` 的 `allowBuilds` 下，再重跑同一条命令即可。
+- 需要本机有 git、pnpm 与网络。
+
+### 二、装 Release 附件（离线可用）
+
 **第 1 步**：从 [Releases](https://github.com/kilo-s/dsh-rank-scan/releases) 下载最新的 `*.tgz`。
 **第 2 步**：**完全退出 DSH 桌面版**，然后：
 
@@ -17,16 +32,13 @@ DeepSeek Harness 扫榜插件：定时 + 按需采集多站小说榜单，算变
 pwsh -File scripts\install.ps1 -Spec "<刚下载的 tgz 的完整路径>"
 ```
 
-macOS / Linux：`bash scripts/install.sh desktop <tgz 路径>`。重开 DSH 即可用。
+macOS / Linux：`bash scripts/install.sh desktop <tgz 路径>`。
 
-装的时候必须退出 DSH —— 这是宿主自己的规矩（profile 由桌面应用独占管理），不是本插件的要求，也不需要重启电脑。
-
-> **不要**用 `dsh plugin add <本仓库URL>` 直接装：本仓库**不含编译产物**（`lib/` 会复制源码注释，sourcemap 还带构建机的绝对路径），只 clone 源码装上会加载失败（宿主日志里是 `did not activate`）。请用 Release 包。
-> 想自己从源码构建见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+想自己从源码构建、或了解为什么仓库里不放 `lib/`，见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
 **验证**：重开 DSH 后左侧栏会话列表下方应出现「扫榜」入口；或访问 `http://127.0.0.1:19387/api/rank-scan/health`，返回 `{ok:true,...}` 即通。
 
-**更新**：重跑上面的安装命令即可。装了 [dsh-market](https://github.com/dsh-market/dsh-market) 的话，面板「抓什么」页底部有版本区，可就地检查并一键更新。
+**更新**：重跑上面任一条安装命令即可（链接直装会取最新 main）。装了 [dsh-market](https://github.com/dsh-market/dsh-market) 的话，面板「抓什么」页底部有版本区，可就地检查并一键更新（该路径以 npm 上的包为目标）。
 
 **卸载**：`pwsh -File scripts\uninstall.ps1`（macOS / Linux：`bash scripts/uninstall.sh`）。卸载会清掉插件、路由残留与 junction，但**保留数据目录** —— 想彻底清理请自行删除它。
 
