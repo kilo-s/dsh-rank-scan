@@ -30,6 +30,7 @@ Step "打包预览（列出真正上传的文件）"
 if ($DryRun) { Step "-DryRun：到此为止，没有发布。"; exit 0 }
 Step "发布"
 $npmArgs = @("publish", "--access", "public", "--tag", $Tag, "--registry", $Registry, "--cache", $cache)
+if ($Otp -eq "") { $Otp = (Read-Host "取一个新的 6 位 OTP（刚取的才有效）").Trim() }
 if ($Otp -ne "") { $npmArgs += "--otp"; $npmArgs += $Otp }
 & npm.cmd @npmArgs
 Guard ($LASTEXITCODE -eq 0) "npm publish 失败（401/403 = 权限或 2FA；EOTP = 用 -Otp 重试）"
