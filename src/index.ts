@@ -1916,16 +1916,6 @@ export function apply(ctx: PluginCtx, config: any): void {
     } catch { /* 同上 */ }
   }
 
-  /**
-   * 该榜的到点判据：用**站点时刻**（抓完才可能补全）+ 兜底时刻。
-   * 补全续跑必须等这一站当天该跑的时间过了才动它，免得在用户还在挑榜时就打站点。
-   */
-  function siteTimeReached(site: string, st: any): boolean {
-    const times: any = (st as any).siteTimes || DEFAULT_SITE_TIMES
-    const fallback = (st as any).fallbackTime || DEFAULT_FALLBACK_TIME
-    return timeReached(hmOf(new Date()), times[site] || fallback) || timeReached(hmOf(new Date()), fallback)
-  }
-
   function needsEnrichRows(boardId: string, rows: any[]): number {
     return enrichMissingCount(boardId, (rows || []) as any)
   }
