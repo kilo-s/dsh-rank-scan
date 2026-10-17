@@ -76,6 +76,8 @@ node tests/diff.test.mjs              # 单个文件
 
 ## 卸载与 patch 安全（口径 Q24 / Q31）
 
+- **安装脚本**：`scripts/install.ps1 -Spec "<tgz 路径>"`（macOS / Linux：`bash scripts/install.sh desktop <tgz>`）只是替 `dsh plugin add` 补上 `-Profile` 与几行提示。**`scripts/` 不在 tgz 里** —— 包的 `files` 白名单只有 `lib/`、`cordis.patch.yml`，npm 另外强制带上 `package.json` / `README` / `LICENSE`；要用脚本就从仓库或 Release 页的源码包取，或者直接 `dsh plugin --profile desktop add "<tgz 路径>"`。
+- **patch 里那条宿主写的 `disabled` 记录留着合法**：它是宿主自己的开关，不是卸载残留；手删它才是「启动崩掉」的主要来源（见上一条 fail-loud 说明）。
 - **卸载脚本永不重写 patch**：`scripts/uninstall.ps1|sh` 只做三件事 —— `dsh plugin remove` → 按 `package.json` 的 `name` 算 junction 路径并删（旧 scope 名 `@dsh-external/<name>` 一并试删）→ 打印 patch 的只读检查结果与数据目录。对 `~/.dsh/profiles/<p>/cordis.patch.yml` 只有「读 + 存在性判断 + 打印说明」。
 - 为什么：宿主对非法/空 patch 是 **fail-loud** —— `dsh-plugin-manager` 写 patch 前先要求「顶层是 YAML 数组」（`Profile patch must be a YAML sequence`），文件一旦被删坏，下次启动 `exit=1` 且**宿主自己也修不了**。删 YAML 条目（正则/行删）恰恰是主要破坏源。
 - `dsh plugin remove` **非零即中止**（Q31）：不删 junction、不动任何文件，打印手动命令并以非零退出。
@@ -101,13 +103,18 @@ pwsh -File scripts/acceptance.ps1             # 加上在线探针（需要插�
 
 ## 发布
 
-0. **npm 名占位（一次性，Q26）**：`pwsh -File scripts\publish-npm-placeholder.ps1 -DryRun` 先预览（查 npm 登录态 + 名字是否被占），去掉 `-DryRun` 真正执行（`npm login` → 发布一个 `0.0.0` 占位包，不含任何代码）。这是**防同名抢注，不是分发渠道** —— 插件内容只走 Release 附件 / 仓库链接；面板里的「一键更新」因此不适用（文案写明「未发布到 npm」）。脚本失败即停、中文输出，跑完自己打印验证方式。
-1. 改 `package.json` 的版本位；
-2. 双闸门全绿（`scripts/test-local.ps1` + `scripts/acceptance.ps1`）；
-3. 打 tag（`v<version>`）并推送 —— `.github/workflows/build.yml` 会从源码构建、跑离线自测、校验包内是否有 `lib/index.js` / `lib/client.js` / `cordis.patch.yml`，然后挂到同名 Release；
-4. 本地 `npm pack` 前先**释放文件认领**（或删掉根目录的 `README*.dshclaim` / `CHANGELOG*.dshclaim`）—— npm 会无条件收录 `README*`/`CHANGELOG*`/`LICENSE*`，认领标记会被一起打进包；CI 从干净检出构建，不受影响。
-5. 发布说明写「安装：先完全退出 DSH，再执行 `dsh plugin --profile desktop add <附件 tgz 的本地路径>` 或解压后跑 `scripts/install.ps1`；**仓库链接直装同样可以**（首次会被 pnpm `allowBuilds` 拦住，按提示放行后重跑同一条命令）」。
-   ⚠ 生成 Release 说明的模板在 `.github/workflows/build.yml` 的 notes heredoc 里 —— 它必须与 README「安装 / 更新」保持一致（历史上模板写过「不要用仓库 URL 直接安装」，与 README 的直装口径相反）。改口径时两处一起改。
+**当前形态（0.2.3 起）**：推 tag 即发布 —— 不需要任何长期 token、不需要 OTP。
+
+1. 改 `package.json` 的版本位，并在 `CHANGELOG.md` 顶部加一节 `## [x.y.z] - YYYY-MM-DD` —— **Release 说明就是这一节**（workflow 按版本号从 CHANGELOG 取，不再有固定模板）。
+2. 双闸门全绿：`scripts/test-local.ps1` + `scripts/acceptance.ps1 -SkipLive`。
+3. 提交并推 `main`，然后打 tag 推送：`git tag -a v<x.y.z> -m "…"` + `git push origin v<x.y.z>`。
+4. `.github/workflows/build.yml` 随后：构建 → 跑 `tests/*.test.mjs` → `npm pack` → 校验包内 `lib/index.js` / `lib/client.js` / `cordis.patch.yml` → 挂 Release 附件（说明取自 CHANGELOG 该版本段；已存在的 Release 会覆盖附件并重写说明）→ **用 OIDC（Trusted Publishing）发布到 npm**，带 `--provenance`。
+5. npm 侧一次性配置：包设置页 → Trusted Publisher → GitHub 仓库 `kilo-s/dsh-rank-scan` + workflow `build.yml`（环境留空）。**改了仓库地址或 workflow 文件名必须同步改这里**，否则发布步骤会红（有意不静默跳过）。
+6. 手工兜底（CI 不可用 / 想立刻发一版）：本地 `npm publish`，凭据二选一 —— ① 一枚 `bypass_2fa = true` 的 granular token 放进被 gitignore 的 `.npmrc`（用 `scripts/set-npm-token.ps1` 写，带写后自检）；② 当场输 6 位 OTP（`--otp`）。
+   - 坑 1：`npm token list` 会把 granular token 渲染成「Publish token」，**别看那行判断类型**；直接查 `GET https://registry.npmjs.org/-/npm/v1/tokens` 看 `bypass_2fa` / `permissions` / `expiry`。
+   - 坑 2：`ENEEDAUTH` 先查 `.npmrc` 是否被写成「`_authToken=` 空值 + 裸 token 一行」（PowerShell 的逗号优先级高于 `+` 会造出这种形状）。
+   - 坑 3：账户开了 `auth-and-writes` 时，非交互 shell 里 npm 会把 `otp` 发成布尔 `true` ⇒ 400 `child "otp" fails ...`。这不是 token 坏了。
+7. 本地 `npm pack` 前先**释放文件认领**（或删掉根目录的 `README*.dshclaim` / `CHANGELOG*.dshclaim`）—— npm 会无条件收录 `README*`/`CHANGELOG*`/`LICENSE*`，认领标记会被一起打进包；CI 从干净检出构建，不受影响。
 6. 卸载脚本与 patch 的安全边界（不重写用户 patch、remove 失败即中止）见上面「卸载与 patch 安全」小节，别在发布前顺手「优化」成删条目。
 
 包名与分发渠道的决定（含改名与 scope 注意事项）记在开发机的私有文档里，不入库。

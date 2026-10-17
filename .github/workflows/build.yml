@@ -1,7 +1,10 @@
 name: build-and-release
 
-# 为什么需要它：仓库里**不放编译产物**（lib/ 里的注释是源码的复制品，且产物会与源码各自漂移），
-# 所以可分发的包必须在 CI 里从源码构建 —— 打 tag 时构建、自测、校验，再把 tgz 挂到同名 Release。
+# 为什么需要它：仓库里不放编译产物（lib/ 是源码的复制品、sourcemap 还带构建机的绝对路径，产物还会与源码漂移），
+# 所以可分发的包必须在 CI 里从源码构建。
+# 打 tag 时：构建 → 自测 → 打包 → 校验 → 挂 Release 附件 → 发布到 npm。
+# npm 发布走 **Trusted Publishing（OIDC）**：不需要任何长期 token、也不需要 OTP；
+# 前提是该包在 npm 上配过一次 Trusted Publisher（仓库 kilo-s/dsh-rank-scan + 本文件名 build.yml）。
 
 on:
   push:
@@ -15,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write     # Trusted Publishing 必需
 
 # 测试里的时间戳是 +08:00 语义（数据日期 = 本地自然日），把运行环境固定成 Asia/Shanghai，
 # 否则 UTC runner 上「凌晨 01:30 也算当天」这类断言会整片变红。
@@ -55,11 +59,10 @@ jobs:
           tgz=$(ls -1 dsh-rank-scan-*.tgz 2>/dev/null | head -n1)
           echo "包：$tgz"
           test -n "$tgz" || { echo "没有产出 tgz"; exit 1; }
-          # 必须带 host 产物、面板产物与装配补丁，否则别人装上加载不了
-          tar -tzf "$tgz" | grep -q 'package/lib/index.js' || { echo "包内缺 lib/index.js"; exit 1; }
-          tar -tzf "$tgz" | grep -q 'package/lib/client.js' || { echo "包内缺 lib/client.js"; exit 1; }
-          tar -tzf "$tgz" | grep -q 'package/cordis.patch.yml' || { echo "包内缺 cordis.patch.yml"; exit 1; }
-          if tar -tzf "$tgz" | grep -q 'dshclaim'; then echo "包内混入会话认领标记"; exit 1; fi
+          tar -tzf "$tgz" | grep -q "package/lib/index.js" || { echo "包内缺 lib/index.js"; exit 1; }
+          tar -tzf "$tgz" | grep -q "package/lib/client.js" || { echo "包内缺 lib/client.js"; exit 1; }
+          tar -tzf "$tgz" | grep -q "package/cordis.patch.yml" || { echo "包内缺 cordis.patch.yml"; exit 1; }
+          if tar -tzf "$tgz" | grep -q "dshclaim"; then echo "包内混入会话认领标记"; exit 1; fi
 
       - name: 上传构建产物（artifact）
         uses: actions/upload-artifact@v4
@@ -67,31 +70,44 @@ jobs:
           name: dsh-rank-scan-package
           path: "*.tgz"
 
+      # Release 说明 = 该版本在 CHANGELOG.md 里的那一段。
+      # 以前用固定模板 ⇒ 两个版本的说明长得一模一样、与版本内容无关；现在按版本号从 CHANGELOG 取。
+      - name: 生成 Release 说明（本版 CHANGELOG 段）
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          {
+            awk -v h="## [$ver]" 'index($0,h)==1 {f=1; next} f && index($0,"## [")==1 {exit} f' CHANGELOG.md
+            echo
+            echo "### 安装"
+            echo
+            echo '```sh'
+            echo "dsh plugin --profile desktop add github:kilo-s/dsh-rank-scan#${GITHUB_REF_NAME}"
+            echo '```'
+            echo
+            echo "或从本页 Assets 下载 `dsh-rank-scan-${ver}.tgz`，完全退出 DSH 后执行 `dsh plugin --profile desktop add <tgz 路径>`。详见 README「安装 / 更新」。"
+          } > /tmp/release-notes.md
+          cat /tmp/release-notes.md
+
       - name: 发布到 Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tgz=$(ls -1 dsh-rank-scan-*.tgz 2>/dev/null | head -n1)
-          cat > /tmp/release-notes.md <<'NOTES'
-          安装：先**完全退出 DSH**，然后二选一 ——
-
-          1. 直接装附件包：`dsh plugin --profile desktop add <附件 tgz 的本地路径>`
-          2. 解压后运行：`pwsh -File scripts/install.ps1 -Spec "<tgz 路径>"`
-             （macOS / Linux：`bash scripts/install.sh desktop <tgz 路径>`）
-
-          仓库不含编译产物（`lib/` 由 `prepare` 在安装时现场构建）。
-
-          也可以直接装仓库链接：`dsh plugin --profile desktop add github:kilo-s/dsh-rank-scan`
-          —— pnpm 默认会拦住依赖的构建脚本，首次会失败并打印需要放行的确切键，
-          把它加进 `~/.dsh/profiles/<profile>/pnpm-workspace.yaml` 的 `allowBuilds` 后重跑同一条命令即可。
-
-          详见 README 的「安装 / 更新」。
-          NOTES
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "Release 已存在：只覆盖附件（人工写的发布说明优先）"
+            echo "Release 已存在：覆盖附件并用本版 CHANGELOG 重写说明"
             gh release upload "${GITHUB_REF_NAME}" "$tgz" --repo "${GITHUB_REPOSITORY}" --clobber
+            gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --notes-file /tmp/release-notes.md
           else
-            gh release create "${GITHUB_REF_NAME}" "$tgz" \
-              --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file /tmp/release-notes.md
+            gh release create "${GITHUB_REF_NAME}" "$tgz" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file /tmp/release-notes.md
           fi
+
+      # 最后一步：发布到 npm。失败就让 workflow 变红（不静默跳过）——
+      # 红的原因通常只有两种：该包还没配 Trusted Publisher，或这个版本号已经发过。
+      - name: 发布到 npm（Trusted Publishing / OIDC）
+        if: startsWith(github.ref, 'refs/tags/v') && github.event.inputs.dry_run != 'true'
+        run: |
+          npm install -g npm@latest    # OIDC 发布需要 npm >= 11.5
+          npm --version
+          npm publish --access public --provenance --registry https://registry.npmjs.org/
