@@ -12,7 +12,7 @@ DeepSeek Harness 扫榜插件：定时 + 按需采集多站小说榜单，算变
 
 ## 安装 / 更新
 
-任选一条。两条都要求**先完全退出 DSH 桌面版**（profile 由桌面应用独占管理），装完重开 DSH 即可。
+任选一条。三种方式都要求**先完全退出 DSH 桌面版**（profile 由桌面应用独占管理），装完重开 DSH 即可。
 
 ### A. 一条命令（推荐）
 
@@ -33,9 +33,18 @@ dsh plugin --profile desktop add "<tgz 的完整路径>"
 
 需要脚本化安装 / 卸载（`install.ps1`、`uninstall.ps1`）或想知道包里为什么不带 `scripts/`，见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
+### C. 从 npm registry 装（免现场构建）
+
+```sh
+dsh plugin --profile desktop add dsh-rank-scan
+# 钉版本：dsh-rank-scan@0.2.4
+```
+
+npm 上那份是 CI 从源码构建的（包内自带 `lib/`，发布带 `--provenance` 签名）——装的时候不用再编译，也不会被 pnpm 的 `allowBuilds` 拦下。面板的「检查更新」读的就是 npm 上的版本号。
+
 **验证**：重开 DSH 后左侧栏会话列表下方应出现「扫榜」入口；或访问 `http://127.0.0.1:19387/api/rank-scan/health`，返回 `{ok:true,...}` 即通。
 
-**更新**：重跑安装命令即可（链接直装取最新 main）；装了 [dsh-market](https://github.com/dsh-market/dsh-market) 的话，面板「抓什么」页底部能就地检查更新（0.2.3 起已发布到 npm）。
+**更新**：重跑安装命令即可（链接直装取最新 `main`，registry 装取最新发布版，当前 **0.2.4**）；面板「抓什么」页底部会读 npm 上的版本号提示有没有新版，装了 [dsh-market](https://github.com/dsh-market/dsh-market) 的话还能就地更新。
 
 **卸载**：`dsh plugin --profile desktop remove dsh-rank-scan`。数据目录 `~/.dsh/data/rank-scan` 会保留，要彻底清理自行删除；脚本化卸载与 patch 安全口径见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
@@ -55,7 +64,7 @@ dsh plugin --profile desktop add "<tgz 的完整路径>"
 | 落盘纪律 | 按数据日期落快照，原子写、同日覆盖即幂等；精简索引 / 保留清理 / 导出 |
 | 定时扫描 | 按站分时，**默认开启**，安装当天不跑；面板可改时刻与开关，**改动跨重载保留** |
 | 面板记忆 | 浮窗位置与尺寸、收起状态、当前页签、正在看哪天，都在刷新后恢复 |
-| 版本与更新 | 面板显示当前版本；**0.2.3 起已发布到 npm**（v0.2.2 只有 Release 附件），装了 dsh-market 可查新版本并「一键更新」；npm 查不到时面板会明确提示，回退 Release 附件 / 仓库链接；没装 dsh-market 则只读（不硬赌能力） |
+| 版本与更新 | 面板显示当前版本；**已发布到 npm**，装了 dsh-market 可查新版本并「一键更新」；npm 查不到时面板会明确提示，回退 Release 附件 / 仓库链接；没装 dsh-market 则只读 |
 | 防卡死 | 单请求 15s / 单榜 90s / 单站连败 3 次熔断 / 120s 无进展看门狗 / 扫描锁 + 心跳（心跳过期可接管） |
 | 书签 | 面板内收藏作品、备注夹、回收站、导出 |
 
@@ -125,7 +134,7 @@ dsh plugin --profile desktop add "<tgz 的完整路径>"
 3. 访问 `/api/rank-scan/health`：能返回 JSON ⇒ host 侧活着，问题在面板；连不上 ⇒ 插件没装上；
 4. 重装一次：`pwsh -File scripts\install.ps1 -Spec "<tgz>"`（缺省 `-Spec` 走目录直装，要求仓库目录已构建出 `lib/index.js`，否则脚本会直接报错退出）。
 
-**面板点不开 / 点了没反应**：先确认点的是哪颗按钮 —— DSH 的侧栏会把插件入口包进它自己的一行 `<button>`，我们的入口嵌在里面（DOM 里因此有两颗文本相同的 button，外层那颗不是我们的 handler）。
+**面板点不开 / 点了没反应**：先确认点的是哪颗按钮 —— DSH 的侧栏会把插件入口包进它自己的一行 `<button>`，插件入口嵌在里面（DOM 里因此有两颗文本相同的 button，外层那颗不归插件处理）。
 
 **某个榜显示 `missing` / 一列都是「—」**：先看是不是数据源本身就没有这个字段（例如站点榜单页不给字数与收藏，需要点「补全」进书页取）；本插件对缺失一律显示「—」，不会编造 0。
 

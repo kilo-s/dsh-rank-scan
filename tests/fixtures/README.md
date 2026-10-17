@@ -7,11 +7,11 @@
 |---|---|---|
 | `qidian-sign-cat12.html` | 起点移动端「签约榜 · 轻小说」响应 | 榜单解析：20 条、名次连续、分类/子分类/字数齐备 |
 | `qidian-book-1049003034.html` | 起点移动端作品页响应 | 书页解析：`collect` / `wordsCnt` |
-| `qidiantu-shouding.html` | 起点图首订榜页 | 首订解析：`td[value]` 精确值、收订比、内容日期、**表头 9 列**（票 49：解析前校验表头文本/列数） |
+| `qidiantu-shouding.html` | 起点图首订榜页 | 首订解析：`td[value]` 精确值、收订比、内容日期、**表头 9 列**（解析前校验表头文本与列数） |
 | `qidiantu-sanjiang.html` | 起点图三江·推荐效果页 | 三江解析：16 格表、7 天逐日增量、已结算天数 |
 | `ciweimao-no-vip-click-week.html` | 刺猬猫周榜页 | 榜单解析：10 条、名次型（无数值） |
 | `ciweimao-buy.json` | 刺猬猫「首订（约）」第三方接口响应 | 数值型解析 + 期号回退 |
-| `sfacg-home.html` | 菠萝包首页 SSR | 三个榜各 10 条 + 前两名才有字数/收藏 + **`li.list` 的真名次 `<i class="num">03</i>`**（票 49：名次必须来自页面，不是按位置补号） |
+| `sfacg-home.html` | 菠萝包首页 SSR | 三个榜各 10 条 + 前两名才有字数/收藏 + **`li.list` 的真名次 `<i class="num">03</i>`**（名次来自页面，不按位置补号） |
 
 ## 三条纪律
 

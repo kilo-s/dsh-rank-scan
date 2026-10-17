@@ -39,7 +39,7 @@ npm run build      # = node scripts/build.mjs：tsc 编 host + 把 client/client
 ## 测试
 
 ```bash
-pwsh -File scripts/test-local.ps1     # 逐个文件跑（node --test 会 spawn 子进程，某些沙箱拒 EPERM）
+pwsh -File scripts/test-local.ps1     # 逐个文件跑（node --test 会起子进程，受限环境里会失败）
 node tests/diff.test.mjs              # 单个文件
 ```
 
