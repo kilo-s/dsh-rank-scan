@@ -101,6 +101,23 @@ test('planSiteRuns：当天已有快照的站算「已跑」；到兜底点补�
   assert.deepEqual(p.fallback, ['qidian', 'sfacg'])
 })
 
+test('planSiteRuns：★ 今天跑过但**失败**的站也要被兜底捡起来（2026-10-17 修「兜底没生效」）', async () => {
+  const { planSiteRuns } = await import('../lib/scan/schedule.js')
+  const boards = ['ciweimao.yp_new.week', 'qidian.sign.cat4']
+  const times = { qidian: '01:30', ciweimao: '10:40' }
+  const op = { today: '2026-10-16', boards, siteTimes: times, fallbackTime: '22:30' }
+  // 22:00（未到兜底）：失败站暂时算「已跑」，不能每 30 秒重试
+  let p = planSiteRuns({ ...op, nowHM: '22:00', siteLastRun: { ciweimao: '2026-10-16' }, ranToday: ['qidian', 'ciweimao'], failed: ['ciweimao'] })
+  assert.ok(p.done.includes('ciweimao'), '未到兜底前不重试')
+  assert.deepEqual(p.fallback, [])
+  // 22:40：到兜底 ⇒ 进补跑队列（这正是以前永远走不到的分支）
+  p = planSiteRuns({ ...op, nowHM: '22:40', siteLastRun: { ciweimao: '2026-10-16' }, ranToday: ['qidian', 'ciweimao'], failed: ['ciweimao'] })
+  assert.deepEqual(p.fallback, ['ciweimao'], '跑失败的站要被兜底捡起来')
+  // 补过一次 ⇒ 不再重复
+  p = planSiteRuns({ ...op, nowHM: '22:50', siteLastRun: { ciweimao: '2026-10-16' }, ranToday: ['qidian', 'ciweimao'], failed: ['ciweimao'], retried: { ciweimao: '2026-10-16' } })
+  assert.deepEqual(p.fallback, [], '每站每天最多补一次')
+})
+
 test('planSiteRuns：★ 疑似未刷新的站到兜底时刻重跑一次，且每站每天只重跑一次（2026-10-16 C）', async () => {
   const { planSiteRuns } = await import('../lib/scan/schedule.js')
   const boards = ['qidiantu.sanjiang', 'qidian.sign.cat4']

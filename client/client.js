@@ -856,13 +856,21 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               const scan = pl.siteLastScan || (tLast && tLast.siteLastScan) || {}
               const hit = scan[key] || null
               const hhmmss = hit && hit.at ? fmtLocalHM(hit.at) : ''
-              const doneTag = hit
-                ? '今天已抓（' + (hit.by === 'timer' ? '定时' : hit.by === 'manual' ? '手动' : hit.by || '扫描') + (hhmmss ? ' ' + hhmmss : '') + '）'
-                : slr[key] === today ? '今天已跑（定时）' : '今天已抓'
+              /**
+               * ★ 2026-10-17：状态文案要能回答「按计划跑了吗」，所以分三种说清楚：
+               *   · 已跑：定时那次成功过（显示定时时刻；若之后还有手动抓取，顺带标出来）
+               *   · 待补跑：只抓在计划时刻**之前** ⇒ 下一个 tick 会补（以前这里显示「今天已抓」，误导）
+               *   · 兜底补：今天跑过但失败 / 疑似未刷新 ⇒ 到兜底时刻再试一次（每站每天一次）
+               */
+              const planHM = ((tTimes || {})[key]) || ((tLast && tLast.siteTimes && tLast.siteTimes[key]) || '')
+              const timerHM = ((tLast && tLast.siteLastTimerAt && tLast.siteLastTimerAt[key]) ? fmtLocalHM(tLast.siteLastTimerAt[key]) : '')
+              const doneTag = timerHM
+                ? '已跑（定时 ' + timerHM + (hhmmss && hhmmss !== timerHM ? '；最近 ' + (hit && hit.by === 'manual' ? '手动 ' : '') + hhmmss : '') + '）'
+                : hit ? '手动已抓 ' + hhmmss : (slr[key] === today ? '今天已跑（定时）' : '今天还没抓')
               const why = (pl.done || []).indexOf(key) >= 0 ? doneTag
-                : (pl.due || []).indexOf(key) >= 0 ? '到点待跑'
-                : (pl.waiting || []).indexOf(key) >= 0 ? '等到点'
-                : (pl.fallback || []).indexOf(key) >= 0 ? '漏了 → 兜底补' : '—'
+                : (pl.fallback || []).indexOf(key) >= 0 ? '失败/疑似未刷新 → 兜底 ' + (tFall || '') + ' 补一次'
+                : (pl.due || []).indexOf(key) >= 0 ? (hhmmss ? '已抓 ' + hhmmss + '（早于计划 ' + planHM + '）→ 待补跑' : '到点待跑')
+                : (pl.waiting || []).indexOf(key) >= 0 ? '等到点' : '—'
               const sf = pl.staleFlag || {}
               const sb = Object.keys(sf).find(function (b) { return b.split('.')[0] === key && sf[b] && sf[b].date === pl.today })
               const isStale = (pl.staleSites || []).indexOf(key) >= 0
@@ -892,9 +900,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                 onChange: function (e) { setTFall(e.target.value) },
                 onBlur: function (e) { if (e.target.value !== ((tLast && tLast.fallbackTime) || '')) saveTimer(tOn, tTimes, e.target.value) },
               }),
-              h('span', { style: C.muted }, '当天没跑成的站到这个点补跑一次')),
+              h('span', { style: C.muted }, '当天跑**失败**或**疑似未刷新**的站，到这个点再补一次（每站每天一次）')),
             h('div', { style: { ...C.muted, marginTop: '2px' } },
-              '状态更新于 ' + ((planLive && planLive.now) || '—') + '（常态 3 分钟刷新，有站到点待跑时 30 秒；「今天已抓」= 这个站今天的快照已经在盘上，手动扫的也算）'),
+              '状态更新于 ' + ((planLive && planLive.now) || '—') + '（常态 3 分钟刷新，有站到点待跑时 30 秒）·「已跑」= 计划时刻之后抓到过；「待补跑」= 只抓在计划时刻之前，下一个 tick 会补；「兜底补」= 今天跑过但失败/疑似未刷新，到兜底时刻再试一次'),
             (planLive && planLive.installedToday)
               ? h('div', { style: { ...C.muted, marginTop: '2px' } }, '★ 今天刚安装：新装默认开着定时，但**安装当天不自动跑**，明天起按上面的时刻执行。')
               : null),

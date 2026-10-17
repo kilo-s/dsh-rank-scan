@@ -108,6 +108,8 @@ function defaultState() {
     fallbackTime: DEFAULT_FALLBACK_TIME,
     /** 每站最近一次定时跑过的数据日（跨重启有效，防重复跑） */
     siteLastRun: {} as Record<string, string>,
+  /** ★ 2026-10-17：每站**定时**那次跑成功的时刻（ISO）。siteLastRun 只有日期，面板要显示「定时 08:30」 */
+  siteLastTimerAt: {} as Record<string, string>,
     /** 每个榜最近一次扫描（含手动）：面板可显示「这个榜上次什么时候抓的」 */
     boardLastScan: {} as Record<string, { date: string; at: string; outcome: string }>,
     /**
@@ -765,6 +767,34 @@ export function apply(ctx: PluginCtx, config: any): void {
     return out
   }
 
+  /**
+   * ★ 2026-10-17（使用者问「兜底到底有没有生效」）：今天**定时跑过但没跑成**的站。
+   *
+   *   为什么需要它：跑失败也会写 siteLastRun=today（防 30 秒一次无脑重试），于是 due 永远不会再排它，
+   *   而旧兜底分支只认「疑似未刷新」⇒ 一次失败 = 当天彻底没了。现在这类站进兜底队列，22:30 再试一次。
+   *   判据：该站今天所有榜里，没有任何一次「计划时刻之后」的成功抓取。
+   */
+  function sitesFailedToday(sites: string[], today: string, siteTimes?: Record<string, string>): string[] {
+    const st: any = readState()
+    const times = siteTimes || st.siteTimes || DEFAULT_SITE_TIMES
+    const bls: any = st.boardLastScan || {}
+    const out: string[] = []
+    for (const s of sites) {
+      if (((st as any).siteLastRun || {})[s] !== today) continue
+      const plan = times[s] || DEFAULT_SITE_TIMES[s] || DEFAULT_FALLBACK_TIME
+      const bs = ((st.boards as string[]) || []).filter((b: string) => siteOfBoard(b) === s)
+      let latest: string | null = null
+      for (const b of bs) {
+        const hit = bls[b]
+        if (!hit || hit.date !== today || hit.outcome !== 'ok') continue
+        const hm = hmOf(new Date(String(hit.at)))
+        if (!latest || hm > latest) latest = hm
+      }
+      if (!latest || latest < plan) out.push(s)
+    }
+    return out
+  }
+
   /** 站 id → 中文名（面板/日志用） */
   const SITE_CN: Record<string, string> = { qidian: '起点', qidiantu: '起点图', ciweimao: '刺猬猫', sfacg: '菠萝包', fanqie: '番茄' }
 
@@ -780,6 +810,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       siteLastRun: st.siteLastRun || {},
       fallbackTime: st.fallbackTime || DEFAULT_FALLBACK_TIME,
       ranToday: sitesRanToday(sites, localDate(new Date()), st.siteTimes || DEFAULT_SITE_TIMES),
+      failed: sitesFailedToday(sites, localDate(new Date()), st.siteTimes || DEFAULT_SITE_TIMES),
     })
     /**
      * ★ 2026-10-16（疑问「关闭状态为什么显示今天已跑」）：把「这个站今天抓过没、谁抓的、几点抓的」
@@ -841,6 +872,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       siteLastRun: (st as any).siteLastRun || {},
       fallbackTime: (st as any).fallbackTime || DEFAULT_FALLBACK_TIME,
       ranToday: sitesRanToday(sites, today, (st as any).siteTimes || DEFAULT_SITE_TIMES),
+      failed: sitesFailedToday(sites, today, (st as any).siteTimes || DEFAULT_SITE_TIMES),
       stale: staleSites,
       retried: (st as any).siteRetry || {},
     })
@@ -892,6 +924,15 @@ export function apply(ctx: PluginCtx, config: any): void {
         const slr: any = { ...((st2 as any).siteLastRun || {}) }
         slr[target] = today
         ;(st2 as any).siteLastRun = slr
+        /**
+         * ★ 2026-10-17：分开记「定时那次成功的时刻」与「最近一次抓取（含手动）」——
+         *   只有日期的话，面板上「今天已抓（手动 11:43）」会让人以为计划 08:30 没跑。
+         */
+        if (state === 'ok') {
+          const sla: any = { ...((st2 as any).siteLastTimerAt || {}) }
+          sla[target] = startedAt
+          ;(st2 as any).siteLastTimerAt = sla
+        }
         // ★ C：这是「疑似未刷新」的补跑 ⇒ 记下来，每站每天最多补跑一次
         if (isRetryRun) {
           const srt: any = { ...((st2 as any).siteRetry || {}) }
@@ -2778,7 +2819,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             const armed = syncTimer()
             return send(200, {
               ok: true, enabled: on, scanTime: stT.scanTime, siteTimes: stT.siteTimes, fallbackTime: stT.fallbackTime,
-              siteLastRun: stT.siteLastRun || {}, plan: timerPlanNow(), armed,
+              siteLastRun: stT.siteLastRun || {}, siteLastTimerAt: (stT as any).siteLastTimerAt || {}, plan: timerPlanNow(), armed,
               note: (on
                 ? '定时已开启（按站分时）：' + SITE_ORDER.map((s) => (SITE_CN[s] || s) + ' ' + ((stT.siteTimes || {})[s] || '—')).join('、') + '；当天没跑成的站到 ' + (stT.fallbackTime || DEFAULT_FALLBACK_TIME) + ' 补跑'
                 : '定时扫描已关闭（面板「立刻扫一次」仍可用）') + (on
@@ -2788,7 +2829,7 @@ export function apply(ctx: PluginCtx, config: any): void {
           }
           if (p === '/api/rank-scan/timer-plan') {
             // 只读：现在这一刻会跑哪个站 / 为什么没跑（零请求，诊断与集成测试用）
-            return send(200, { ok: true, plan: timerPlanNow(), siteLastRun: (readState() as any).siteLastRun || {} })
+            return send(200, { ok: true, plan: timerPlanNow(), siteLastRun: (readState() as any).siteLastRun || {}, siteLastTimerAt: (readState() as any).siteLastTimerAt || {} })
           }
           if (p === '/api/rank-scan/depth') {
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })

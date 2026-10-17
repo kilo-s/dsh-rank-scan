@@ -106,6 +106,12 @@ export interface PlanInput {
   stale?: string[]
   /** 已经重跑过的站 → 数据日（每站每天最多重跑一次，防止反复打站点） */
   retried?: Record<string, string>
+  /**
+   * ★ 2026-10-17：今天**定时跑过但没跑成**的站（跑失败、或没有任何一榜在计划时刻之后成功抓到）。
+   *   这类站以前会被 siteLastRun 记成「今天已跑」⇒ 不会再试，兜底也够不着；现在进兜底队列，
+   *   到 fallbackTime 再补一次（每站每天最多一次）。
+   */
+  failed?: string[]
 }
 
 export interface PlanResult {
@@ -131,12 +137,18 @@ export function planSiteRuns(i: PlanInput): PlanResult {
   const done: string[] = []
   const waiting: string[] = []
   const stale = new Set((i.stale || []).map(String))
+  const failed = new Set((i.failed || []).map(String))
   for (const s of sites) {
     const doneBySnapshot = i.siteLastRun[s] === i.today || ranToday.has(s)
-    // ★ C（2026-10-16）：抓到了但「疑似未刷新」⇒ 到兜底时刻重跑一次（每站每天最多一次）
-    const canRetry = stale.has(s) && (i.retried || {})[s] !== i.today
+    /**
+     * ★ C（2026-10-16）「疑似未刷新」 + ★ 2026-10-17「今天跑过但没跑成」都在这里兜：
+     *   两者都要到兜底时刻再试一次，且**每站每天最多一次**（retried 记录）。
+     *   以前只有 stale 一条路 ⇒ 跑失败的站永远没人管（siteLastRun 已经记成今天跑过了）。
+     */
+    const needRetry = stale.has(s) || failed.has(s)
+    const canRetry = needRetry && (i.retried || {})[s] !== i.today
     if (doneBySnapshot) {
-      // 抓到过但疑似未刷新 ⇒ 到兜底时刻**只走补跑队列**（走 due 会绕开「每天最多补一次」的记录）
+      // 抓到过但需要重试 ⇒ 到兜底时刻**只走补跑队列**（走 due 会绕开「每天最多补一次」的记录）
       if (canRetry && timeReached(i.nowHM, i.fallbackTime)) { fallback.push(s); continue }
       done.push(s)
       continue
