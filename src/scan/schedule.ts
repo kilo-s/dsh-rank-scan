@@ -62,7 +62,7 @@ export function shouldFireTimer(i: FireInput): boolean {
 /** 各站默认抓取时刻（经验值，可被面板覆盖；都留了 1–2 小时余量防站点更新抖动） */
 export const DEFAULT_SITE_TIMES: Record<string, string> = {
   qidian: '01:30',   // 起点：凌晨换榜（00:00 前后）
-  sfacg: '02:30',    // 菠萝包：首页周榜/新书榜凌晨刷新
+  sfacg: '09:30',    // 菠萝包：首页周榜/新书榜凌晨刷新；排在早上而不是凌晨——宿主整夜不在线时，凌晨那个点永远跑不到
   fanqie: '08:30',   // 番茄：在读是小时级更新，早晨口径稳定
   ciweimao: '10:40', // 刺猬猫：10K 买断榜（第三方）上午更新
   qidiantu: '12:40', // 起点图：三江/首订统计中午前后结算

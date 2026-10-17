@@ -83,9 +83,9 @@ test('planSiteRuns：按各站时刻依次跑；已跑过的站不再跑', async
   p = planSiteRuns({ nowHM: '01:35', today: '2026-10-16', boards, siteTimes: times, siteLastRun: { qidian: '2026-10-16' }, fallbackTime: '22:30' })
   assert.deepEqual(p.done, ['qidian'])
   assert.deepEqual(p.due, [])
-  // 中午 12:45：sfacg/fanqie/ciweimao/qidiantu 全到点，按时刻升序
+  // 中午 12:45：四个站全到点，按各自时刻升序（fanqie 08:30 → sfacg 09:30 → ciweimao 10:40 → qidiantu 12:40）
   p = planSiteRuns({ nowHM: '12:45', today: '2026-10-16', boards, siteTimes: times, siteLastRun: { qidian: '2026-10-16' }, fallbackTime: '22:30' })
-  assert.deepEqual(p.due, ['sfacg', 'fanqie', 'ciweimao', 'qidiantu'])
+  assert.deepEqual(p.due, ['fanqie', 'sfacg', 'ciweimao', 'qidiantu'])
 })
 
 test('planSiteRuns：当天已有快照的站算「已跑」；到兜底点补跑漏掉的站', async () => {
