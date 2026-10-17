@@ -8,6 +8,8 @@ DeepSeek Harness 扫榜插件：定时 + 按需采集多站小说榜单，算变
 > **本插件不注册任何 DSH 工具**。对外能力只有两样：面板 UI（左侧栏「扫榜」入口 + 浮窗）与同源 HTTP 路由 `/api/rank-scan/*`。
 > 装配入口是 `cordis.patch.yml`（由 `package.json` 的 `dsh.bundle.patch` 指向）。
 
+> works on DSH 0.2.0.x（桌面版 0.2.0 线；`package.json` 的 `engines.dsh` 写的是 `>=0.1.0 <1`，但面板与路由只在这条线上验过）。
+
 ## 安装 / 更新
 
 任选一条。两条都要求**先完全退出 DSH 桌面版**（profile 由桌面应用独占管理），装完重开 DSH 即可。
@@ -16,7 +18,7 @@ DeepSeek Harness 扫榜插件：定时 + 按需采集多站小说榜单，算变
 
 ```sh
 dsh plugin --profile desktop add github:kilo-s/dsh-rank-scan
-# 钉版本：github:kilo-s/dsh-rank-scan#v0.2.3
+# 钉版本：github:kilo-s/dsh-rank-scan#v0.2.4
 ```
 
 仓库不含编译产物，这条命令会在安装时现场构建 `lib/`。首次可能被 pnpm 拦下构建脚本（它会打印要放行的键，加进 `allowBuilds` 后重跑即可），细节见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
