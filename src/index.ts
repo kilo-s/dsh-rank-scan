@@ -725,15 +725,42 @@ export function apply(ctx: PluginCtx, config: any): void {
     }
   }
 
-  /** 今天已经有当天快照的站（比 siteLastRun 更硬的凭据：手动扫过的站也算跑过） */
-  function sitesRanToday(sites: string[], today: string): string[] {
-    const st = readState()
+  /**
+   * 今天算「已经跑过」的站。
+   *
+   * ★ 2026-10-17（使用者反馈：手动扫一次就把当天剩下的计划吞掉）：旧实现只看「今天每个榜都有快照」，
+   *   于是 02:19 手动扫过的站，10:40 / 12:40 的计划时刻再也不会跑 —— 那天的「计划数据」其实是
+   *   早八竿子打不着的一次手动抓。现在的判据是**时刻**：
+   *   ① 定时真的跑过（siteLastRun === today）⇒ 算跑过；
+   *   ② 否则看该站今天最晚一次成功抓取的时刻（boardLastScan.at / 快照 mtime）：
+   *      **≥ 计划时刻**才算跑过（说明计划时刻之后已经有人抓了，不重复请求）；
+   *      早于计划时刻 ⇒ 到点还要补跑一次。
+   * 用「最晚一次」而不是「每个榜都满足」是有意的：某个榜一直失败也不会让整站每 30 秒重跑一次。
+   */
+  function sitesRanToday(sites: string[], today: string, siteTimes?: Record<string, string>): string[] {
+    const st: any = readState()
     const fst = new FileStore(root)
+    const times = siteTimes || st.siteTimes || DEFAULT_SITE_TIMES
+    const bls: any = st.boardLastScan || {}
     const out: string[] = []
     for (const s of sites) {
       const bs = ((st.boards as unknown as string[]) || []).filter((b: string) => siteOfBoard(b) === s)
       if (!bs.length) continue
-      if (bs.every((b: string) => !!fst.readSnapshot(today, b))) out.push(s)
+      if ((st.siteLastRun || {})[s] === today) { out.push(s); continue }
+      const plan = times[s] || DEFAULT_SITE_TIMES[s] || DEFAULT_FALLBACK_TIME
+      let lastHM: string | null = null
+      for (const b of bs) {
+        const hit = bls[b]
+        let at = hit && hit.date === today && hit.outcome === 'ok' ? String(hit.at) : ''
+        if (!at) {
+          const mt = fst.snapshotMtime(b, today)
+          if (mt) at = new Date(mt).toISOString()
+        }
+        if (!at) continue
+        const hm = hmOf(new Date(at))
+        if (!lastHM || hm > lastHM) lastHM = hm
+      }
+      if (lastHM && lastHM >= plan) out.push(s)
     }
     return out
   }
@@ -752,7 +779,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       siteTimes: st.siteTimes || DEFAULT_SITE_TIMES,
       siteLastRun: st.siteLastRun || {},
       fallbackTime: st.fallbackTime || DEFAULT_FALLBACK_TIME,
-      ranToday: sitesRanToday(sites, localDate(new Date())),
+      ranToday: sitesRanToday(sites, localDate(new Date()), st.siteTimes || DEFAULT_SITE_TIMES),
     })
     /**
      * ★ 2026-10-16（疑问「关闭状态为什么显示今天已跑」）：把「这个站今天抓过没、谁抓的、几点抓的」
@@ -813,7 +840,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       siteTimes: (st as any).siteTimes || DEFAULT_SITE_TIMES,
       siteLastRun: (st as any).siteLastRun || {},
       fallbackTime: (st as any).fallbackTime || DEFAULT_FALLBACK_TIME,
-      ranToday: sitesRanToday(sites, today),
+      ranToday: sitesRanToday(sites, today, (st as any).siteTimes || DEFAULT_SITE_TIMES),
       stale: staleSites,
       retried: (st as any).siteRetry || {},
     })
@@ -1197,6 +1224,9 @@ export function apply(ctx: PluginCtx, config: any): void {
           const own = b && (b as any).capturedAt ? String((b as any).capturedAt) : null
           if (own) return own
           if (derived) return null
+          // ★ 老数据（没有 capturedAt）：boardLastScan 里每个榜都记着「哪天的几点抓的、谁抓的」
+          const hit = ((st as any).boardLastScan || {})[boardId]
+          if (hit && hit.date === latest && hit.at) return String(hit.at)
           const mt = latest ? store.snapshotMtime(boardId, latest) : null
           return mt ? new Date(mt).toISOString() : null
         })(),

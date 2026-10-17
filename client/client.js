@@ -116,6 +116,17 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
     const isNumCol = (key) => NUM_COL_RE.test(String(key || ''))
     const dash = (v) => (v === null || v === undefined || v === '' ? '—' : v)
     /**
+     * ★ 2026-10-17（使用者问「跨天怎么算」）：两个数据日期之间隔了几天（YYYY-MM-DD，本地口径）。
+     *   变化列的基准是「上一个**有数据**的日期」，隔天时它就不是昨天了 —— 界面上必须写清楚隔了几天，
+     *   否则「今日涨幅」看着像单日，其实跨了 2~N 天。
+     */
+    const dayGap = (a, b) => {
+      const x = Date.parse(String(a) + 'T00:00:00')
+      const y = Date.parse(String(b) + 'T00:00:00')
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+      return Math.round((y - x) / 86400000)
+    }
+    /**
      * ★ 2026-10-17（发布前修）：请求间隔已可配置（默认 1000ms）⇒ 所有「1 请求/秒」「1s 限速」
      *   的文案必须跟着**当前生效值**走，否则使用者把它调成 500ms 后，面板说的和做的不一致。
      *   lastRequestIntervalMs 由 /catalog 与 /enrich-status 的响应刷新（两处都不额外打请求）。
@@ -530,7 +541,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         h('div', { style: C.row },
           h('span', null, '数据日期 ' + dash(ov.dataDate)),
           h('span', { style: C.muted }, '·'),
-          h('span', null, '基期 ' + dash(ov.baselineDate)),
+          h('span', null, '基期 ' + dash(ov.baselineDate) + (function () {
+            const g = ov.baselineDate && ov.dataDate ? dayGap(ov.baselineDate, ov.dataDate) : null
+            return g && g > 1 ? '（隔 ' + g + ' 天）' : ''
+          })()),
           h('span', { style: C.muted }, '·'),
           h('span', null, total + ' 个榜'),
           h('span', null, bad === 0 ? '全部正常' : '异常 ' + bad + ' / 正常 ' + (c.ok || 0)),
@@ -1552,7 +1566,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           : null,
         enrichNote ? h('div', { style: C.muted }, enrichNote) : null,
         data && data.fallbackFrom ? h('div', { style: C.muted }, '当天（' + data.requestedDate + '）没有快照 ⇒ 回落到 ' + data.fallbackFrom) : null,
-        data && data.baselineDate ? h('div', { style: C.muted }, '基期 ' + data.baselineDate + ' · 数据日期 ' + dash(data.dataDate)) : null,
+        data && data.baselineDate ? h('div', { style: { ...C.muted, ...(() => {
+          const g = data.dataDate ? dayGap(data.baselineDate, data.dataDate) : null
+          return g && g > 1 ? { color: '#d9a441' } : {}
+        })() } },
+          '基期 ' + data.baselineDate + (function () {
+            const g = data.dataDate ? dayGap(data.baselineDate, data.dataDate) : null
+            return g && g > 1 ? '（隔 ' + g + ' 天：变化列是这 ' + g + ' 天的累计，不是单日）' : ''
+          })() + ' · 数据日期 ' + dash(data.dataDate)) : null,
         /**
          * ★ 2026-10-16（起点图首订锚 n-1）：行的 showDate 与快照数据日期不一致时，明确标出源数据日期。
          *   站点口径：上架 24 小时后才结算首订 ⇒ 抓到的榜永远是 n-1 那天的页面。
