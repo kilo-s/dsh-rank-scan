@@ -383,7 +383,15 @@ export function makeQidiantuSite(opts: {
       const srcDate = pageDate || usedDate
       if (srcDate !== want) warnings.push('源数据日期 ' + srcDate + '（本次按 n-1 锚点请求 ' + want + '）')
       rows = rows.map((r) => ({ ...r, extra: { ...(r.extra || {}), showDate: srcDate } }))
-      return { boardId: id, status: 'ok', rows, requests, durationMs: Date.now() - t0, warnings }
+      return { boardId: id, status: 'ok', rows, requests, durationMs: Date.now() - t0, warnings, contentDate: srcDate }
+    },
+    /**
+     * ★ 2026-10-17（数据正确性）：首订榜锚 **n-1** —— 数据日期 X 的榜面属于 X-1（与日常扫描同一口径），
+     * 所以按日期直查 / 落盘时，页面上必须看到 X-1；看到别的日期 = 站点其实返回了当下榜面，拒绝落盘。
+     * 三江榜是「期」制（期首日 + 7 天结算），没有按日可比的内容日期 ⇒ 不声明（⇒ 拒绝写历史日期）。
+     */
+    contentDateFor(boardId: string, dataDate: string): string | null {
+      return boardId === 'qidiantu.shouding' ? addDaysStr(dataDate, -1) : null
     },
   }
 }

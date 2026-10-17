@@ -312,6 +312,14 @@ export function apply(ctx: PluginCtx, config: any): void {
   }
 
   /**
+   * ★ 2026-10-17：站点集合的**测试 seam**（cfg.sitesFactory）。只给「按日期直查 / 修复」两条
+   * 写盘路径用 —— 单测要能断言「内容日期对不上时一个字节都没写」，不能真连站点。
+   */
+  function serveSiteFor(boards: string[], depths: Record<string, number> = {}): any[] {
+    return typeof cfg.sitesFactory === 'function' ? (cfg.sitesFactory as any)(boards, depths) : sitesFor(boards, depths)
+  }
+
+  /**
    * 扫描后补全：刺猬猫/菠萝包的**榜单页给不出字数/收藏**（刺猬猫完全没有，菠萝包只有前 2 名），
    * 必须进书页取。默认开（state.autoEnrich !== false），只在整站扫描后跑，单榜扫描不跑。
    * 5 个榜 ≈ 50 请求 × 1s（仍在 1s/请求 纪律内）
@@ -2842,6 +2850,41 @@ export function apply(ctx: PluginCtx, config: any): void {
             writeState(st2)
             return send(200, { ok: true, boardId, depth: n, note: '每榜取数已设为 ' + n + ' 条（下次扫描生效）' })
           }
+          /**
+           * ★ 2026-10-17（数据正确性 P0）：按日期直查的**落盘闸门**。
+           * 背景：番茄/起点图的榜单页只给「当下」榜面 —— 对历史地址照样返回今天的榜。
+           * 把这种内容写成「那天的快照」不是补数据，是不可回滚的污染：日期一旦被占，
+           * 事后再也分不清哪几天的数据是假的（站点上取不回真值对照）。
+           * 规则：
+           *   ① 写「今天」= 与日常扫描同一语义（当下的榜面本来就属于今天）⇒ 放行；
+           *   ② 写历史日期必须可核对：适配器用 contentDateFor 声明「数据日期 → 应当看到的内容日期」，
+           *      且实际返回的 contentDate（页面自报日期）必须与之相等；
+           *   ③ 站没声明 / 页面没给日期 / 日期对不上 ⇒ 409 拒绝，一个字节都不写。
+           */
+          const dayWriteVerdict = (site: any, boardId: string, date: string, res: any): { ok: boolean; code?: string; error?: string; contentDate: string | null; expected: string | null } => {
+            const contentDate = (res && (res.contentDate || res.date)) || null
+            const expected = typeof site.contentDateFor === 'function' ? site.contentDateFor(boardId, date) : null
+            if (date === localDate(clock.now())) return { ok: true, contentDate: contentDate, expected: expected }
+            if (expected == null) {
+              return {
+                ok: false, code: 'unsupported', contentDate: contentDate, expected: expected,
+                error: '该站不提供可核对的历史榜面（站点对历史地址仍返回当下榜面）⇒ 拒绝把这次抓到的内容写成 ' + date + ' 的快照。历史只能来自当天真实跑过的那次抓取。',
+              }
+            }
+            if (contentDate == null) {
+              return {
+                ok: false, code: 'unverifiable', contentDate: contentDate, expected: expected,
+                error: '站点没给出内容日期，无法确认这份数据属于 ' + date + '（期望内容日期 ' + expected + '）⇒ 拒绝落盘。',
+              }
+            }
+            if (contentDate !== expected) {
+              return {
+                ok: false, code: 'mismatch', contentDate: contentDate, expected: expected,
+                error: '内容日期不一致：站点给的是 ' + contentDate + '，期望 ' + expected + '（数据日期 ' + date + '）⇒ 拒绝落盘（否则就是把当下的榜面记到过去日期名下）。',
+              }
+            }
+            return { ok: true, contentDate: contentDate, expected: expected }
+          }
           if (p === '/api/rank-scan/day') {
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })
             const body = await readBody(req)
@@ -2853,20 +2896,27 @@ export function apply(ctx: PluginCtx, config: any): void {
             try { date = assertDataDate(body.date) } catch (e) { return send(400, { error: e instanceof Error ? e.message : String(e) }) }
             if (!boardId) return send(400, { error: 'boardId 必填' })
             const stDay = readState()
-            const site: any = sitesFor([boardId], stDay.depths || {})[0]
+            const site: any = serveSiteFor([boardId], stDay.depths || {})[0]
             if (!site) return send(400, { error: '没有这个站的适配器：' + boardId })
             const target = new Date(date + 'T12:00:00+08:00')
             const res = await site.fetchBoard(boardId, { now: () => target, signal: new AbortController().signal, requestTimeoutMs: 15000 })
+            // ★ 先判定、后落盘：内容日期对不上时下面这个 writeSnapshot 一步都不该走到
+            const verdict = dayWriteVerdict(site, boardId, date, res)
+            if (!verdict.ok) {
+              return send(409, {
+                ok: false, code: verdict.code, error: verdict.error,
+                boardId, date, contentDate: verdict.contentDate, expected: verdict.expected, saved: false,
+              })
+            }
             if (body.save) {
               const store3 = new FileStore(root)
               await store3.writeSnapshot({ boardId, dataDate: date, metric: (res as any).metric || 'value', rows: res.rows })
             }
-            const contentDate = (res as any).date || null
             return send(200, {
-              ok: true, boardId, date, saved: !!body.save, contentDate,
+              ok: true, boardId, date, saved: !!body.save, contentDate: verdict.contentDate, expected: verdict.expected,
               rowsAll: res.rows,
               count: res.rows.length,
-              note: '直查站点该日期（未落盘）' + (contentDate && contentDate !== date ? '；站点给的内容日期是 ' + contentDate : ''),
+              note: (body.save ? '已抓取并存入本地快照' : '直查站点该日期（未落盘）') + (verdict.contentDate ? '；内容日期 ' + verdict.contentDate : ''),
             })
           }
           if (p === '/api/rank-scan/repair') {
@@ -2886,15 +2936,17 @@ export function apply(ctx: PluginCtx, config: any): void {
             }
             const b = String(body.boardId || 'qidiantu.shouding')
             const st4 = readState()
-            const site: any = sitesFor([b], st4.depths || {})[0]
+            const site: any = serveSiteFor([b], st4.depths || {})[0]
             if (!site) return send(400, { error: '没有这个站的适配器：' + b })
             // 关键：clock 用**目标日期**，否则单日榜会取到今天的内容写到昨天名下
             const target = new Date(date + 'T01:30:00+08:00')
             const res = await site.fetchBoard(b, { now: () => target, signal: new AbortController().signal, requestTimeoutMs: 15000 })
-            const contentDate = res.contentDate || res.date || null
-            if (contentDate && contentDate !== date) {
-              return send(409, { ok: false, error: '内容日期不一致：站点给的是 ' + contentDate + '，拒绝写入 ' + date })
+            // ★ 与 /day 同一道闸门：旧实现的 contentDate 判定形同虚设——没有任何适配器会返回它
+            const verdictR = dayWriteVerdict(site, b, date, res)
+            if (!verdictR.ok) {
+              return send(409, { ok: false, code: verdictR.code, error: verdictR.error, boardId: b, date, contentDate: verdictR.contentDate, expected: verdictR.expected })
             }
+            const contentDate = verdictR.contentDate
             const store2 = new FileStore(root)
             await store2.writeSnapshot({ boardId: b, dataDate: date, metric: res.metric || 'value', rows: res.rows })
             // 同步当天 scan.json 的记录，保持「快照 = 记录」

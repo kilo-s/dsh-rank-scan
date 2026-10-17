@@ -1467,6 +1467,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         setEnrichBusy(true)
         setEnrichNote('直查 ' + qDate + ' …')
         jpost('/day', { boardId: curBoard, date: qDate, save: !!save }).then(function (r) {
+          // ★ 2026-10-17（数据正确性）：宿主会拒绝「站点其实给不出那一天」的直查/落盘（409）。
+          //   这时**不能**再切日期下拉，否则看起来像「补成功了」，实际那天什么都没有。
+          if (r && (r.ok === false || r.code)) {
+            setEnrichNote('⚠ 已拒绝：' + (r.error || '站点给不出这一天可核对的数据'))
+            return null
+          }
           const qDateShown = (r && r.date) || qDate
           setEnrichNote(r && r.note ? r.note : (save ? '已抓取并存入本地快照' : '已直查（未落盘）'))
           if (save) {
@@ -1563,7 +1569,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               h('span', { style: C.muted }, '查历史日期（站点可直查）'),
               h('input', { type: 'date', value: qDate, onChange: function (e) { setQDate(e.target.value) }, style: { fontSize: '12px', padding: '2px 4px' } }),
               h('button', { style: C.btn, disabled: enrichBusy || !qDate, onClick: function () { queryDay(false) } }, '直接查看'),
-              h('button', { style: C.btn, disabled: enrichBusy || !qDate, onClick: function () { queryDay(true) }, title: '抓取该日期并存为本地快照（当天已有的快照不会被覆盖）' }, '抓取并存入本地'))
+              h('button', { style: C.btn, disabled: enrichBusy || !qDate, onClick: function () { queryDay(true) }, title: '抓取该日期并存为本地快照（当天已有的快照不会被覆盖）' }, '抓取并存入本地'),
+              h('span', { style: { color: '#c62828', fontSize: '12px' }, title: '站点对历史地址往往仍返回当下榜面；宿主会核对页面自报日期，对不上就拒绝，不写任何文件' }, '仅首订榜可按日回看，其余会被拒绝'))
           : null,
         // ★ 直查视图的日期横幅（使用方 2026-10-15）：直接查看历史日期时，这里明确写出「你在看哪天」
         data && data._queryDate

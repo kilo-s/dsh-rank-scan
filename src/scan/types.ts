@@ -32,6 +32,12 @@ export interface BoardResult {
    *   （比如番茄 08:30 那一轮），看着像「按站抓取没生效」。只有成功抓到的榜才写。
    */
   capturedAt?: string
+  /**
+   * ★ 2026-10-17（数据正确性）：**这份内容自己声称的日期**（页面日期）。
+   *   番茄/起点图这类站对历史 URL 仍返回「当下」榜面 —— 这个字段是唯一能核对
+   *   「抓到的是不是那一天的榜面」的信号。/day 与 /repair 写历史日期前必须比对它。
+   */
+  contentDate?: string | null
 }
 
 export interface ScanRecord {
@@ -92,6 +98,12 @@ export interface SiteAdapter {
   metric: Metric
   boards: string[]
   fetchBoard(boardId: string, ctx: BoardCtx): Promise<BoardResult>
+  /**
+   * 可选：数据日期 → **期望的内容日期**（该榜把 dataDate 当「扫描日」时，页面应当承载哪一天的榜面）。
+   * 声明了才允许按历史日期抓取落盘（如起点图首订锚 n-1）；未声明 = 该站没有可核对的历史页，
+   * /day 与 /repair 一律拒绝写历史日期（见 index.ts 的 dayWriteVerdict）。
+   */
+  contentDateFor?(boardId: string, dataDate: string): string | null
   /** 可选：抓完后补字段（如书页收藏/字数）。只在 runScan 传 enrich: true 时调用。 */
   enrich?(boardId: string, rows: Row[], ctx: BoardCtx): Promise<{ rows: Row[]; requests: number }>
   /** 可选：单本取统计（供书页缓存跳过重复下载）。一次调用 = 一次请求，失败抛错、不内部重试。 */
