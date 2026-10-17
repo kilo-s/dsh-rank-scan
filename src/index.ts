@@ -828,6 +828,14 @@ export function apply(ctx: PluginCtx, config: any): void {
         const pend: any = (readState() as any).enrichPending || {}
         if (!Object.keys(pend).length) return
         /**
+         * ★ 2026-10-17（面板闪烁：每 30 秒闪一次）：
+         *   条目还在、但**当日额度已试满**（tried >= 3）时，工人一启动就只会立刻 giveup，
+         *   而启动时已经先把 enrichRun 写成 active:true ⇒ 面板先显示「补全中 0/1 个榜」，
+         *   3 秒后写回 active:false ⇒ 又变「补全已尽力」。tick 30 秒一次 ⇒ 一直这样跳。
+         *   这里先问「还有没有能续跑的」，没有了就不起工人（不动 enrichRun，横幅保持静止）。
+         */
+        if (retryablePendingCount() === 0) return
+        /**
          * ★ 2026-10-17：交给后台工人（它自己会落进度、逐榜跑、跑完退出），
          *   不再在这里同步阻塞一个 tick —— tick 每 30 秒一次，阻塞会让别的站到点跑不动。
          */
@@ -1995,6 +2003,12 @@ export function apply(ctx: PluginCtx, config: any): void {
    */
   function startEnrichWorker(reason: string): void {
     if (timerState.enrichWorker) return
+    /**
+     * ★ 2026-10-17（同一毛病在另一个入口）：任何调用点起工人前都先问「还有可续跑的榜吗」；
+     *   没有就直接返回、**完全不碰 enrichRun** —— 否则每次起跑都会把 active 置真再立刻置假，
+     *   面板横幅就跟着闪（30 秒一轮）。
+     */
+    if (retryablePendingCount() === 0) return
     timerState.enrichWorker = true
     const startedAt = new Date().toISOString()
     const st0 = readState()
@@ -2036,16 +2050,36 @@ export function apply(ctx: PluginCtx, config: any): void {
               const p2: any = { ...((s2 as any).enrichPending || {}) }
               if (p2[b] && p2[b].date === latest) { p2[b] = { date: latest, tried: (rec.tried || 0) + 1 }; (s2 as any).enrichPending = p2; writeState(s2) }
             } catch { /* 计数失败不阻塞 */ }
+            let res: any = null
             try {
               /**
                * ★ 2026-10-17（审查续核 ⑥）：单榜预算与「一轮总闸」取小 ⇒ 一轮真实请求数**不会**超总闸
                * （单榜 24/40 都小于总闸 60，所以以前那个「最多冲到 84」其实到不了；写成 min 是让这个界显式）。
                */
-              const r: any = await enrichBoard(b, false, Math.min(ENRICH_RUN_REQUEST_CAP - requests, enrichBudgetForBoard(b)))
-              requests += (r && typeof r.requests === 'number') ? r.requests : 0
+              res = await enrichBoard(b, false, Math.min(ENRICH_RUN_REQUEST_CAP - requests, enrichBudgetForBoard(b)))
+              requests += (res && typeof res.requests === 'number') ? res.requests : 0
             } catch (e) {
               timerLog('后台补全失败 ' + b + '：' + String(e).slice(0, 100))
             }
+            /**
+             * ★ 2026-10-17（额度被「能力缺口」烧掉）：enrichBoard 明确说「这个榜暂不支持补全」时，
+             *   这一轮**一个真实请求都没打**，不该记一次尝试 —— 否则一个没接上补全通道的榜
+             *   3 次就把当天的额度烧完，从此每天都是「当日已试满、明天再续」，永远补不上。
+             *   把刚才预扣的那一次退回去（日期对得上才退）。
+             */
+            try {
+              const err01 = res && res.ok === false ? String(res.error || '') : ''
+              if (err01.indexOf('暂不支持') >= 0) {
+                const s5 = readState()
+                const p5: any = { ...((s5 as any).enrichPending || {}) }
+                if (p5[b] && p5[b].date === latest && (p5[b].tried || 0) > 0) {
+                  p5[b] = { date: latest, tried: (p5[b].tried || 0) - 1 }
+                  ;(s5 as any).enrichPending = p5
+                  writeState(s5)
+                  timerLog('补全通道不支持，退回一次尝试额度：' + b)
+                }
+              }
+            } catch { /* 退额度失败不影响主流程 */ }
             done += 1
             try {
               const s3 = readState()
@@ -2816,7 +2850,18 @@ export function apply(ctx: PluginCtx, config: any): void {
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })
             const b = q.get('boardId')
             if (!b) return send(400, { error: 'boardId 必填' })
-            return send(200, await enrichBoard(b, forceQ))
+            const resE: any = await enrichBoard(b, forceQ)
+            /**
+             * ★ 2026-10-17：手动「补全本榜」补齐后要**把待办销掉** —— 以前只有后台工人那一圈会清，
+             *   手动路径补完了待办还挂着 ⇒ 横幅永远显示「补全已尽力 N 个榜」，而数据其实已经齐了。
+             */
+            try {
+              if (resE && resE.ok) {
+                const snapE: any = new FileStore(root).readSnapshot(latestDataDate(), b)
+                if (!needsEnrichRows(b, (snapE && snapE.rows) || [])) clearEnrichPending(b)
+              }
+            } catch { /* 销账失败不影响本次结果 */ }
+            return send(200, resE)
           }
           if (p === '/api/rank-scan/qidianEnrich') {
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })
