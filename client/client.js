@@ -631,7 +631,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               h('td', { style: C.td }, dash(b.note)))
           }))) : null,
         h('table', { style: C.table },
-          h('thead', null, h('tr', null, (hasNoteCol ? ['榜（按站）', '涨 / 新 / 退', '上次抓取', '备注'] : ['榜（按站）', '涨 / 新 / 退', '上次抓取']).map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
+          h('thead', null, h('tr', null, (hasNoteCol ? ['榜（按站）', '涨 / 新 / 退', '本榜抓取', '备注'] : ['榜（按站）', '涨 / 新 / 退', '本榜抓取']).map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
           h('tbody', null, (ov.sites || []).flatMap(function (s) {
             const okN = s.boards.filter(function (b) { return b.status === 'ok' }).length
             const head = h('tr', { key: 'h-' + s.site },

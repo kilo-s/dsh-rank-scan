@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { ScanRecord, Snapshot } from './types.js'
 import type { LockInfo, ScanStore } from './run.js'
@@ -33,6 +33,7 @@ export class MemoryStore implements ScanStore {
     this.retries.set(k, (this.retries.get(k) || 0) + 1)
   }
   snapshot(boardId: string, dataDate: string) { return this.snapshots.get(boardId + '@' + dataDate) || null }
+  snapshotMtime(boardId: string, dataDate: string) { return this.snapshots.has(boardId + '@' + dataDate) ? Date.now() : null }
 }
 
 /** 文件 store：按数据日期分目录；原子写（先 .tmp 再 rename）；同日覆盖 = 幂等 */
@@ -58,6 +59,13 @@ export class FileStore implements ScanStore {
   }
   async writeSnapshot(s: Snapshot) { this.write(join(this.root, s.dataDate, s.boardId + '.json'), s) }
   async writeScan(r: ScanRecord) { this.write(join(this.root, r.dataDate, 'scan.json'), r) }
+  /**
+   * ★ 2026-10-17：快照文件的写入时刻（毫秒）。给面板「本榜抓取」兜底 ——
+   *   老数据没有 BoardResult.capturedAt 时，用它代替全局扫描时刻，至少不会 20 个榜同一个值。
+   */
+  snapshotMtime(boardId: string, dataDate: string): number | null {
+    try { return statSync(join(this.root, dataDate, boardId + '.json')).mtimeMs } catch { return null }
+  }
   async readScan(dataDate: string) { return this.read<ScanRecord>(join(this.root, dataDate, 'scan.json')) }
   private lockPath() { return join(this.root, 'state', 'scan.lock.json') }
   async acquireLock(info: LockInfo, staleMs: number) {

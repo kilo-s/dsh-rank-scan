@@ -1187,7 +1187,19 @@ export function apply(ctx: PluginCtx, config: any): void {
         up: c ? c.up : null,
         newCount: c ? c.new + c.rebound : null,
         out: c ? c.out : null,
-        lastCapture: rec ? rec.finishedAt || rec.startedAt || null : null,
+        /**
+         * ★ 2026-10-17（使用者反馈「为什么 20 个榜都显示 08:30」）：以前取的是**整轮扫描记录**的
+         *   finishedAt ⇒ 所有榜共用同一时刻，看着像「按站抓取没生效」。改成三层：
+         *   ① 这一榜自己的 capturedAt（扫描成功时写）；② 快照文件 mtime（老数据兜底）；
+         *   ③ 都没有（本地派生榜 / 今天没抓到的榜）就留 null，面板显示「—」，不再拿别人的时间冒充。
+         */
+        lastCapture: (function () {
+          const own = b && (b as any).capturedAt ? String((b as any).capturedAt) : null
+          if (own) return own
+          if (derived) return null
+          const mt = latest ? store.snapshotMtime(boardId, latest) : null
+          return mt ? new Date(mt).toISOString() : null
+        })(),
         note: derived ? '本地派生（0 请求，打开榜页时现算）' : b ? b.reason || null : snap ? null : '今天还没扫（或该榜抓取失败）',
         extended: !!meta.extended,
         source: meta.source || null,

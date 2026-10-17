@@ -26,6 +26,12 @@ export interface BoardResult {
   reason?: string
   /** ★ 票 29：这一榜的补全（enrich）被超时/失败打断 —— 行是榜单原始数据，可在面板重试补全 */
   enrichIncomplete?: boolean
+  /**
+   * ★ 2026-10-17：**这一榜自己的**抓取时刻（ISO 绝对时刻）。
+   *   以前面板「上次抓取」取的是整轮扫描记录的 finishedAt ⇒ 20 个榜全显示同一个时间
+   *   （比如番茄 08:30 那一轮），看着像「按站抓取没生效」。只有成功抓到的榜才写。
+   */
+  capturedAt?: string
 }
 
 export interface ScanRecord {

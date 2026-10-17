@@ -252,7 +252,7 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
           }
         }
         requests += fetched.requests + enrichRequests
-        res = { ...fetched, rows, enrichIncomplete }
+        res = { ...fetched, rows, enrichIncomplete, capturedAt: stamp(deps.clock.now()) }
         if (res.rows.length) {
           await deps.store.writeSnapshot({
             boardId: res.boardId,
