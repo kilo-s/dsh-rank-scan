@@ -2858,7 +2858,21 @@ export function apply(ctx: PluginCtx, config: any): void {
             try {
               if (resE && resE.ok) {
                 const snapE: any = new FileStore(root).readSnapshot(latestDataDate(), b)
-                if (!needsEnrichRows(b, (snapE && snapE.rows) || [])) clearEnrichPending(b)
+                if (!needsEnrichRows(b, (snapE && snapE.rows) || [])) {
+                  clearEnrichPending(b)
+                  /**
+                   * ★ 2026-10-17：销账之后把「补全进度」也归位 —— 否则 enrichRun 还记着上一轮的
+                   *   { done:0, total:1 }，面板横幅会拿它算出「还剩 1 个榜」，明明已经补齐了。
+                   */
+                  try {
+                    const s9 = readState()
+                    const left9 = Object.keys(((s9 as any).enrichPending) || {}).length
+                    if (!left9 && (s9 as any).enrichRun) {
+                      ;(s9 as any).enrichRun = { ...(s9 as any).enrichRun, done: (s9 as any).enrichRun.total || 0, active: false, note: '已补齐（手动补全）' }
+                      writeState(s9)
+                    }
+                  } catch { /* 归位失败不影响本次结果 */ }
+                }
               }
             } catch { /* 销账失败不影响本次结果 */ }
             return send(200, resE)

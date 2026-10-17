@@ -113,7 +113,8 @@ test('★ 票 27：轮询必须与「展开 + 页面可见」耦合（收起不�
 test('★ 跨期不可比：变化列必须显示「新期」（行上带 extra.periodChanged 时）', () => {
   const src = readFileSync(BUNDLE, 'utf8')
   // 判定必须排在 deltaGroup/数值判定**之前**，否则又会被 '＋ 新' / '—' 抢走
-  assert.match(src, /ex\.periodChanged === true\) \? '新期'/, '变化列缺少「新期」分支')
+  // 三元式与 if/return 都算数（2026-10-17 给变化列配上色后改成了 if 分支，判定顺序不变）
+  assert.match(src, /ex\.periodChanged === true(\)\s*\?\s*'新期'|\)\s*return\s*'新期')/, '变化列缺少「新期」分支')
   const idxNew = src.indexOf("'新期'")
   const idxPlus = src.indexOf("'＋ 新'")
   assert.ok(idxNew > 0 && idxPlus > 0, '两个分支都要在')

@@ -83,6 +83,16 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       table: { width: '100%', borderCollapse: 'collapse', fontSize: '12px' },
       th: { textAlign: 'left', padding: '2px 5px', borderBottom: '1px solid rgba(128,128,128,.3)', whiteSpace: 'nowrap', fontWeight: 600 },
       td: { padding: '2px 5px', borderBottom: '1px solid rgba(128,128,128,.1)', verticalAlign: 'top' },
+      /**
+       * ★ 2026-10-17（易用性 P0）：数字列以前会折行（「退 1」被拆成两行、20 个榜的表拉高一倍）。
+       *   num 给数字列用（不折行 + 等宽数字，扫一眼就能对齐比大小）。
+       */
+      num: { whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' },
+      /* 涨跌配色：绿涨红跌，与 dot('ok'/'bad') 同一套语义；符号仍然保留，不靠颜色单打 */
+      up: { color: '#3f9b4f', whiteSpace: 'nowrap' },
+      down: { color: '#d9534f', whiteSpace: 'nowrap' },
+      /* 长榜名单行省略（全名放 title 里）——避免「签约榜 × 轻小说（移动端口径）」撑成两行 */
+      ellip: { display: 'inline-block', maxWidth: '232px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' },
       muted: { opacity: 0.7, fontSize: '11.5px' },
       siteBar: { marginTop: '8px', fontWeight: 600, fontSize: '12.5px', display: 'flex', gap: '6px', alignItems: 'center' },
       dot: (tone) => ({ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%',
@@ -98,6 +108,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       chip: { display: 'inline-block', marginRight: '4px', padding: '0 5px', borderRadius: '8px', background: 'rgba(128,128,128,.18)', fontSize: '11px' },
       input: { padding: '3px 6px', fontSize: '12px', borderRadius: '6px', border: '1px solid rgba(128,128,128,.4)', background: 'transparent', color: 'inherit' },
     }
+    /**
+     * ★ 2026-10-17（易用性 P0）：哪些列算「数字列」—— 只有它们套 C.num（不折行 + 等宽数字）。
+     *   书名/作者/分类这类文本列仍允许换行，否则长书名会把整张表撑宽。
+     */
+    const NUM_COL_RE = /^(rank|delta|words|collect|collectBase|value|ratio|fans|read|readDelta|periodTotal|periodDelta|score|days|buyNumRaw|daily\d*|pday\d*)$/
+    const isNumCol = (key) => NUM_COL_RE.test(String(key || ''))
     const dash = (v) => (v === null || v === undefined || v === '' ? '—' : v)
     /**
      * ★ 2026-10-17（发布前修）：请求间隔已可配置（默认 1000ms）⇒ 所有「1 请求/秒」「1s 限速」
@@ -464,8 +480,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const chgS = React.useState(null)
       const setChg = chgS[1]
       const badS = React.useState(false)
+      // 存储/诊断这类低频信息默认收起成一行（2026-10-17 易用性 P0：首屏别塞 3 行运维信息）
+      const infoS = React.useState(false)
       const showBad = badS[0]
       const setShowBad = badS[1]
+      const showInfo = infoS[0]
+      const setShowInfo = infoS[1]
       // ★ 2026-10-16：保留策略设置的回执（面板以前只能显示「保留 N 天」，改不了）
       const retS = React.useState(null)
       const retMsg = retS[0]
@@ -503,6 +523,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const rows = (ov.sites || []).flatMap((s) => s.boards.map((b) => ({ ...b, siteName: s.siteName })))
       const badRows = rows.filter((b) => b.status !== 'ok')
       const scan = ov.scan || null
+      // 备注列全是「—」时整列不显示（把宽度让给榜名）—— 有任意一条备注才出现
+      const hasNoteCol = (ov.sites || []).some(function (s) { return (s.boards || []).some(function (b) { return !!b.note }) })
       return h('div', null,
         // 一行汇总（不再堆 ok/ok/ok）
         h('div', { style: C.row },
@@ -527,6 +549,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
            *   「等下一次续跑」（实测就是这样挂着不走）。
            */
           const retryable = enrichStatus && typeof enrichStatus.retryable === 'number' ? enrichStatus.retryable : left
+          /**
+           * ★ 2026-10-17：待办已经被销掉（手动「补全本榜」成功后宿主会清 enrichPending）时，
+           *   不要再拿上一轮记录的 total/done 说「还剩 N 个榜」—— 否则横幅会挂着一条假状态。
+           */
+          const pendCount = enrichStatus && typeof enrichStatus.pending === 'number' ? enrichStatus.pending : null
+          if (!active && pendCount === 0) return null
           if (!active && retryable <= 0 && left <= 0) return null
           const cadence = fmtIntervalText(enrichStatus && enrichStatus.requestIntervalMs)
           const label = active
@@ -541,55 +569,54 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             style: { ...C.row, padding: '4px 7px', marginTop: '2px', borderRadius: '6px', background: bg, border: '1px solid ' + bd },
           }, h('span', { style: { fontWeight: 600 } }, mark), h('span', null, label))
         })(),
+        /**
+         * ★ 2026-10-17（易用性 P0）：按钮按状态显隐 —— 以前四个按钮常驻，其中「停止本次」只有扫描中才有意义、
+         *   「重试失败的榜」只有真有异常榜时才有意义，平时都是灰的，占地方还容易误点。
+         */
         h('div', { style: C.row },
           h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.act('/scan') } }, props.busy ? '扫描中…' : '立刻扫一次'),
-          h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.act('/cancel') } }, '停止本次'),
-          h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.act('/retry') } }, '重试失败的榜'),
+          props.busy ? h('button', { style: C.btn, onClick: function () { props.act('/cancel') } }, '停止本次') : null,
+          bad > 0 ? h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.act('/retry') } }, '重试失败的榜') : null,
           h('button', { style: C.btn, onClick: props.reload }, '刷新')),
-        // 数据目录占用（ticket 22）：快照与 state/ 分开显示 —— retentionDays 只影响前者
-        ov.storage ? h('div', { style: { ...C.row, marginTop: '2px', padding: '4px 7px', border: '1px solid rgba(128,128,128,.25)', borderRadius: '6px', background: 'rgba(128,128,128,.05)' } },
-          h('span', { style: C.muted }, '数据目录 ' + fmtBytes(ov.storage.totalBytes)),
-          h('span', { style: C.muted }, '·'),
-          h('span', null, '快照 ' + fmtBytes(ov.storage.snapshotBytes)),
-          h('span', { style: C.muted }, '·'),
-          h('span', null, 'state ' + fmtBytes(ov.storage.stateBytes)),
-          h('span', { style: C.muted }, '（书签/配置/缓存，不受保留策略影响）'),
-          h('span', { style: C.muted }, '·'),
-          h('span', null, ov.storage.dates + ' 天（' + dash(ov.storage.oldest) + ' 起）'),
-          h('span', { style: C.muted }, '·'),
-          h('span', { style: C.muted }, '保留'),
-          h('select', {
-            style: { ...C.input, width: 'auto', padding: '1px 4px' },
-            value: String(ov.storage.retentionDays),
-            title: '只影响数据日期目录（快照/报告）；state/ 里的配置、书签、书页缓存永不删',
-            onChange: function (e) {
-              const v = e.target.value === 'forever' ? 'forever' : Number(e.target.value)
-              props.post('/retention', { days: v })
-                .then(function (r) { setRetMsg(r && r.note ? r.note : '已更新'); return props.reload() })
-                .catch(function (e2) { setRetMsg('设置失败：' + e2) })
-            },
-          },
-            [30, 90, 180, 365].map(function (n) { return h('option', { key: n, value: String(n) }, n + ' 天') }),
-            h('option', { key: 'forever', value: 'forever' }, '永久保留')),
-          retMsg ? h('span', { style: { color: '#2e7d32' } }, String(retMsg).slice(0, 60)) : null,
-          h('span', { style: C.muted }, '·'),
-          h('span', null, '书签 ' + ov.storage.bookmarks + ' 条')) : null,
-        // ★ 票 26：诊断栏 —— 服务可见性 / 定时接线 / 占用缓存时间。缺能力时这里一眼能看出来，
-        //   而不是「面板打不开、什么都不知道」（配合票 21 的 README 一节）。
+        /**
+         * ★ 2026-10-17（易用性 P0）：存储 / 保留 / 诊断三块合并成一行，细节点「▸ 状态」展开。
+         *   以前三行常驻占掉首屏 —— 「快照 1.5 MB / state 104.8 KB / 7 天 / 缓存 14:24」这类信息一周看一次。
+         *   保留策略是唯一可改的东西，所以那个 select 仍留在常显行里。
+         */
         (function () {
           const sv = ov.services || {}
           const miss = []
           if (!sv.webServer) miss.push('webServer（/api/rank-scan/* 未注册）')
           if (!sv.timerService) miss.push('timer（定时扫描不可用）')
-          return h('div', { style: { ...C.row, marginTop: '2px', padding: '4px 7px', border: '1px solid rgba(128,128,128,.25)', borderRadius: '6px', background: 'rgba(128,128,128,.05)' } },
-            h('span', { style: C.muted }, '诊断'),
-            h('span', { style: C.muted }, '·'),
-            h('span', null, sv.webServer ? '接口 ✓' : '接口 ✗'),
-            h('span', { style: C.muted }, '·'),
-            h('span', null, sv.timerService ? (sv.timerArmed ? '定时已接线' : '定时未接线') : '定时服务 ✗'),
-            h('span', { style: C.muted }, '·'),
-            h('span', null, '占用缓存 ' + (ov.storage && ov.storage.cachedAt ? new Date(ov.storage.cachedAt).toLocaleTimeString() : '—')),
-            miss.length ? h('span', { style: { color: '#d9534f' } }, '⚠ 缺失：' + miss.join('、')) : null)
+          return h('div', null,
+            h('div', { style: { ...C.row, marginTop: '2px', padding: '3px 7px', border: '1px solid rgba(128,128,128,.25)', borderRadius: '6px', background: 'rgba(128,128,128,.05)' } },
+              h('button', { style: { ...C.btn, border: 'none', background: 'transparent', padding: '0 2px' }, title: showInfo ? '收起存储与诊断' : '展开存储与诊断', onClick: function () { setShowInfo(!showInfo) } }, (showInfo ? '▾' : '▸') + ' 状态'),
+              ov.storage ? h('span', { style: C.muted }, '数据目录 ' + fmtBytes(ov.storage.totalBytes)) : null,
+              h('span', { style: C.muted }, '· 保留'),
+              ov.storage ? h('select', {
+                style: { ...C.input, width: 'auto', padding: '1px 4px' },
+                value: String(ov.storage.retentionDays),
+                title: '只影响数据日期目录（快照/报告）；state/ 里的配置、书签、书页缓存永不删',
+                onChange: function (e) {
+                  const v = e.target.value === 'forever' ? 'forever' : Number(e.target.value)
+                  props.post('/retention', { days: v })
+                    .then(function (r) { setRetMsg(r && r.note ? r.note : '已更新'); return props.reload() })
+                    .catch(function (e2) { setRetMsg('设置失败：' + e2) })
+                },
+              },
+                [30, 90, 180, 365].map(function (n) { return h('option', { key: n, value: String(n) }, n + ' 天') }),
+                h('option', { key: 'forever', value: 'forever' }, '永久保留')) : null,
+              h('span', { style: C.muted }, '·'),
+              h('span', { style: miss.length ? { color: '#d9534f' } : null }, miss.length ? '⚠ ' + miss.length + ' 项缺失' : '诊断 ✓')),
+            showInfo ? h('div', { style: { ...C.row, marginTop: '2px', padding: '3px 7px', border: '1px solid rgba(128,128,128,.2)', borderRadius: '6px' } },
+              ov.storage ? h('span', { style: C.muted }, '快照 ' + fmtBytes(ov.storage.snapshotBytes)) : null,
+              ov.storage ? h('span', { style: C.muted }, '· state ' + fmtBytes(ov.storage.stateBytes) + '（书签/配置/缓存，不受保留策略影响）') : null,
+              ov.storage ? h('span', { style: C.muted }, '· ' + ov.storage.dates + ' 天（' + dash(ov.storage.oldest) + ' 起）') : null,
+              ov.storage ? h('span', { style: C.muted }, '· 书签 ' + ov.storage.bookmarks + ' 条') : null,
+              h('span', { style: C.muted }, '· 占用缓存 ' + (ov.storage && ov.storage.cachedAt ? new Date(ov.storage.cachedAt).toLocaleTimeString() : '—')),
+              h('span', { style: C.muted }, '· ' + (sv.timerService ? (sv.timerArmed ? '定时已接线' : '定时未接线') : '定时服务 ✗')),
+              miss.length ? h('span', { style: { color: '#d9534f' } }, '· ⚠ 缺失：' + miss.join('、')) : null,
+              retMsg ? h('span', { style: { color: '#2e7d32' } }, '· ' + String(retMsg).slice(0, 60)) : null) : null)
         })(),
         bad > 0 ? h('div', { style: C.row },
           h('span', { style: C.dot('bad') }),
@@ -604,21 +631,27 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               h('td', { style: C.td }, dash(b.note)))
           }))) : null,
         h('table', { style: C.table },
-          h('thead', null, h('tr', null, ['榜（按站）', '涨 / 新 / 退', '上次抓取', '备注'].map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
+          h('thead', null, h('tr', null, (hasNoteCol ? ['榜（按站）', '涨 / 新 / 退', '上次抓取', '备注'] : ['榜（按站）', '涨 / 新 / 退', '上次抓取']).map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
           h('tbody', null, (ov.sites || []).flatMap(function (s) {
             const okN = s.boards.filter(function (b) { return b.status === 'ok' }).length
             const head = h('tr', { key: 'h-' + s.site },
-              h('td', { style: { ...C.td, paddingTop: '7px', fontWeight: 600 }, colSpan: 3 },
+              h('td', { style: { ...C.td, paddingTop: '7px', fontWeight: 600 }, colSpan: hasNoteCol ? 4 : 3 },
                 h('span', { style: C.dot(okN === s.boards.length ? 'ok' : 'bad') }),
                 ' ' + s.siteName,
                 h('span', { style: C.muted }, '  ' + s.boards.length + ' 个榜 · 正常 ' + okN)))
             const rows = s.boards.map(function (b) {
               const noBase = b.up === null && b.newCount === null && b.out === null
+              const label = (b.status === 'ok' ? '' : '⚠ ') + b.name + (b.derived ? ' · 本地派生' : b.displayed ? '' : ' · 未显示')
               return h('tr', { key: b.boardId },
-                h('td', { style: { ...C.td, paddingLeft: '16px' } }, (b.status === 'ok' ? '' : '⚠ ') + b.name + (b.derived ? ' · 本地派生' : b.displayed ? '' : ' · 未显示')),
-                h('td', { style: C.td }, noBase ? '—' : '涨 ' + dash(b.up) + ' / 新 ' + dash(b.newCount) + ' / 退 ' + dash(b.out)),
-                h('td', { style: C.td }, (b.lastCapture ? fmtLocalHM(b.lastCapture) : '') || '—'),
-                h('td', { style: C.td }, dash(b.note)))
+                // 长榜名单行省略（全名在 title 里）：以前「签约榜 × 轻小说（移动端口径）」会把整行撑成两行
+                h('td', { style: { ...C.td, paddingLeft: '16px' } }, h('span', { style: C.ellip, title: label }, label)),
+                // 涨/新/退：绿涨红退（只看方向；0 与「—」不上色），数字不折行
+                h('td', { style: { ...C.td, ...C.num } }, noBase ? '—' : h('span', null,
+                  '涨 ', h('span', { style: b.up > 0 ? C.up : null }, dash(b.up)), ' / ',
+                  '新 ', h('span', { style: { fontWeight: 600 } }, dash(b.newCount)), ' / ',
+                  '退 ', h('span', { style: b.out > 0 ? C.down : null }, dash(b.out)))),
+                h('td', { style: { ...C.td, ...C.num } }, (b.lastCapture ? fmtLocalHM(b.lastCapture) : '') || '—'),
+                hasNoteCol ? h('td', { style: C.td }, dash(b.note)) : null)
             })
             return [head].concat(rows)
           }))),
@@ -1011,7 +1044,16 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       }
       // 名次变化：0 显示「0」（持平），不要显示「—」（— 留给「算不出来」：无基准/新入榜）
       // ★ 2026-10-16 跨期不可比（周期榜换期当天）：变化列显示「新期」，不显示一个跨期的假变化
-      if (k === 'delta') return (ex.periodChanged === true) ? '新期' : r.deltaGroup === 'new' ? '＋ 新' : r.deltaGroup === 'rebound' ? '回榜' : r.delta === null || r.delta === undefined ? '—' : (r.delta > 0 ? '↑ ' + r.delta : r.delta < 0 ? '↓ ' + Math.abs(r.delta) : '0')
+      // ★ 2026-10-17（配色）：delta 是「名次前进为正」的口径 ⇒ >0 上升=绿、<0 下滑=红；0/新期/回榜 不上色
+      if (k === 'delta') {
+        if (ex.periodChanged === true) return '新期'
+        if (r.deltaGroup === 'new') return '＋ 新'
+        if (r.deltaGroup === 'rebound') return '回榜'
+        if (r.delta === null || r.delta === undefined) return '—'
+        if (r.delta > 0) return h('span', { style: C.up }, '↑ ' + r.delta)
+        if (r.delta < 0) return h('span', { style: C.down }, '↓ ' + Math.abs(r.delta))
+        return '0'
+      }
       if (k === 'read') return fmtRead(ex.read !== undefined ? ex.read : r.value)
       if (k === 'value') return fmtRead(r.value)
       if (k === 'baseRead') return fmtRead(ex.baseRead !== undefined ? ex.baseRead : ex.prevRead)
@@ -1024,9 +1066,16 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       if (k === 'readDelta') {
         const vd = ex.valueDelta != null ? ex.valueDelta
           : (typeof r.value === 'number' && typeof ex.prevRead === 'number' ? r.value - ex.prevRead : null)
-        return vd == null ? '—' : (vd > 0 ? '+' + fmtRead(vd) : String(vd))
+        if (vd == null) return '—'
+        if (vd > 0) return h('span', { style: C.up }, '+' + fmtRead(vd))
+        if (vd < 0) return h('span', { style: C.down }, String(vd))
+        return '0'
       }
-      if (k === 'dailyDelta') return ex.dailyDelta == null ? '—' : (ex.dailyDelta > 0 ? '+' : '') + ex.dailyDelta
+      if (k === 'dailyDelta') {
+        if (ex.dailyDelta == null) return '—'
+        return h('span', { style: ex.dailyDelta > 0 ? C.up : ex.dailyDelta < 0 ? C.down : null },
+          (ex.dailyDelta > 0 ? '+' : '') + ex.dailyDelta)
+      }
       // 每日增量已拆成 daily0..daily6 七列（见 view.ts），单元格只取那一天
       if (/^daily\d+$/.test(k)) {
         const d = (ex.daily || [])[Number(k.slice(5))]
@@ -1203,22 +1252,36 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               b.stale ? h('span', { style: { ...C.chip, color: '#d9534f' }, title: '这张卡片的数据超过 7 天没变新：点「刷新」试试；仍不变则可能已无法更新' }, '已无法更新？') : null,
               b.valueFrom === 'manual' ? h('span', { style: C.chip }, '待补') : null),
             h('div', { style: C.row },
-              // ★ 站方数据：起点/起点图/刺猬猫/菠萝包 = 收藏；番茄 = 在读（readCount）。
-              //   来源多样（榜单行自带 / 起点书页缓存 / 书页刷新）⇒ 用 title 说明「这个数哪来的」。
+              /**
+               * ★ 站方数据：起点/起点图/刺猬猫/菠萝包 = 收藏；番茄 = 在读（readCount）。
+               *   来源多样（榜单行自带 / 起点书页缓存 / 书页刷新）⇒ 用 title 说明「这个数哪来的」。
+               *
+               * ★ 2026-10-17（使用者反馈「番茄书签下面又出现两个在读」）：不是去重规则失效 ——
+               *   这两个数**本来就不是同一次读到的**：collect 是最新（快照 / 书页刷新），
+               *   metric.value 是书签最近一次自动更新时那一榜的值。两者数值不同 ⇒ 旧规则（相等才跳过）
+               *   不触发，于是两个 chip 顶着同一个「在读」标签，看起来像复发了。
+               *   现在：同口径时不再并排画两遍，而是「在读 676,671 · 书签记录 652,278」——
+               *   后者明确是另一次记录，不是重复标签。
+               */
               (function () {
                 const lab = b.collectLabel || (b.site === 'fanqie' ? '在读' : '收藏')
                 const src = b.collectFrom === 'qidian-book-cache' ? '来自起点书页缓存（扫描后补全回填）'
                   : b.collectFrom === 'book-page' ? '来自书页刷新'
                   : b.collectFrom === 'snapshot' ? '来自当天榜单行'
                   : '这个榜的榜单行里没有该数据；点「刷新」可按书页取一次'
-                if (b.collect == null) return h('span', { style: { ...C.chip, opacity: 0.55 }, title: lab + '：' + src }, lab + ' —')
-                return h('span', { style: C.chip, title: lab + '：' + fmtRead(b.collect) + '　·　' + src }, lab + ' ' + fmtRead(b.collect))
+                const out = []
+                out.push(b.collect == null
+                  ? h('span', { key: 'c', style: { ...C.chip, opacity: 0.55 }, title: lab + '：' + src }, lab + ' —')
+                  : h('span', { key: 'c', style: C.chip, title: lab + '：' + fmtRead(b.collect) + '　·　' + src }, lab + ' ' + fmtRead(b.collect)))
+                // 同口径的「另一次记录」：值不同才显示，且换一个不会混淆的标签
+                const mv = b.metric && b.metric.value != null && b.metric.name === lab ? b.metric.value : null
+                if (mv != null && mv !== b.collect) {
+                  out.push(h('span', { key: 'm', style: { ...C.chip, opacity: 0.8 }, title: '书签记录：最近一次自动更新时该榜的' + lab + '（与上面的实时值不是同一时点）' }, '书签记录 ' + fmtRead(mv)))
+                }
+                const t = metricChipText(b.metric, b.collect, lab)
+                if (t) out.push(h('span', { key: 'k', style: C.chip }, t))
+                return out
               })(),
-              // ★ 2026-10-16（使用者反馈）：只在**真有数值**且与上面 collect chip 不同源时渲染。
-              //   名次型榜（起点/刺猬猫/菠萝包）的 metric.value 恒 null ⇒ 以前画成「名次 —」（无内容的空标签）；
-              //   番茄的 metric 与 collect 都是 row.value（在读）⇒ 以前画两遍「在读」。
-              //   这里同时兜住**存量**书签：旧盘上写下的 {名次,null} / 重复项一律不再显示（autoUpdate 是合并语义，不回头改盘）。
-              (function () { const t = metricChipText(b.metric, b.collect); return t ? h('span', { style: C.chip }, t) : null })(),
               b.firstSeen ? h('span', { style: C.muted }, '首次发现：' + b.firstSeen.boardId + ' 第 ' + (b.firstSeen.rank == null ? '—' : b.firstSeen.rank) + ' 名（' + b.firstSeen.dataDate + '）') : h('span', { style: C.muted }, '手动添加 · 无榜单来源'),
               b.source === 'manual' ? h('span', { style: C.muted }, '（不在榜 ⇒ 不会自动更新）') : null),
             (b.seenBoards || []).filter(function (s) { return !b.firstSeen || s.boardId !== b.firstSeen.boardId }).length
@@ -1508,7 +1571,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               h('thead', null, h('tr', null, (data.columns || []).map(function (c) { return h('th', { key: c.key, style: C.th, title: c.note || '' }, c.label) }))),
               h('tbody', null, data.rows.map(function (r, i) {
                 return h('tr', { key: r.key || i, style: { cursor: 'pointer' }, onClick: function () { setPick(pick && pick.key === r.key ? null : r) } },
-                  (data.columns || []).map(function (c) { return h('td', { key: c.key, style: C.td }, cell({ ...c, _openLink: props.openLink, _boardId: data.boardId, _dataDate: data.dataDate, _bmKey: bookKeyOf(data.boardId, r.key) }, r)) }))
+                  (data.columns || []).map(function (c) {
+                    // 数字列不折行 + 等宽（2026-10-17 P0）：以前「在读变化」「今日增量」会被拆成两行
+                    return h('td', { key: c.key, style: isNumCol(c.key) ? { ...C.td, ...C.num } : C.td }, cell({ ...c, _openLink: props.openLink, _boardId: data.boardId, _dataDate: data.dataDate, _bmKey: bookKeyOf(data.boardId, r.key) }, r))
+                  }))
               })))
           : h('div', { style: C.muted }, data ? dash(data.note || '没有条目') : '加载中…'),
         pick ? h('div', { style: C.detail },
@@ -1778,9 +1844,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
    *      以前会画成「名次 —」这种只有标签没有内容的空 chip；
    *   ② 与 collect chip 同源同值时不重复渲染 —— 番茄的 metric 与 collect 都是 row.value（在读）。
    */
-  function metricChipText(metric, collect) {
+  function metricChipText(metric, collect, collectLabel) {
     if (!metric || metric.value == null) return null
     if (collect != null && metric.value === collect) return null
+    /**
+     * ★ 2026-10-17：同口径（例如番茄的 metric 与 collect 都是「在读」）不再另画一个同名 chip ——
+     *   上层会把它渲染成「书签记录 X」并说明不是同一时点；否则就是两个「在读」并排，看着像 bug。
+     */
+    if (collectLabel && metric.name === collectLabel) return null
     return metric.name + ' ' + metric.value
   }
   // 测试缝：宿主只消费 name/inject/apply，多挂一个纯展示函数对运行无影响

@@ -86,9 +86,16 @@ test('★ 书签 chip：番茄 metric 与 collect 同源 ⇒ 不再显示两个�
   assert.equal(metricChipText({ name: '在读', value: 652278 }, 652278), null, '同源同值只画一个 chip')
   assert.equal(metricChipText({ name: '在读', value: 652278 }, null), '在读 652278', '没有 collect 时仍要显示')
   assert.equal(metricChipText({ name: '在读', value: 100 }, 200), '在读 100', '不同值各显示一条')
+  /**
+   * ★ 2026-10-17（使用者反馈「又出现两个在读」）：同口径、但数值不同（collect 是最新、metric 是上次记录）
+   *   时，卡片不再另画一个同名 chip，而是由调用方渲染成「书签记录 X」。传了口径就走这条：
+   */
+  assert.equal(metricChipText({ name: '在读', value: 100 }, 200, '在读'), null, '同口径不再并排画两个「在读」')
+  assert.equal(metricChipText({ name: '在读', value: 100 }, 200, '收藏'), '在读 100', '不同口径（如「在读 vs 收藏」）仍要显示')
 })
 
 test('★ 书签 chip：卡片渲染必须走这个函数（防止测的是另一份复刻实现）', () => {
   const src = readFileSync(SOURCE, 'utf8')
-  assert.match(src, /metricChipText\(b\.metric, b\.collect\)/, '卡片渲染要调用 metricChipText，不许再写一份内联判断')
+  assert.match(src, /metricChipText\(b\.metric, b\.collect, lab\)/, '卡片渲染要调用 metricChipText，不许再写一份内联判断')
+  assert.match(src, /书签记录 /, '同口径的旧值要用「书签记录 X」标出来，别跟实时值共用一个标签')
 })
