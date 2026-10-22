@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { ScanRecord, Snapshot } from './types.js'
 import type { LockInfo, ScanStore } from './run.js'
+import type { DayIndex, SnapshotStat } from './daily.js'
 
 /** 内存 store：测试与干跑用 */
 export class MemoryStore implements ScanStore {
@@ -34,6 +35,23 @@ export class MemoryStore implements ScanStore {
   }
   snapshot(boardId: string, dataDate: string) { return this.snapshots.get(boardId + '@' + dataDate) || null }
   snapshotMtime(boardId: string, dataDate: string) { return this.snapshots.has(boardId + '@' + dataDate) ? Date.now() : null }
+  /** ★ 工作包 A：逐榜·逐日状态索引（内存实现，测试用） */
+  dayIndexes = new Map<string, DayIndex>()
+  untrustedKeys = new Set<string>()
+  readDayIndex(dataDate: string) { return this.dayIndexes.get(dataDate) || null }
+  async writeDayIndex(idx: DayIndex) { this.dayIndexes.set(idx.dataDate, idx) }
+  isUntrusted(dataDate: string, boardId: string) { return this.untrustedKeys.has(dataDate + '/' + boardId) }
+  markUntrusted(dataDate: string, boardId: string) { this.untrustedKeys.add(dataDate + '/' + boardId) }
+  clearUntrusted(dataDate: string, boardId: string) { this.untrustedKeys.delete(dataDate + '/' + boardId) }
+  snapshotStats(dataDate: string): SnapshotStat[] {
+    const out: SnapshotStat[] = []
+    for (const [k, s] of this.snapshots) {
+      const [boardId, d] = k.split('@')
+      if (d !== dataDate) continue
+      out.push({ boardId, size: JSON.stringify(s).length, mtimeMs: 0 })
+    }
+    return out
+  }
 }
 
 /** 文件 store：按数据日期分目录；原子写（先 .tmp 再 rename）；同日覆盖 = 幂等 */
@@ -100,4 +118,51 @@ export class FileStore implements ScanStore {
     this.write(p, j)
   }
   readSnapshot(dataDate: string, boardId: string) { return this.read<Snapshot>(join(this.root, dataDate, boardId + '.json')) }
+  /**
+   * ★ 工作包 A：逐榜·逐日状态索引。与 scan.json（批次记录）分开：
+   *   一天 5 批扫描各写各的批次，但 day-index 只覆盖本批跑过的榜，其余榜保留。
+   */
+  readDayIndex(dataDate: string) { return this.read<DayIndex>(join(this.root, dataDate, 'day-index.json')) }
+  async writeDayIndex(idx: DayIndex) { this.write(join(this.root, idx.dataDate, 'day-index.json'), idx) }
+  /**
+   * 「这一份快照不可信」的落盘标记（保留 raw，只隔离使用）。
+   * 单独一个文件而不是只写 day-index：day-index 是派生索引，缺了/损坏了也不能让
+   * 被拒的榜悄悄回到展示里（判据必须能在最坏情况下独立成立）。
+   */
+  private untrustedPath(dataDate: string, boardId: string) { return join(this.root, dataDate, boardId + '.untrusted.json') }
+  isUntrusted(dataDate: string, boardId: string): boolean { return existsSync(this.untrustedPath(dataDate, boardId)) }
+  readUntrusted(dataDate: string, boardId: string): { reason?: string; at?: string; by?: string } | null {
+    return this.read(join(this.root, dataDate, boardId + '.untrusted.json'))
+  }
+  markUntrusted(dataDate: string, boardId: string, info: { reason: string; at: string; by: string }) {
+    this.write(this.untrustedPath(dataDate, boardId), info)
+  }
+  clearUntrusted(dataDate: string, boardId: string) {
+    try { rmSync(this.untrustedPath(dataDate, boardId), { force: true }) } catch { /* 清标记失败不影响读取 */ }
+  }
+  /** 当天所有快照的大小/修改时间（供数据 revision 摘要；不解析内容） */
+  snapshotStats(dataDate: string): SnapshotStat[] {
+    const dir = join(this.root, dataDate)
+    if (!existsSync(dir)) return []
+    const out: SnapshotStat[] = []
+    let names: string[] = []
+    try { names = readdirSync(dir) } catch { return [] }
+    for (const f of names) {
+      if (!f.endsWith('.json')) continue
+      if (f === 'scan.json' || f === 'day-index.json' || f.endsWith('.untrusted.json')) continue
+      try {
+        const st = statSync(join(dir, f))
+        out.push({ boardId: f.replace(/\.json$/, ''), size: st.size, mtimeMs: st.mtimeMs })
+      } catch { /* 单个文件读不到就跳过 */ }
+    }
+    return out
+  }
+  /** 当天被拒的榜（供 revision 摘要区分「隔离前后」） */
+  untrustedBoards(dataDate: string): string[] {
+    const dir = join(this.root, dataDate)
+    if (!existsSync(dir)) return []
+    try {
+      return readdirSync(dir).filter((f) => f.endsWith('.untrusted.json')).map((f) => f.replace(/\.untrusted\.json$/, ''))
+    } catch { return [] }
+  }
 }

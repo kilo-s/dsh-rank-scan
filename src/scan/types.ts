@@ -33,6 +33,14 @@ export interface BoardResult {
    */
   capturedAt?: string
   /**
+   * ★ 2026-10-22（工作包 A）：这份快照**被判为不可信**（换榜/疑似未刷新）。
+   *   原始行仍然落盘（证据保留），但 panelBoard / panelChanges / 书签机会式更新都不采纳它；
+   *   判据见 scan/freshness.ts 与 scan/judges.ts，落盘标记见 store.markUntrusted。
+   */
+  untrusted?: boolean
+  /** ★ 2026-10-22：周期榜同一期内容未变化（正常形态，不是 stale） */
+  samePeriod?: boolean
+  /**
    * ★ 2026-10-17（数据正确性）：**这份内容自己声称的日期**（页面日期）。
    *   番茄/起点图这类站对历史 URL 仍返回「当下」榜面 —— 这个字段是唯一能核对
    *   「抓到的是不是那一天的榜面」的信号。/day 与 /repair 写历史日期前必须比对它。
@@ -48,11 +56,22 @@ export interface ScanRecord {
   /** 第几次扫描（同日重试会 +1） */
   attempt: number
   outcome: ScanOutcome
-  progress: { done: number; total: number }
+  /**
+   * ★ 2026-10-22（工作包 A）：
+   *   done = **已完成的不同榜数**（自动重试不重复计数，永远不会超过 total）；
+   *   attempts = 实际请求尝试次数（含自动重试；只作诊断，面板不必显示成进度）。
+   */
+  progress: { done: number; total: number; attempts?: number }
   heartbeatAt: string
   budget: Budget
   boards: BoardResult[]
   warnings: string[]
+  /**
+   * ★ 2026-10-22（工作包 A）：这一份记录是**哪一批**扫描 —— 按站分时下一日有 5 批，
+   *   批次记录（scan.json）只代表本批；「当天每榜最终状态」在 <date>/day-index.json。
+   *   boards 是本次真正跑过的榜（重试模式下是本次重试的榜）。
+   */
+  batch?: { site?: string | null; partial?: boolean; boards: string[] }
 }
 
 export interface Budget {

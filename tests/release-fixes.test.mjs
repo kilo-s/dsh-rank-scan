@@ -38,10 +38,9 @@ test('/qidianEnrich 批量补全带上起点图（面板「起点补全」按钮
   )
 })
 
-test('概览不再把本地派生榜判成 missing（也不再算进隐藏数）', () => {
+test('概览派生榜状态由行为回归覆盖，且不计入隐藏数', () => {
   assert.ok(HOST.includes("const derived = boardId.startsWith('fanqie.derived.')"), '概览行必须识别派生榜')
-  assert.ok(HOST.includes("status: derived ? 'ok' : b ? b.status : snap ? 'ok' : 'missing',"), '派生榜状态必须是 ok')
-  assert.ok(HOST.includes('hiddenCount: rows.filter((r) => !r.displayed && !r.derived).length,'), '派生榜不计入「隐藏 N 个」')
+  assert.ok(HOST.includes('hiddenCount: rows.filter((r) => !r.displayed && !r.derived).length,'), '派生榜不计入隐藏数')
 })
 
 test('请求间隔：启动优先认 state（面板改过的值不再被重启丢掉）', () => {

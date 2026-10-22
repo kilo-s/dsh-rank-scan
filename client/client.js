@@ -14,36 +14,105 @@ window.__ModuleLoader__.load({
     // ★ 2026-10-16（使用者口径 B）：入口 id 恢复成审计前的独立值 —— 不复用浮窗 id，
     //   免得宿主把侧栏这一行当成「面板页」去 selectPanel 切主区域。
     const ENTRY_ID = 'rank-scan-entry'
-    const jget = (p) => fetch(API + p, { headers: { Accept: 'application/json' } }).then((r) => r.json())
+    const readResponse = async (response) => {
+      const data = await response.json()
+      if (response.ok === false || (data && (data.ok === false || data.error))) {
+        throw new Error((data && (data.error || data.note)) || ('请求失败：' + response.status))
+      }
+      return data
+    }
+    const jget = (p) => fetch(API + p, { headers: { Accept: 'application/json' } }).then(readResponse)
     // ⚠️ 之前这里**丢掉了 body**（调用方写的 {captures:…} 全被忽略）⇒ 面板里所有「保存」实际都没带参数：
     //    抓取集保存不动、每榜深度存不进去。现在统一带 JSON body。
     const jpost = (p, body) => fetch(API + p, {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
-    }).then((r) => r.json())
+    }).then(readResponse)
 
     const LS_POS = 'rank-scan-panel:rect:v1'
     // 面板开关的本地记忆：v1 = 用户最后一次的开/关；auto = 「首次安装已自动弹过」
     // 需求（2026-10-15 使用方口径）：安装成功后第一次打开 DSH 自动弹一次，之后用户关掉就不再自动弹。
     const LS_SEL = 'rank-scan-panel:sel:v1'
-/** 面板 UI 选择（tab + 站 + 榜）：模块级共享，收起面板/刷新页面都回到原界面 */
+/** 面板 UI 选择（tab + 站 + 榜 + 每榜日期/排序）：模块级共享，收起面板/刷新页面都回到原界面 */
 const sel = (function () {
-  let s = { tab: 'ov', site: null, board: null }
+  let s = { tab: 'ov', site: null, board: null, dates: {}, sorts: {} }
   try {
     const raw = localStorage.getItem(LS_SEL)
-    if (raw) { const o = JSON.parse(raw); s = { tab: o.tab || 'ov', site: o.site || null, board: o.board || null } }
+    if (raw) {
+      const o = JSON.parse(raw)
+      s = {
+        tab: o.tab || 'ov', site: o.site || null, board: o.board || null,
+        /**
+         * ★ 2026-10-22（易用性 B）：日期/排序**按榜各记各的**。
+         *   以前这两个是组件内 state，收起面板/换榜就丢 ⇒ 每天都要重新选一次日期。
+         *   换成按 boardId 存：换榜回来还是上次那个视图，但不会把上一榜的日期带过去。
+         */
+        dates: o.dates && typeof o.dates === 'object' ? o.dates : {},
+        sorts: o.sorts && typeof o.sorts === 'object' ? o.sorts : {},
+      }
+    }
   } catch (e) {}
-  return {
+  const store = {
     get: function () { return s },
     set: function (patch) {
       s = { ...s, ...patch }
       try { localStorage.setItem(LS_SEL, JSON.stringify(s)) } catch (e) {}
     },
+    /** 读某榜记住的日期（'' = 最新）/ 排序（'' = 默认） */
+    pref: function (boardId, kind) {
+      if (!boardId) return ''
+      const m = kind === 'sort' ? s.sorts : s.dates
+      return (m && m[boardId]) || ''
+    },
+    /** 写某榜的日期/排序；空串 = 清掉，回到默认 */
+    setPref: function (boardId, kind, value) {
+      if (!boardId) return
+      const key = kind === 'sort' ? 'sorts' : 'dates'
+      const m = { ...(s[key] || {}) }
+      if (value) m[boardId] = value
+      else delete m[boardId]
+      const patch = {}
+      patch[key] = m
+      store.set(patch)
+    },
   }
+  return store
 })()
 // 模块级单例锚：即使 loader 把 factory 跑两遍（本会话确实见到重复入口），两个实例也共用同一份状态
 const SHARED = (window.__rankScanShared = window.__rankScanShared || {})
+/**
+ * ★ 2026-10-22（离开保护）：未保存草稿**放在组件外**，切页/收起/重载把组件卸了也不丢。
+ *   bm = 书签备注/夹草稿；settings = 抓取范围 + 计划时刻草稿。
+ */
+const DRAFT_KEY = 'rank-scan-panel:drafts:v1'
+let restoredDrafts = { bm: null, settings: null }
+try {
+  const saved = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || 'null')
+  if (saved && typeof saved === 'object') restoredDrafts = saved
+} catch (e) {}
+const draftTarget = window.__rankScanDrafts || restoredDrafts
+const DRAFTS = (window.__rankScanDrafts = new Proxy(draftTarget, {
+  set: function (target, key, value) {
+    target[key] = value
+    try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify(target)) } catch (e) {}
+    return true
+  },
+}))
+/** 脏状态登记：面板在切页/收起前据此拦一下（只提示，不替用户保存） */
+const dirtyGuard = (function () {
+  const m = { bm: !!(DRAFTS.bm && DRAFTS.bm.dirty), settings: !!DRAFTS.settings }
+  return {
+    set: function (k, v) {
+      const on = !!v
+      if (!!m[k] === on) return
+      m[k] = on
+      try { window.dispatchEvent(new Event('rank-scan:dirty')) } catch (e) {}
+    },
+    any: function () { return Object.keys(m).some(function (k) { return m[k] }) },
+    list: function () { return Object.keys(m).filter(function (k) { return m[k] }) },
+  }
+})()
 const LS_OPEN = 'rank-scan-panel:open:v1'
     const LS_AUTOOPENED = 'rank-scan-panel:autoopened:v1'
     /** 用户上次的开/关（纯读，无副作用） */
@@ -127,6 +196,18 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       return Math.round((y - x) / 86400000)
     }
     /**
+     * ★ 2026-10-22（历史日期映射修正）：上架日 ↔ 数据日期。
+     *   首订榜锚 **n-1**：数据日期 X 的榜面属于 X-1（适配器 contentDateFor 就是这么声明的）。
+     *   所以「上架日 X」要请求的是「数据日期 X+1」，页面内容日期仍是 X；落盘也记在 X+1 名下。
+     */
+    const addDaysStr = (d, n) => {
+      const parts = String(d || '').split('-').map(Number)
+      if (parts.length !== 3 || !parts.every(function (x) { return Number.isFinite(x) })) return null
+      const dt = new Date(parts[0], parts[1] - 1, parts[2] + n)
+      const p = function (x) { return String(x).padStart(2, '0') }
+      return dt.getFullYear() + '-' + p(dt.getMonth() + 1) + '-' + p(dt.getDate())
+    }
+    /**
      * ★ 2026-10-17（发布前修）：请求间隔已可配置（默认 1000ms）⇒ 所有「1 请求/秒」「1s 限速」
      *   的文案必须跟着**当前生效值**走，否则使用者把它调成 500ms 后，面板说的和做的不一致。
      *   lastRequestIntervalMs 由 /catalog 与 /enrich-status 的响应刷新（两处都不额外打请求）。
@@ -191,6 +272,168 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       return { x: x, y: y, w: w, h: h }
     }
 
+    /* ────────────────────────────────────────────────────────────────────────
+     * ★ 2026-10-22（简明性 / 易用性，工作包 B·C·D）共用小件
+     *   · revOf        同一天重扫也要刷新视图（宿主暂未下发 revision ⇒ 用可见状态拼一个安全的）
+     *   · PopMenu      低频操作统一收进「更多」菜单（键盘可达、Esc/点外面关闭、焦点归还）
+     *   · Section      设置页的四组折叠块
+     *   · useEscLayer  Esc 的层级关闭（菜单 → 详情 → 面板），编辑中不关面板
+     * ──────────────────────────────────────────────────────────────────────── */
+    /** 2026-10-22：'2026-10-22' → '10-22'（状态带里省宽度，年份放 title） */
+    const mdOf = function (v) { const s = String(v == null ? '' : v); return s.length >= 10 ? s.slice(5) : s }
+    /**
+     * 数据修订号：**同一天再扫一次**也要让概览/榜单重读（以前只盯 dataDate，当天不变就永远不刷）。
+     * 宿主目前不下发 revision ⇒ 用「扫描记录 + 计数 + 存储缓存时间」拼一个安全的替代值：
+     * 扫描结束会主动刷新占用缓存（storage.cachedAt 必变），所以它能反映「又跑了一轮」。
+     * 将来宿主给了 ov.revision 就优先用它，不改调用方。
+     */
+    const revOf = function (ov) {
+      if (!ov) return ''
+      if (ov.revision != null) return String(ov.revision)
+      const s = ov.scan || {}
+      const c = ov.counts || {}
+      const pr = s.progress || {}
+      return [ov.dataDate, ov.baselineDate, s.outcome, s.trigger, s.attempt, pr.done, pr.total,
+        c.ok, c.missing, c.stale, c.login_required, c.truncated, ov.hiddenCount,
+        (ov.storage && ov.storage.cachedAt) || ''].join('|')
+    }
+    /** 内部五态 → 人话（内部口径不变；界面不直接暴露 ok/missing/truncated） */
+    const STATUS_TEXT = { ok: '已采集', missing: '没抓到', stale: '数据待核对', login_required: '需要登录', truncated: '没抓完' }
+    const statusText = function (s) { return STATUS_TEXT[s] || (s ? String(s) : '—') }
+    const scanLabel = function (scan) {
+      if (!scan) return '还没扫描过'
+      const out = scan.outcome === 'completed' ? '已完成' : scan.outcome === 'cancelled' ? '已取消' : scan.outcome === 'failed' ? '失败' : String(scan.outcome || '')
+      const by = scan.trigger === 'timer' ? '定时' : scan.trigger === 'manual' ? '手动' : String(scan.trigger || '')
+      return by ? by + ' · ' + out : out
+    }
+    /**
+     * 按日期回看的能力**按榜声明**（能力驱动入口，而不是先给按钮再说「会被拒绝」）。
+     * 目前只有起点图首订榜能核对内容日期（宿主用适配器的 contentDateFor 判定）。
+     */
+    const DAY_QUERY_BOARDS = { 'qidiantu.shouding': 'n-1' }
+    const canDayQuery = function (boardId) { return !!DAY_QUERY_BOARDS[String(boardId || '')] }
+    /** Esc 层级栈：后开的层先关（菜单 → 详情 → 面板）；编辑中不关面板 */
+    const escLayers = (window.__rankScanEscLayers = window.__rankScanEscLayers || [])
+    const isEditableTarget = function (t) {
+      if (!t) return false
+      const tag = String(t.tagName || '').toLowerCase()
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable === true
+    }
+    const installEsc = function () {
+      if (typeof document === 'undefined' || !document.addEventListener || window.__rankScanEscHooked) return
+      window.__rankScanEscHooked = true
+      document.addEventListener('keydown', function (e) {
+        if (!e || e.key !== 'Escape') return
+        // 编辑中：Esc 只退出编辑焦点（草稿留着），不关菜单/详情/面板
+        if (isEditableTarget(document.activeElement)) { try { document.activeElement.blur() } catch (err) {} return }
+        for (let i = escLayers.length - 1; i >= 0; i--) {
+          try { if (escLayers[i].close()) return } catch (err) {}
+        }
+      }, true)
+    }
+    /** 把「关掉我这一层」挂进栈；close() 返回 true = 已处理（不再往外层传） */
+    const useEscLayer = function (close) {
+      React.useEffect(function () {
+        if (typeof close !== 'function') return undefined
+        installEsc()
+        const layer = { close: close }
+        escLayers.push(layer)
+        return function () { const i = escLayers.indexOf(layer); if (i >= 0) escLayers.splice(i, 1) }
+      }, [close])
+    }
+    /**
+     * 「更多」菜单：低频操作（扫描本榜/条数/补全/历史/导出/回收站…）都收进来。
+     * items: {label,onClick,disabled,title} | {sep:true} | {rows:节点}
+     */
+    function PopMenu(props) {
+      const [open, setOpen] = React.useState(false)
+      const wrapRef = React.useRef(null)
+      const btnRef = React.useRef(null)
+      const close = React.useCallback(function () {
+        setOpen(false)
+        const b = btnRef.current
+        if (b && typeof b.focus === 'function') { try { b.focus() } catch (e) {} }
+      }, [])
+      useEscLayer(open ? function () { close(); return true } : null)
+      React.useEffect(function () {
+        if (!open) return undefined
+        const onDoc = function (e) {
+          const w = wrapRef.current
+          if (w && e && e.target && typeof w.contains === 'function' && w.contains(e.target)) return
+          setOpen(false)
+        }
+        if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('mousedown', onDoc, true)
+        return function () { if (typeof document !== 'undefined' && document.removeEventListener) document.removeEventListener('mousedown', onDoc, true) }
+      }, [open])
+      React.useEffect(function () {
+        if (!open) return undefined
+        const w = wrapRef.current
+        const first = w && typeof w.querySelector === 'function' ? w.querySelector('[role="menuitem"]') : null
+        if (first && typeof first.focus === 'function') { try { first.focus() } catch (e) {} }
+        return undefined
+      }, [open])
+      const onKey = function (e) {
+        if (!open || !e) return
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+        const w = wrapRef.current
+        const nodes = w && typeof w.querySelectorAll === 'function' ? Array.prototype.slice.call(w.querySelectorAll('[role="menuitem"]')) : []
+        if (!nodes.length) return
+        const at = nodes.indexOf(document.activeElement)
+        const next = e.key === 'ArrowDown' ? (at + 1) % nodes.length : (at <= 0 ? nodes.length - 1 : at - 1)
+        if (nodes[next] && typeof nodes[next].focus === 'function') nodes[next].focus()
+        e.preventDefault()
+      }
+      const items = props.items || []
+      return h('span', { ref: wrapRef, style: { position: 'relative', display: 'inline-block' }, onKeyDown: onKey },
+        h('button', {
+          ref: btnRef,
+          style: open ? C.btnOn : C.btn,
+          title: props.title || '',
+          'aria-haspopup': 'menu',
+          'aria-expanded': open ? 'true' : 'false',
+          onClick: function () { setOpen(!open) },
+        }, (props.label || '更多') + (open ? ' ▴' : ' ▾')),
+        open ? h('div', {
+          role: 'menu',
+          style: { position: 'absolute', zIndex: 90, right: '0', top: '100%', marginTop: '4px', minWidth: (props.width || 230) + 'px',
+            padding: '5px', borderRadius: '8px', border: '1px solid rgba(128,128,128,.35)', background: 'var(--dsh-surface, #fff)',
+            boxShadow: '0 8px 20px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: '4px' },
+        }, items.map(function (it, i) {
+          if (!it) return null
+          if (it && it.sep) return h('div', { key: 's' + i, style: { height: '1px', background: 'rgba(128,128,128,.25)', margin: '3px 0' } })
+          if (it && it.rows) return h('div', { key: 'r' + i, style: { padding: '2px 2px 4px' } }, it.rows)
+          return h('button', {
+            key: 'i' + i,
+            role: 'menuitem',
+            disabled: !!it.disabled,
+            title: it.title || '',
+            style: { ...C.btn, textAlign: 'left', border: '1px solid transparent', opacity: it.disabled ? 0.45 : 1 },
+            onClick: function () { if (it.disabled) return; close(); if (it.onClick) it.onClick() },
+          }, it.label)
+        })) : null)
+    }
+    /** 设置页的分组块（默认展开第一组；其余收起，需要时再展开） */
+    function Section(props) {
+      const st = React.useState(props.defaultOpen !== false)
+      const open = st[0]
+      const setOpen = st[1]
+      return h('div', { style: { margin: '8px 0', padding: '6px 8px', border: '1px solid rgba(128,128,128,.28)', borderRadius: '8px', background: 'rgba(128,128,128,.04)' } },
+        h('button', {
+          style: { ...C.btn, border: 'none', background: 'transparent', padding: '0', fontWeight: 600, fontSize: '12.5px', width: '100%', textAlign: 'left' },
+          'aria-expanded': open ? 'true' : 'false',
+          onClick: function () { setOpen(!open) },
+        }, (open ? '▾ ' : '▸ ') + (props.title || '')),
+        open ? h('div', { style: { marginTop: '4px' } }, props.children)
+          : (props.summary ? h('div', { style: { ...C.muted, marginTop: '2px' } }, props.summary) : null))
+    }
+    /** 窄面板要收起的次级列（书名/名次或主指标/变化/书签 之外的） */
+    const SECONDARY_COLS = { author: 1, cat: 1, subCat: 1, words: 1, collect: 1, collectBase: 1, score: 1, updated: 1, fans: 1, ratio: 1, days: 1, buyNumRaw: 1, settledDays: 1 }
+    const narrowColumns = function (columns, narrow) {
+      const list = columns || []
+      if (!narrow) return list
+      const kept = list.filter(function (c) { return !SECONDARY_COLS[c.key] })
+      return kept.length ? kept : list.slice(0, 3)
+    }
     function useRect() {
       const st = React.useState(() => {
         let raw = null
@@ -411,7 +654,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const beginDrag = useWindowDrag()
       const start = (e) => {
         if (e.button !== undefined && e.button !== 0) return
-        if (e.target && e.target.closest && e.target.closest('button')) return
+        // 标题栏只承担拖动：按钮/输入框/链接上的按下不拖窗（否则点输入框会把窗拖走）
+        if (e.target && e.target.closest && e.target.closest('button, input, select, textarea, a')) return
         const r0 = props.rect
         const sx = e.clientX
         const sy = e.clientY
@@ -423,7 +667,13 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       return h('div', { style: C.titlebar, onMouseDown: start },
         h('span', { style: C.title }, '扫榜面板'),
         h('span', { style: { flex: 1 } }),
-        h('button', { style: C.btn, onClick: props.onCollapse }, '收起'))
+        h('button', {
+          style: C.btn,
+          title: props.maxed ? '还原窗口大小' : '最大化（铺满可用区域）',
+          'aria-pressed': props.maxed ? 'true' : 'false',
+          onClick: props.onToggleMax,
+        }, props.maxed ? '还原' : '最大化'),
+        h('button', { style: C.btn, onClick: props.onCollapse, title: '收起面板（Esc 也可以）' }, '收起'))
     }
 
     function ResizeHandle(props) {
@@ -472,54 +722,55 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       return (i === 0 ? String(Math.round(v)) : v.toFixed(1)) + ' ' + u[i]
     }
 
-    /** 概览：单行汇总 + 站点一行一表；异常榜折叠；今天的变化 */
+    /**
+     * 概览：先回答「今天有什么需要看」——
+     *   ① 需要处理（**仅有问题时出现**：榜名 + 影响 + 可执行动作）
+     *   ② 今天的变化（可按分组筛：新入榜/回榜/上升/下降/退榜）
+     *   ③ 全部榜单（可折叠；逐榜状态 + 涨/新/退；同站抓取时刻一致时只写一次）
+     * ★ 2026-10-22（简明性 B）：存储/保留/诊断移到「设置」页 —— 采集管理不再占首屏。
+     */
     function Overview(props) {
       const ov = props.ov
-      /**
-       * ★ 2026-10-17（补全移出阻塞路径）：后台补全的进度。
-       * 抓榜已经很快（~70 秒），补全是逐本 1 请求的长活 ⇒ 把它摘出 /scan 之后，
-       * 面板必须让使用者看得见「还在补、补到第几个」，否则又变成「扫完了但没数据」。
-       */
-      /**
-       * ★ 2026-10-17（发布前修）：以前只留 enrichRun ⇒ 顶部横幅分不清「还能续跑」和「当日已试满」，
-       *   也拿不到当前请求间隔。现在整份 /enrich-status 都留着（retryable / requestIntervalMs）。
-       */
       const enrichS = React.useState(null)
       const enrichStatus = enrichS[0]
       const enrichRun = enrichStatus && enrichStatus.enrichRun ? enrichStatus.enrichRun : null
       const setEnrichStatus = enrichS[1]
       const chgS = React.useState(null)
+      const chg = chgS[0]
       const setChg = chgS[1]
-      const badS = React.useState(false)
-      // 存储/诊断这类低频信息默认收起成一行（2026-10-17 易用性 P0：首屏别塞 3 行运维信息）
-      const infoS = React.useState(false)
-      const showBad = badS[0]
-      const setShowBad = badS[1]
-      const showInfo = infoS[0]
-      const setShowInfo = infoS[1]
-      // ★ 2026-10-16：保留策略设置的回执（面板以前只能显示「保留 N 天」，改不了）
-      const retS = React.useState(null)
-      const retMsg = retS[0]
-      const setRetMsg = retS[1]
-      React.useEffect(function () { if (ov && ov.dataDate) jget('/changes').then(setChg).catch(function () { setChg(null) }) }, [ov && ov.dataDate])
+      const filtS = React.useState('')
+      const chgFilter = filtS[0]
+      const setChgFilter = filtS[1]
+      const allS = React.useState(true)
+      const showAll = allS[0]
+      const setShowAll = allS[1]
+      const rev = props.rev || revOf(ov)
+      /**
+       * ★ 2026-10-22（同日刷新）：依赖**修订号**而不是 dataDate。
+       *   以前同一天再扫一次（或点「扫描已选榜」）时，上面计数会变、下面「今天的变化」还是旧列表。
+       */
+      React.useEffect(function () {
+        if (!ov || !ov.dataDate) return undefined
+        let alive = true
+        jget('/changes').then(function (r) { if (alive) setChg(r) }).catch(function () { if (alive) setChg(null) })
+        return function () { alive = false }
+      }, [rev])
       // 补全进行中：5 秒一次盯进度；跑完后自动刷新一次，让补上的字段出现
       React.useEffect(function () {
         let alive = true
         let id = null
         let wasActive = false
         const tick = function () {
-          // ★ 审查（非阻塞）：页面不可见时不轮询（概览页开着一天会白打上万次请求）
+          // 页面不可见时不轮询（概览页开着一天会白打上万次请求）
           if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
           jget('/enrich-status').then(function (r) {
             if (!alive) return
             const er = (r && r.enrichRun) || null
             setEnrichStatus(r || null)
             noteRequestInterval(r && r.requestIntervalMs)
-            // ★ 审查（非阻塞 5）：active 由宿体现算；重启后旧记录可能没有这个字段 ⇒ 只认真的工人标志
             const active = !!(er && er.active === true)
             if (wasActive && !active) props.reload()
             wasActive = active
-            // 没工人、也没待办 ⇒ 没有可看的变化，停轮询（下次扫描会重新挂载）
             if (!active && !(r && r.pending > 0)) { alive = false; if (id) clearInterval(id) }
           }).catch(function () { /* 读不到进度不影响面板 */ })
         }
@@ -530,191 +781,175 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       if (!ov) return h('div', { style: C.muted }, '加载中…')
       const c = ov.counts || {}
       const total = (c.ok || 0) + (c.missing || 0) + (c.stale || 0) + (c.login_required || 0) + (c.truncated || 0)
-      const bad = (c.missing || 0) + (c.stale || 0) + (c.login_required || 0) + (c.truncated || 0)
-      const rows = (ov.sites || []).flatMap((s) => s.boards.map((b) => ({ ...b, siteName: s.siteName })))
-      const badRows = rows.filter((b) => b.status !== 'ok')
+      const rows = (ov.sites || []).flatMap(function (s) { return (s.boards || []).map(function (b) { return { ...b, siteName: s.siteName } }) })
+      const badRows = rows.filter(function (b) { return b.status !== 'ok' })
       const scan = ov.scan || null
-      // 备注列全是「—」时整列不显示（把宽度让给榜名）—— 有任意一条备注才出现
-      const hasNoteCol = (ov.sites || []).some(function (s) { return (s.boards || []).some(function (b) { return !!b.note }) })
+      const plan = (ov.services && ov.services.schedule) || null
+      const staleIds = plan && plan.staleFlag
+        ? Object.keys(plan.staleFlag).filter(function (k) { return plan.staleFlag[k] && plan.staleFlag[k].date === ov.dataDate })
+        : []
+      const enrichPending = enrichStatus && typeof enrichStatus.pending === 'number' ? enrichStatus.pending : 0
+      /** 「需要处理」= 状态异常 + 内容待核对 + 字段待补（**没有问题就整块不出现**） */
+      const issues = []
+      badRows.forEach(function (b) {
+        const why = b.status === 'missing' ? '这次没抓到（当天没有快照）'
+          : b.status === 'login_required' ? '起点 cookie 失效：导出 cookie 后上传即可恢复'
+          : b.status === 'truncated' ? '没抓完（预算用尽或被取消）'
+          : b.status === 'stale' ? '抓到的内容不可信（疑似未刷新或换榜）' : '状态异常'
+        issues.push({ key: 'b-' + b.boardId, name: b.siteName + ' · ' + b.name, why: why, detail: b.note || '', status: b.status })
+      })
+      staleIds.forEach(function (id) {
+        if (badRows.some(function (b) { return b.boardId === id })) return
+        const b = rows.filter(function (x) { return x.boardId === id })[0] || { name: id, siteName: '' }
+        issues.push({ key: 's-' + id, name: (b.siteName ? b.siteName + ' · ' : '') + b.name, why: '与上一数据日整榜一致：站点可能还没换榜（内容待核对）', detail: '', status: 'stale' })
+      })
+      if (enrichPending > 0) {
+        issues.push({ key: 'enrich', name: '字段补全', why: enrichPending + ' 个榜还缺字段（进榜页点「补全缺失字段」，或等定时续跑）', detail: '', status: 'enrich' })
+      }
+      const hasNoteCol = rows.some(function (b) { return !!b.note })
+      /** 今天的变化：拍平成条目，便于按分组筛 */
+      const chgEntries = []
+      if (chg && chg.sites) {
+        chg.sites.forEach(function (s) {
+          (s.groups || []).forEach(function (g) {
+            (g.items || []).forEach(function (it) { chgEntries.push({ siteName: s.siteName, group: g.group, it: it }) })
+          })
+        })
+      }
+      const groupNames = []
+      chgEntries.forEach(function (e) { if (groupNames.indexOf(e.group) < 0) groupNames.push(e.group) })
+      const groupCount = function (g) { return chgEntries.filter(function (e) { return e.group === g }).length }
+      const shownEntries = chgFilter ? chgEntries.filter(function (e) { return e.group === chgFilter }) : chgEntries
       return h('div', null,
-        // 一行汇总（不再堆 ok/ok/ok）
+        /* ① 摘要带：日期 + 采集/待处理（文字，不靠颜色） */
         h('div', { style: C.row },
-          h('span', null, '数据日期 ' + dash(ov.dataDate)),
+          h('span', { title: '扫描开始时刻的本地自然日', style: { fontWeight: 600 } }, '数据日期 ' + dash(ov.dataDate)),
           h('span', { style: C.muted }, '·'),
-          h('span', null, '基期 ' + dash(ov.baselineDate) + (function () {
-            const g = ov.baselineDate && ov.dataDate ? dayGap(ov.baselineDate, ov.dataDate) : null
-            return g && g > 1 ? '（隔 ' + g + ' 天）' : ''
-          })()),
-          h('span', { style: C.muted }, '·'),
-          h('span', null, total + ' 个榜'),
-          h('span', null, bad === 0 ? '全部正常' : '异常 ' + bad + ' / 正常 ' + (c.ok || 0)),
-          h('span', { style: C.muted }, '隐藏 ' + (ov.hiddenCount || 0) + ' 个'),
-          scan ? h('span', { style: C.muted }, '上次 ' + scan.outcome + (scan.trigger ? '/' + scan.trigger : '')) : null),
-        // ★ 后台补全进度。三态分明：进行中 / 还能续跑 / **当日已试满**（第 3 态以前被误显示成「等下一次续跑」）
+          h('span', null, '已采集 ' + (c.ok || 0) + '/' + total),
+          h('span', { style: issues.length ? { color: '#d9a441', fontWeight: 600 } : { color: '#3f9b4f' } },
+            issues.length ? '待处理 ' + issues.length + ' 项' : '无待处理'),
+          ov.hiddenCount ? h('span', { style: C.muted }, '· 未显示 ' + ov.hiddenCount + ' 个榜') : null),
+        /* ② 主动作：扫描（联网）与重新载入（只读本地）分开写清 */
+        h('div', { style: C.row },
+          h('button', {
+            style: props.busy ? C.btnOn : C.btn,
+            disabled: props.busy,
+            title: '按「设置 → 抓取范围」里勾选的榜逐个扫描（会联网）',
+            onClick: function () { props.act('/scan') },
+          }, props.busy ? '扫描中…' : '扫描已选榜'),
+          props.busy ? h('button', { style: C.btn, onClick: function () { props.act('/cancel') } }, '停止本次（保留已完成）') : null,
+          badRows.length ? h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.act('/retry') } }, '重试失败 ' + badRows.length + ' 个榜') : null,
+          h('button', { style: C.btn, onClick: props.reload, title: '只重新读取本地数据：不联网、不采集' }, '重新载入'),
+          h('span', { style: C.muted }, '上次 ' + scanLabel(scan))),
+        /* 补全进度：面板顶部只有这一条（三态：跑着 / 还能续跑 / 当日已试满） */
         (function () {
-          if (!enrichRun) return null
-          const active = !!enrichRun.active
-          const total = enrichRun.total || 0
-          const done = enrichRun.done || 0
-          const left = Math.max(0, total - done)
-          /**
-           * ★ 2026-10-17（发布前修）：能不能再续跑，看的是宿主现算的「tried < 每榜每日上限」的待办数，
-           *   不是上一轮记录的 total - done —— 否则「当日已试满、今天不再跑」的榜会永远显示
-           *   「等下一次续跑」（实测就是这样挂着不走）。
-           */
-          const retryable = enrichStatus && typeof enrichStatus.retryable === 'number' ? enrichStatus.retryable : left
-          /**
-           * ★ 2026-10-17：待办已经被销掉（手动「补全本榜」成功后宿主会清 enrichPending）时，
-           *   不要再拿上一轮记录的 total/done 说「还剩 N 个榜」—— 否则横幅会挂着一条假状态。
-           */
-          const pendCount = enrichStatus && typeof enrichStatus.pending === 'number' ? enrichStatus.pending : null
-          if (!active && pendCount === 0) return null
-          if (!active && retryable <= 0 && left <= 0) return null
-          const cadence = fmtIntervalText(enrichStatus && enrichStatus.requestIntervalMs)
+          if (!enrichStatus) return null
+          const run = enrichStatus.enrichRun
+          const active = !!(run && run.active === true)
+          const left = typeof enrichStatus.pending === 'number' ? enrichStatus.pending : 0
+          if (!active && !left) return null
+          // 「还能不能续跑」用宿主的 retryable 判（0 = 当日已试满），前端不自己猜
+          const retryable = typeof enrichStatus.retryable === 'number' ? enrichStatus.retryable : null
           const label = active
-            ? '补全中 ' + done + '/' + total + ' 个榜（' + cadence + '，抓榜数据已可用）'
-            : retryable > 0
-              ? '补全待续跑：还剩 ' + retryable + ' 个榜（' + cadence + '）'
-              : '补全已尽力：' + left + ' 个榜当日试满（明天自动再续；也可点「补全本榜」手动再试）'
-          const mark = active ? '⏳ ' : retryable > 0 ? '⏸ ' : '⏹ '
-          const bg = active ? 'rgba(33,150,243,0.10)' : retryable > 0 ? 'rgba(255,152,0,0.10)' : 'rgba(128,128,128,0.10)'
-          const bd = active ? 'rgba(33,150,243,0.40)' : retryable > 0 ? 'rgba(255,152,0,0.45)' : 'rgba(128,128,128,0.40)'
-          return h('div', {
-            style: { ...C.row, padding: '4px 7px', marginTop: '2px', borderRadius: '6px', background: bg, border: '1px solid ' + bd },
-          }, h('span', { style: { fontWeight: 600 } }, mark), h('span', null, label))
+            ? '补全中 ' + ((run && run.done) || 0) + '/' + ((run && run.total) || 0) + ' 个榜（可以先浏览，不用等）'
+            : retryable === 0
+              ? '补全已尽力：还缺 ' + left + ' 个榜（当日已试满，明天自动续跑）'
+              : '补全未完成：还缺 ' + left + ' 个榜（后台会继续补，也可进榜点「补全缺失字段」）'
+          return h('div', { style: { margin: '4px 0', padding: '4px 7px', borderRadius: '6px', background: 'rgba(255,152,0,0.12)', border: '1px solid rgba(255,152,0,0.45)' } }, label)
         })(),
-        /**
-         * ★ 2026-10-17（易用性 P0）：按钮按状态显隐 —— 以前四个按钮常驻，其中「停止本次」只有扫描中才有意义、
-         *   「重试失败的榜」只有真有异常榜时才有意义，平时都是灰的，占地方还容易误点。
-         */
-        h('div', { style: C.row },
-          h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.act('/scan') } }, props.busy ? '扫描中…' : '立刻扫一次'),
-          props.busy ? h('button', { style: C.btn, onClick: function () { props.act('/cancel') } }, '停止本次') : null,
-          bad > 0 ? h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.act('/retry') } }, '重试失败的榜') : null,
-          h('button', { style: C.btn, onClick: props.reload }, '刷新')),
-        /**
-         * ★ 2026-10-17（易用性 P0）：存储 / 保留 / 诊断三块合并成一行，细节点「▸ 状态」展开。
-         *   以前三行常驻占掉首屏 —— 「快照 1.5 MB / state 104.8 KB / 7 天 / 缓存 14:24」这类信息一周看一次。
-         *   保留策略是唯一可改的东西，所以那个 select 仍留在常显行里。
-         */
-        (function () {
-          const sv = ov.services || {}
-          const miss = []
-          if (!sv.webServer) miss.push('webServer（/api/rank-scan/* 未注册）')
-          if (!sv.timerService) miss.push('timer（定时扫描不可用）')
-          return h('div', null,
-            h('div', { style: { ...C.row, marginTop: '2px', padding: '3px 7px', border: '1px solid rgba(128,128,128,.25)', borderRadius: '6px', background: 'rgba(128,128,128,.05)' } },
-              h('button', { style: { ...C.btn, border: 'none', background: 'transparent', padding: '0 2px' }, title: showInfo ? '收起存储与诊断' : '展开存储与诊断', onClick: function () { setShowInfo(!showInfo) } }, (showInfo ? '▾' : '▸') + ' 状态'),
-              ov.storage ? h('span', { style: C.muted }, '数据目录 ' + fmtBytes(ov.storage.totalBytes)) : null,
-              h('span', { style: C.muted }, '· 保留'),
-              ov.storage ? h('select', {
-                style: { ...C.input, width: 'auto', padding: '1px 4px' },
-                value: String(ov.storage.retentionDays),
-                title: '只影响数据日期目录（快照/报告）；state/ 里的配置、书签、书页缓存永不删',
-                onChange: function (e) {
-                  const v = e.target.value === 'forever' ? 'forever' : Number(e.target.value)
-                  props.post('/retention', { days: v })
-                    .then(function (r) { setRetMsg(r && r.note ? r.note : '已更新'); return props.reload() })
-                    .catch(function (e2) { setRetMsg('设置失败：' + e2) })
-                },
-              },
-                [30, 90, 180, 365].map(function (n) { return h('option', { key: n, value: String(n) }, n + ' 天') }),
-                h('option', { key: 'forever', value: 'forever' }, '永久保留')) : null,
-              h('span', { style: C.muted }, '·'),
-              h('span', { style: miss.length ? { color: '#d9534f' } : null }, miss.length ? '⚠ ' + miss.length + ' 项缺失' : '诊断 ✓')),
-            showInfo ? h('div', { style: { ...C.row, marginTop: '2px', padding: '3px 7px', border: '1px solid rgba(128,128,128,.2)', borderRadius: '6px' } },
-              ov.storage ? h('span', { style: C.muted }, '快照 ' + fmtBytes(ov.storage.snapshotBytes)) : null,
-              ov.storage ? h('span', { style: C.muted }, '· state ' + fmtBytes(ov.storage.stateBytes) + '（书签/配置/缓存，不受保留策略影响）') : null,
-              ov.storage ? h('span', { style: C.muted }, '· ' + ov.storage.dates + ' 天（' + dash(ov.storage.oldest) + ' 起）') : null,
-              ov.storage ? h('span', { style: C.muted }, '· 书签 ' + ov.storage.bookmarks + ' 条') : null,
-              h('span', { style: C.muted }, '· 占用缓存 ' + (ov.storage && ov.storage.cachedAt ? new Date(ov.storage.cachedAt).toLocaleTimeString() : '—')),
-              h('span', { style: C.muted }, '· ' + (sv.timerService ? (sv.timerArmed ? '定时已接线' : '定时未接线') : '定时服务 ✗')),
-              miss.length ? h('span', { style: { color: '#d9534f' } }, '· ⚠ 缺失：' + miss.join('、')) : null,
-              retMsg ? h('span', { style: { color: '#2e7d32' } }, '· ' + String(retMsg).slice(0, 60)) : null) : null)
-        })(),
-        bad > 0 ? h('div', { style: C.row },
-          h('span', { style: C.dot('bad') }),
-          h('button', { style: C.btn, onClick: function () { setShowBad(!showBad) } }, (showBad ? '收起' : '展开') + '异常 ' + bad + ' 个榜')) : null,
-        showBad ? h('table', { style: C.table },
-          h('thead', null, h('tr', null, ['站', '榜', '状态', '备注'].map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
-          h('tbody', null, badRows.map(function (b) {
-            return h('tr', { key: b.boardId },
-              h('td', { style: C.td }, b.siteName),
-              h('td', { style: C.td }, b.name),
-              h('td', { style: C.td }, b.status),
-              h('td', { style: C.td }, dash(b.note)))
+        /* ③ 需要处理：仅有问题时出现 */
+        issues.length ? h('div', { style: { margin: '6px 0', padding: '6px 8px', borderRadius: '8px', border: '1px solid rgba(217,164,65,.55)', background: 'rgba(217,164,65,.10)' } },
+          h('div', { style: { fontWeight: 600, marginBottom: '2px' } }, '需要处理'),
+          issues.map(function (it) {
+            return h('div', { key: it.key, style: { ...C.row, alignItems: 'baseline' } },
+              h('span', { style: C.dot(it.status === 'stale' || it.status === 'enrich' ? 'warn' : 'bad') }),
+              h('span', { style: { fontWeight: 600 } }, it.name),
+              h('span', null, it.why),
+              it.detail ? h('span', { style: C.muted }, '（' + String(it.detail).slice(0, 80) + '）') : null)
+          })) : null,
+        /* ④ 今天的变化 */
+        h('div', { style: C.siteBar }, '今天的变化' + (chg && chg.count ? '（' + chg.count + ' 条）' : '')),
+        chg && chg.note ? h('div', { style: C.muted }, chg.note) : null,
+        chg && chg.count === 0 ? h('div', { style: C.muted }, '没有变化条目（或还没有可比基准）') : null,
+        chgEntries.length ? h('div', { style: C.row },
+          [{ label: '全部', value: '' }].concat(groupNames.map(function (g) { return { label: g, value: g } })).map(function (o) {
+            return h('button', {
+              key: 'f-' + (o.value || 'all'),
+              style: chgFilter === o.value ? C.btnOn : C.btn,
+              onClick: function () { setChgFilter(o.value) },
+            }, o.label + (o.value ? ' ' + groupCount(o.value) : ' ' + chgEntries.length))
+          })) : null,
+        shownEntries.length ? h('table', { style: C.table },
+          h('thead', null, h('tr', null, ['分组', '站', '榜', '书名', '变化'].map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
+          h('tbody', null, shownEntries.map(function (e, i) {
+            return h('tr', { key: 'c' + i },
+              h('td', { style: C.td }, e.group),
+              h('td', { style: C.td }, e.siteName),
+              h('td', { style: { ...C.td, maxWidth: '150px' } }, h('span', { style: C.ellip, title: e.it.boardName }, e.it.boardName)),
+              h('td', { style: C.td }, e.it.title, ' ', h(BookmarkStar, { bookKey: bookKeyOf(e.it.boardId, e.it.title), boardId: e.it.boardId, row: null, title: e.it.title })),
+              h('td', { style: { ...C.td, ...C.num } }, dash(e.it.delta)))
           }))) : null,
-        h('table', { style: C.table },
-          h('thead', null, h('tr', null, (hasNoteCol ? ['榜（按站）', '涨 / 新 / 退', '本榜抓取', '备注'] : ['榜（按站）', '涨 / 新 / 退', '本榜抓取']).map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
+        /* ⑤ 全部榜单（可折叠） */
+        h('div', { style: { ...C.row, marginTop: '8px' } },
+          h('button', {
+            style: C.btn,
+            'aria-expanded': showAll ? 'true' : 'false',
+            onClick: function () { setShowAll(!showAll) },
+          }, (showAll ? '▾ ' : '▸ ') + '全部榜单（' + total + '）')),
+        showAll ? h('table', { style: C.table },
+          h('thead', null, h('tr', null, ['榜（按站）', '涨 / 新 / 退', '状态'].concat(hasNoteCol ? ['备注'] : []).map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
           h('tbody', null, (ov.sites || []).flatMap(function (s) {
             const okN = s.boards.filter(function (b) { return b.status === 'ok' }).length
+            const times = s.boards.map(function (b) { return b.lastCapture ? fmtLocalHM(b.lastCapture) : '' })
+            const sameTime = times.length > 0 && times.every(function (t) { return t === times[0] })
+            const headTime = sameTime ? times[0] : ''
             const head = h('tr', { key: 'h-' + s.site },
               h('td', { style: { ...C.td, paddingTop: '7px', fontWeight: 600 }, colSpan: hasNoteCol ? 4 : 3 },
                 h('span', { style: C.dot(okN === s.boards.length ? 'ok' : 'bad') }),
                 ' ' + s.siteName,
-                h('span', { style: C.muted }, '  ' + s.boards.length + ' 个榜 · 正常 ' + okN)))
-            const rows = s.boards.map(function (b) {
+                h('span', { style: C.muted }, '  ' + s.boards.length + ' 个榜 · 已采集 ' + okN + (headTime ? ' · 抓取 ' + headTime : ''))))
+            const rowsOut = s.boards.map(function (b) {
               const noBase = b.up === null && b.newCount === null && b.out === null
-              const label = (b.status === 'ok' ? '' : '⚠ ') + b.name + (b.derived ? ' · 本地派生' : b.displayed ? '' : ' · 未显示')
+              const label = b.name + (b.derived ? ' · 本地派生' : b.displayed ? '' : ' · 未显示')
               return h('tr', { key: b.boardId },
-                // 长榜名单行省略（全名在 title 里）：以前「签约榜 × 轻小说（移动端口径）」会把整行撑成两行
                 h('td', { style: { ...C.td, paddingLeft: '16px' } }, h('span', { style: C.ellip, title: label }, label)),
-                // 涨/新/退：绿涨红退（只看方向；0 与「—」不上色），数字不折行
                 h('td', { style: { ...C.td, ...C.num } }, noBase ? '—' : h('span', null,
                   '涨 ', h('span', { style: b.up > 0 ? C.up : null }, dash(b.up)), ' / ',
                   '新 ', h('span', { style: { fontWeight: 600 } }, dash(b.newCount)), ' / ',
                   '退 ', h('span', { style: b.out > 0 ? C.down : null }, dash(b.out)))),
-                h('td', { style: { ...C.td, ...C.num } }, (b.lastCapture ? fmtLocalHM(b.lastCapture) : '') || '—'),
+                h('td', { style: C.td }, b.status === 'ok'
+                  ? (headTime ? h('span', { style: C.muted }, '—') : (b.lastCapture ? fmtLocalHM(b.lastCapture) : '—'))
+                  : h('span', { style: { color: b.status === 'stale' ? '#d9a441' : '#d9534f' } }, statusText(b.status))),
                 hasNoteCol ? h('td', { style: C.td }, dash(b.note)) : null)
             })
-            return [head].concat(rows)
-          }))),
-        h('div', { style: C.siteBar }, '今天的变化'),
-        chgS[0] && chgS[0].note ? h('div', { style: C.muted }, chgS[0].note) : null,
-        chgS[0] && chgS[0].count === 0 ? h('div', { style: C.muted }, '没有变化条目') : null,
-        chgS[0] && chgS[0].sites ? chgS[0].sites.map(function (s) {
-          return h('div', { key: 'chg-' + s.site },
-            h('div', { style: C.siteBar }, s.siteName),
-            h('table', { style: C.table },
-              h('thead', null, h('tr', null, ['分组', '榜', '书名', '变化'].map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
-              h('tbody', null, s.groups.flatMap(function (g) {
-                return g.items.map(function (it, i) {
-                  return h('tr', { key: g.group + i },
-                    h('td', { style: C.td }, i === 0 ? g.group : ''),
-                    h('td', { style: C.td }, it.boardName),
-                    h('td', { style: C.td }, it.title, ' ', h(BookmarkStar, { bookKey: bookKeyOf(it.boardId, it.title), boardId: it.boardId, row: null, title: it.title })),
-                    h('td', { style: C.td }, dash(it.delta)))
-                })
-              }))))
-        }) : null)
+            return [head].concat(rowsOut)
+          }))) : null)
     }
 
-    /** 抓什么：站 → 榜种 → 分类 勾选。**本地先改、点「保存」才落盘**（抓了就显示，不再有单独的显示开关） */
-    function CaptureTab(props) {
+    /**
+     * 设置：四组 —— ① 抓取范围 ② 扫描计划 ③ 数据与性能 ④ 关于与诊断。
+     *   · 勾选改动进**草稿**：底部常驻「未保存 / 放弃改动 / 保存设置」，离开前看得见
+     *   · 扫描计划：开关即时生效（旁边写明开/关；失败回退），时刻改动走「保存计划」
+     *   · 全站补全从榜单页挪到这里（按站「更多」），榜单页只保留「补全缺失字段」
+     */
+    function SettingsTab(props) {
+      const ov = props.ov
       const [cat, setCat] = React.useState(null)
       const [picked, setPicked] = React.useState(null)
       const [note, setNote] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
       const [dirty, setDirty] = React.useState(false)
       const [autoEnrich, setAutoEnrich] = React.useState(true)
-      // 起点书页补全（收藏/精确字数）：默认关；缓存规模用来给用户看「要不要真打请求」
       const [qdEnrich, setQdEnrich] = React.useState(false)
       const [qdCache, setQdCache] = React.useState(null)
-      /**
-       * ★ 2026-10-17（3）：真实请求之间的最小间隔（毫秒）。
-       * 那个 1s 是本项目自设的保守值（不是站点要求）；这里做成可见可改，默认不动它。
-       */
       const [intervalMs, setIntervalMs] = React.useState(1000)
-      // 定时扫描设置（默认关；新安装不自动抓）
       const [tOn, setTOn] = React.useState(false)
-      const [tTime, setTTime] = React.useState('01:30')
-      const [tNote, setTNote] = React.useState(null)
-      const [tLast, setTLast] = React.useState(null)
-      // ★ 2026-10-16：按站分时抓取（每站一个时刻 + 一个兜底时刻）
       const [tTimes, setTTimes] = React.useState({})
       const [tFall, setTFall] = React.useState('22:30')
-      // 只读的实时调度状态（60s 轮询；**不重载 /catalog**，免得冲掉还没保存的勾选）
+      const [tNote, setTNote] = React.useState(null)
+      const [tLast, setTLast] = React.useState(null)
       const [planLive, setPlanLive] = React.useState(null)
+      const [retMsg, setRetMsg] = React.useState(null)
       const load = React.useCallback(function () {
         jget('/catalog').then(function (c) {
           setCat(c)
@@ -722,46 +957,60 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           setAutoEnrich(c.autoEnrich !== false)
           setQdEnrich(!!(c.qidian && c.qidian.enrich))
           setQdCache(c.qidian || null)
-          // ★ 2026-10-17（3）：全局请求间隔（默认 1000ms）
           setIntervalMs(typeof c.requestIntervalMs === 'number' ? c.requestIntervalMs : 1000)
           noteRequestInterval(c.requestIntervalMs)
           const t = c.timer || {}
           setTOn(t.enabled === true)
-          setTTime(t.scanTime || '01:30')
           setTTimes(t.siteTimes || {})
           setTFall(t.fallbackTime || '22:30')
           setTLast(t)
-          setDirty(false)
+          // ★ 组件被卸载过：草稿优先（不拿服务端值盖掉用户没保存的选择）
+          const d = DRAFTS.settings
+          if (d && Array.isArray(d.picked)) {
+            setPicked(d.picked.slice())
+            if (typeof d.autoEnrich === 'boolean') setAutoEnrich(d.autoEnrich)
+            if (typeof d.qdEnrich === 'boolean') setQdEnrich(d.qdEnrich)
+            if (d.times && typeof d.times === 'object') setTTimes(d.times)
+            if (typeof d.fall === 'string') setTFall(d.fall)
+            setDirty(!!d.dirty)
+            setNote('已恢复未保存的改动（还没保存）')
+          } else setDirty(false)
         }).catch(function (e) { setNote(String(e)) })
       }, [])
-      const saveTimer = function (enabled, times, fall) {
-        setTNote('保存中…')
-        jpost('/timer', { enabled: enabled, siteTimes: times, fallbackTime: fall }).then(function (r) {
-          setTNote(r && r.note ? r.note : '已保存')
-          return jget('/catalog').then(function (c) { setTLast(c.timer || null) })
-        }).catch(function (e) { setTNote(String(e)) })
-      }
       React.useEffect(function () { load() }, [load])
+      // 只读的实时调度状态（3 分钟；有站到点待跑时 30 秒）——**不重载 /catalog**，免得冲掉草稿
       React.useEffect(function () {
         let alive = true
         let id = null
-        // ★ 2026-10-16 审计：卸载后不许再排下一轮。旧写法在 catch 分支里无条件 every(180000)，
-        //   组件已经卸载、cleanup 也跑过了，它又挂上一个新 interval 永久残留（每 3 分钟打一次接口）。
         const every = function (ms) { if (!alive) return; if (id) clearInterval(id); id = setInterval(tick, ms) }
         const tick = function () {
           jget('/timer-plan').then(function (r) {
             if (!alive) return
             const pl = (r && r.plan) || null
             if (pl) setPlanLive(pl)
-            // ★ 2026-10-16（使用方：60s 有必要吗）：定时一天只跑 5 次，60s 轮询 99% 是空转。
-            //   常态 3 分钟一次；只有「有站到点待跑」这段才缩到 30s（那时状态才真的在变）。
-            const busy = !!(pl && ((pl.due || []).length > 0 || (pl.fallback || []).length > 0))
-            every(busy ? 30000 : 180000)
+            const hot = !!(pl && ((pl.due || []).length > 0 || (pl.fallback || []).length > 0))
+            every(hot ? 30000 : 180000)
           }).catch(function () { if (alive) every(180000) })
         }
         tick()
         return function () { alive = false; if (id) clearInterval(id) }
       }, [])
+      /** 计划时刻有没有未保存的改动（提前算：离开保护要用，且必须早于任何 return） */
+      const timesDirty = !!tLast && (function () {
+        const a0 = tTimes || {}
+        const b0 = tLast.siteTimes || {}
+        const keys = Object.keys({ ...a0, ...b0 })
+        for (let i = 0; i < keys.length; i++) { if (String(a0[keys[i]] || '') !== String(b0[keys[i]] || '')) return true }
+        return String(tFall || '') !== String(tLast.fallbackTime || '')
+      })()
+      /** 草稿写回组件外 + 登记脏状态（**含计划时刻**；面板切页/收起前据此拦一下） */
+      React.useEffect(function () {
+        if (!cat || !picked) return
+        const anyDirty = dirty || timesDirty
+        if (!anyDirty) { DRAFTS.settings = null; dirtyGuard.set('settings', false); return }
+        DRAFTS.settings = { picked: (picked || []).slice(), autoEnrich: !!autoEnrich, qdEnrich: !!qdEnrich, times: tTimes || {}, fall: tFall || '', dirty: !!dirty }
+        dirtyGuard.set('settings', true)
+      }, [dirty, timesDirty, picked, autoEnrich, qdEnrich, tTimes, tFall])
       if (!cat || !picked) return h('div', { style: C.muted }, note || '加载中…')
       const has = function (id) { return picked.indexOf(id) >= 0 }
       const toggle = function (id, on) {
@@ -781,12 +1030,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const save = function () {
         setBusy(true)
         jpost('/select', { captures: picked, autoEnrich: !!autoEnrich, qidianEnrich: !!qdEnrich }).then(function (r) {
-          setNote((r && r.note ? r.note : '已保存：' + picked.length + ' 个榜') + '（面板已同步）')
+          setNote((r && r.note ? r.note : '已保存：' + picked.length + ' 个榜') + '（下次扫描生效）')
           setDirty(false)
+          DRAFTS.settings = null
+          dirtyGuard.set('settings', false)
           if (props.onSaved) props.onSaved()
           try { window.dispatchEvent(new Event('rank-scan:saved')) } catch (e) {}
           return load()
-        }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) })
+        }).catch(function (e) { setNote('保存失败：' + e) }).then(function () { setBusy(false) })
       }
       const groups = []
       const seenG = {}
@@ -798,167 +1049,177 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const sites = []
       groups.forEach(function (g) { if (sites.indexOf(g.site) < 0) sites.push(g.site) })
       const siteNameOf = function (s) { const g = groups.filter(function (x) { return x.site === s })[0]; return g ? g.siteName : s }
+      const pickedOf = function (site) {
+        const ids = cat.boards.filter(function (b) { return b.site === site }).map(function (b) { return b.boardId })
+        return picked.filter(function (i) { return ids.indexOf(i) >= 0 }).length
+      }
+      const siteTotal = function (site) { return cat.boards.filter(function (b) { return b.site === site }).length }
+      /** 开关即时生效：乐观置位，失败**回退 UI** 并说明（不让界面说一套、服务端做另一套） */
+      const toggleTimer = function (next) {
+        const prev = tOn
+        setTOn(next)
+        setTNote(next ? '正在开启…' : '正在关闭…')
+        jpost('/timer', { enabled: next, siteTimes: tTimes, fallbackTime: tFall }).then(function (r) {
+          setTNote((r && r.note ? r.note : '已' + (next ? '开启' : '关闭')) + '（立即生效）')
+          return jget('/catalog').then(function (c) { setTLast(c.timer || null) })
+        }).catch(function (e) {
+          setTOn(prev)
+          setTNote('没能' + (next ? '开启' : '关闭') + '：' + e + '（已恢复原状态）')
+        })
+      }
+      const savePlan = function () {
+        setTNote('保存计划中…')
+        jpost('/timer', { enabled: tOn, siteTimes: tTimes, fallbackTime: tFall }).then(function (r) {
+          setTNote(r && r.note ? r.note : '计划已保存')
+          return jget('/catalog').then(function (c) { setTLast(c.timer || null) })
+        }).catch(function (e) { setTNote('保存失败：' + e) })
+      }
+      /** 全站补全：按站把抓取集里的榜逐个补（逐本 1 请求 + 当前间隔，会很慢） */
+      const enrichSite = function (site) {
+        const ids = (cat.captures || []).filter(function (id) { return String(id).split('.')[0] === site })
+        if (!ids.length) { setNote('该站当前没有勾选任何榜'); return }
+        setBusy(true)
+        let done = 0
+        let filled = 0
+        let seq = Promise.resolve()
+        ids.forEach(function (id) {
+          seq = seq.then(function () {
+            setNote('补全 ' + siteNameOf(site) + ' ' + done + '/' + ids.length + ' 个榜…')
+            return jpost('/enrich?boardId=' + encodeURIComponent(id)).then(function (r) {
+              done += 1
+              filled += (r && r.filled) || 0
+            }).catch(function () { done += 1 })
+          })
+        })
+        seq.then(function () { setNote(siteNameOf(site) + ' 补全完成：' + ids.length + ' 个榜，共补 ' + filled + ' 条') })
+          .catch(function (e) { setNote('补全失败：' + e) })
+          .then(function () { setBusy(false) })
+      }
+      const retention = ov && ov.storage ? ov.storage.retentionDays : 180
+      const sv = (ov && ov.services) || {}
+      const diag = function () {
+        const lines = []
+        lines.push('dsh-rank-scan 诊断')
+        lines.push('数据日期: ' + ((ov && ov.dataDate) || '—'))
+        lines.push('已采集/总数: ' + (ov ? ((ov.counts || {}).ok || 0) + '/' + Object.keys(ov.counts || {}).reduce(function (s, k) { return s + ((ov.counts || {})[k] || 0) }, 0) : '—'))
+        lines.push('服务: webServer=' + !!sv.webServer + ' timerService=' + !!sv.timerService + ' timerArmed=' + !!sv.timerArmed)
+        lines.push('定时: enabled=' + tOn + ' 时刻=' + JSON.stringify(tTimes) + ' 兜底=' + tFall)
+        lines.push('抓取集: ' + picked.length + ' 个榜')
+        lines.push('上次扫描: ' + scanLabel(ov && ov.scan))
+        return lines.join('\n')
+      }
       return h('div', null,
-        h('div', { style: C.muted }, '勾选 = 抓什么（**改了先点保存**，下次扫描生效）。抓到的榜就会显示。'),
-        h('div', { style: C.row },
-          h('button', { style: dirty ? C.btnOn : C.btn, disabled: busy || !dirty, onClick: save }, dirty ? '保存改动（' + picked.length + ' 个榜）' : '已保存（' + picked.length + ' 个榜）'),
-          h('button', { style: C.btn, disabled: busy, onClick: function () { setPicked(['qidian.sign.cat12']); setDirty(true) } }, '恢复默认日常抓取'),
-          h('button', { style: C.btn, onClick: load }, '放弃改动 / 刷新'),
-          note ? h('span', { style: C.muted }, note) : null),
-        h('label', { style: C.row },
-          h('input', { type: 'checkbox', checked: autoEnrich, onChange: function (e) { setAutoEnrich(e.target.checked); setDirty(true) } }),
-          h('span', { style: C.muted }, '扫描后自动补全番茄/刺猬猫/菠萝包的字数·收藏（榜页没有这些字段，要进书页取）。**补全已移到后台**：抓榜一结束就返回，补全在后台逐个榜补（当前 ' + fmtIntervalText() + '，可在下面改），顶部显示进度；有书页缓存时不重复进书页。起点收藏与三江字数另见下面的开关。')),
-        /**
-         * ★ 2026-10-17（3）：请求间隔（真实请求之间）。
-         * 说清楚来龙去脉：1s 是本项目自设的保守值，不是站点要求；调小 = 抓得更快、但也更容易被站点注意到。
-         */
-        h('div', { style: { ...C.row, marginTop: '4px', gap: '6px', alignItems: 'center' } },
-          h('span', { style: C.muted }, '请求间隔（相邻真实请求，含翻页/补全）：'),
-          h('select', {
-            style: { ...C.input, width: 'auto', padding: '1px 4px' },
-            value: String(intervalMs),
-            onChange: function (e) { setIntervalMs(Number(e.target.value)); setDirty(true) },
-          },
-            [200, 500, 1000, 2000, 5000].map(function (v) { return h('option', { key: v, value: String(v) }, v + ' ms' + (v === 1000 ? '（默认）' : '')) }),
-            h('option', { key: 0, value: '0' }, '不限速（仅本地测试）')),
-          h('button', {
-            style: C.btn,
-            disabled: busy,
-            onClick: function () {
-              setBusy(true)
-              jpost('/select', { requestIntervalMs: intervalMs }).then(function () {
-                setNote('请求间隔已改为 ' + (intervalMs === 0 ? '不限速' : intervalMs + 'ms') + '（立即生效）')
-                return load()
-              }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) })
-            },
-          }, '应用间隔'),
-          h('span', { style: C.muted }, '默认 1000ms 是本项目自己定的保守值（不是站点要求）；调小会更快，但也更容易被站点注意到。')),
-        // ★ 2026-10-17：通用书页缓存规模（刺猬猫/菠萝包/番茄）——命中即不再进书页
-        (cat && cat.bookCache) ? h('div', { style: { ...C.muted, marginTop: '2px' } },
-          '通用书页缓存：' + ((cat.bookCache.stat && cat.bookCache.stat.entries) || 0) + ' 本' +
-          (cat.bookCache.stat && cat.bookCache.stat.newest ? '（最近 ' + (fmtLocalStamp(cat.bookCache.stat.newest) || String(cat.bookCache.stat.newest).slice(0, 16)) + '）' : '') +
-          '　·　有效期 ' + (cat.bookCache.ttlDays || 7) + ' 天') : null,
-        h('div', { style: { margin: '8px 0', padding: '7px 9px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '8px', background: 'rgba(128,128,128,.05)' } },
-          h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '定时扫描'),
+        h(Section, { title: '抓取范围（' + picked.length + ' 个榜）', defaultOpen: true },
+          h('div', { style: C.muted }, '勾选 = 抓什么；改动进草稿，点下面的「保存设置」才落盘（下次扫描生效）。抓到的榜就会显示。'),
+          h('div', { style: C.row }, sites.map(function (s) {
+            return h('span', { key: s, style: { ...C.row, margin: 0 } },
+              h('span', { style: C.muted }, siteNameOf(s) + ' ' + pickedOf(s) + '/' + siteTotal(s)),
+              h('button', { style: C.btn, onClick: function () { setAll(s, true) } }, '全选'),
+              h('button', { style: C.btn, onClick: function () { setAll(s, false) } }, '全不选'),
+              h(PopMenu, { label: '更多', width: 190, items: [
+                { label: '补齐该站缺失字段', onClick: function () { enrichSite(s) }, title: '把该站已勾选的榜逐个补全（逐本 1 请求，很慢）' },
+              ] }))
+          })),
+          groups.map(function (g) {
+            const derived = g.items.length > 0 && String(g.items[0].boardId).indexOf('fanqie.derived.') === 0
+            return h('div', { key: g.site + g.group },
+              h('div', { style: C.siteBar }, g.siteName + ' · ' + g.group),
+              derived ? h('div', { style: { ...C.muted, margin: '0 0 4px 2px' } }, '本地派生榜：不发请求，总是显示；不计入「未显示 N 个」。') : null,
+              h('table', { style: C.table },
+                h('tbody', null, g.items.map(function (b) {
+                  return h('tr', { key: b.boardId },
+                    h('td', { style: { ...C.td, width: '22px' } }, h('input', { type: 'checkbox', checked: has(b.boardId), onChange: function (e) { toggle(b.boardId, e.target.checked) } })),
+                    h('td', { style: C.td }, b.label))
+                }))))
+          }),
+          h('div', { style: { position: 'sticky', bottom: '0', marginTop: '6px', padding: '5px 7px', border: '1px solid ' + (dirty ? 'rgba(217,164,65,.6)' : 'rgba(128,128,128,.28)') + '', borderRadius: '6px', background: dirty ? 'rgba(217,164,65,.12)' : 'rgba(128,128,128,.06)' } },
+            h('div', { style: C.row },
+              h('button', { style: dirty ? C.btnOn : C.btn, disabled: busy || !dirty, onClick: save }, dirty ? '保存设置（' + picked.length + ' 个榜）' : '已保存（' + picked.length + ' 个榜）'),
+              // 放弃改动 = 真的丢掉草稿（否则 load 会按草稿再恢复一遍，等于没放弃）
+              dirty ? h('button', { style: C.btn, disabled: busy, onClick: function () { DRAFTS.settings = null; dirtyGuard.set('settings', false); setNote('已放弃改动'); load() } }, '放弃改动') : null,
+              dirty ? h('span', { style: { color: '#d9a441' } }, '有未保存的改动') : null,
+              note ? h('span', { style: C.muted }, String(note).slice(0, 100)) : null)),
           h('label', { style: C.row },
-            h('input', {
-              type: 'checkbox', checked: tOn,
-              onChange: function (e) { setTOn(e.target.checked); saveTimer(e.target.checked, tTimes, tFall) },
-            }),
-            h('span', null, tOn ? '已开启（默认开；安装当天不自动跑）' : '已关闭（你的选择会保留，重载不翻）'),
-            h('span', { style: C.muted }, '按站分时（每个站放它自己刷新点之后抓一次；一次只跑一个站）')),
-          h('div', { style: { marginTop: '4px' } },
-            [['qidian', '起点'], ['sfacg', '菠萝包'], ['fanqie', '番茄'], ['ciweimao', '刺猬猫'], ['qidiantu', '起点图']].map(function (s) {
-              const key = s[0]
-              const pl = planLive || (tLast && tLast.plan) || {}
-              const today = pl.today || ''
-              const slr = (tLast && tLast.siteLastRun) || {}
-              const scan = pl.siteLastScan || (tLast && tLast.siteLastScan) || {}
-              const hit = scan[key] || null
-              const hhmmss = hit && hit.at ? fmtLocalHM(hit.at) : ''
-              /**
-               * ★ 2026-10-17：状态文案要能回答「按计划跑了吗」，所以分三种说清楚：
-               *   · 已跑：定时那次成功过（显示定时时刻；若之后还有手动抓取，顺带标出来）
-               *   · 待补跑：只抓在计划时刻**之前** ⇒ 下一个 tick 会补（以前这里显示「今天已抓」，误导）
-               *   · 兜底补：今天跑过但失败 / 疑似未刷新 ⇒ 到兜底时刻再试一次（每站每天一次）
-               */
-              const planHM = ((tTimes || {})[key]) || ((tLast && tLast.siteTimes && tLast.siteTimes[key]) || '')
-              const timerHM = ((tLast && tLast.siteLastTimerAt && tLast.siteLastTimerAt[key]) ? fmtLocalHM(tLast.siteLastTimerAt[key]) : '')
-              const doneTag = timerHM
-                ? '已跑（定时 ' + timerHM + (hhmmss && hhmmss !== timerHM ? '；最近 ' + (hit && hit.by === 'manual' ? '手动 ' : '') + hhmmss : '') + '）'
-                : hit ? '手动已抓 ' + hhmmss : (slr[key] === today ? '今天已跑（定时）' : '今天还没抓')
-              const why = (pl.done || []).indexOf(key) >= 0 ? doneTag
-                : (pl.fallback || []).indexOf(key) >= 0 ? '失败/疑似未刷新 → 兜底 ' + (tFall || '') + ' 补一次'
-                : (pl.due || []).indexOf(key) >= 0 ? (hhmmss ? '已抓 ' + hhmmss + '（早于计划 ' + planHM + '）→ 待补跑' : '到点待跑')
-                : (pl.waiting || []).indexOf(key) >= 0 ? '等到点' : '—'
-              const sf = pl.staleFlag || {}
-              const sb = Object.keys(sf).find(function (b) { return b.split('.')[0] === key && sf[b] && sf[b].date === pl.today })
-              const isStale = (pl.staleSites || []).indexOf(key) >= 0
-              return h('div', { key: key, style: { ...C.row, marginTop: '2px' } },
-                h('span', { style: { width: '48px', flex: '0 0 auto' } }, s[1]),
-                h('input', {
-                  type: 'time', style: { ...C.btn, width: '96px' }, value: (tTimes || {})[key] || '',
-                  onChange: function (e) { const nx = Object.assign({}, tTimes); nx[key] = e.target.value; setTTimes(nx) },
-                  onBlur: function (e) { if (e.target.value !== ((tLast && tLast.siteTimes && tLast.siteTimes[key]) || '')) { const nx = Object.assign({}, tTimes); nx[key] = e.target.value; saveTimer(tOn, nx, tFall) } },
-                }),
-                h('span', { style: C.muted }, why),
-                isStale ? h('span', { style: { color: '#d9534f' }, title: '与上一数据日整榜完全一致 ⇒ 站点很可能还没换榜；到兜底时刻会自动补抓一次，也可以现在手动重抓' },
-                  '⚠ 疑似未刷新（与 ' + ((sb && sf[sb] && sf[sb].prevDate) || '上一日') + ' 完全一致）') : null,
-                isStale ? h('button', {
-                  style: C.btn,
-                  onClick: function () {
-                    const ids = (cat.boards || []).filter(function (b) { return b.site === key }).map(function (b) { return b.boardId })
-                    jpost('/scan', { boards: ids }).then(function () { setTNote('已重抓 ' + s[1] + '（' + ids.length + ' 个榜）') })
-                      .catch(function (e) { setTNote('重抓失败：' + e) })
-                  },
-                }, '重抓该站') : null)
-            }),
-            h('div', { style: { ...C.row, marginTop: '2px' } },
-              h('span', { style: { width: '48px', flex: '0 0 auto' } }, '兜底'),
+            h('input', { type: 'checkbox', checked: autoEnrich, onChange: function (e) { setAutoEnrich(e.target.checked); setDirty(true) } }),
+            h('span', null, '扫描后自动补全缺失字段'),
+            h('span', { style: C.muted }, '（榜页没有收藏/字数时要进书页取；补全在后台跑，抓榜先返回）'))),
+        h(Section, { title: '扫描计划', defaultOpen: false, summary: (tOn ? '已开启' : '已关闭') + ' · 兜底 ' + (tFall || '') + ' · ' + (tLast && tLast.wired ? '定时器已接线' : '定时器未接线') },
+          h('label', { style: C.row },
+            h('input', { type: 'checkbox', checked: tOn, onChange: function (e) { toggleTimer(e.target.checked) } }),
+            h('span', null, tOn ? '已开启（立即生效）' : '已关闭（立即生效）'),
+            h('span', { style: C.muted }, '按站分时：每站放它自己的刷新点之后抓一次，一次只跑一个站')),
+          h('div', null, [['qidian', '起点'], ['sfacg', '菠萝包'], ['fanqie', '番茄'], ['ciweimao', '刺猬猫'], ['qidiantu', '起点图']].map(function (s) {
+            const key = s[0]
+            const pl = planLive || (tLast && tLast.plan) || {}
+            const hit = (pl.siteLastScan || (tLast && tLast.siteLastScan) || {})[key] || null
+            const hhmmss = hit && hit.at ? fmtLocalHM(hit.at) : ''
+            const timerHM = (tLast && tLast.siteLastTimerAt && tLast.siteLastTimerAt[key]) ? fmtLocalHM(tLast.siteLastTimerAt[key]) : ''
+            const why = timerHM ? '已跑（定时 ' + timerHM + '）'
+              : (pl.fallback || []).indexOf(key) >= 0 ? '失败/待核对 → 兜底 ' + (tFall || '') + ' 补一次'
+              : (pl.due || []).indexOf(key) >= 0 ? '已过计划时刻，待补跑'
+              : hit ? '手动已抓 ' + hhmmss
+              : (pl.waiting || []).indexOf(key) >= 0 ? '等到点' : '今天还没抓'
+            return h('div', { key: key, style: { ...C.row, marginTop: '2px' } },
+              h('span', { style: { width: '46px', flex: '0 0 auto' } }, s[1]),
               h('input', {
-                type: 'time', style: { ...C.btn, width: '96px' }, value: tFall,
-                onChange: function (e) { setTFall(e.target.value) },
-                onBlur: function (e) { if (e.target.value !== ((tLast && tLast.fallbackTime) || '')) saveTimer(tOn, tTimes, e.target.value) },
+                type: 'time', style: { ...C.btn, width: '92px' }, value: (tTimes || {})[key] || '',
+                onChange: function (e) { const nx = Object.assign({}, tTimes); nx[key] = e.target.value; setTTimes(nx) },
               }),
-              h('span', { style: C.muted }, '当天跑**失败**或**疑似未刷新**的站，到这个点再补一次（每站每天一次）')),
-            h('div', { style: { ...C.muted, marginTop: '2px' } },
-              '状态更新于 ' + ((planLive && planLive.now) || '—') + '（常态 3 分钟刷新，有站到点待跑时 30 秒）·「已跑」= 计划时刻之后抓到过；「待补跑」= 只抓在计划时刻之前，下一个 tick 会补；「兜底补」= 今天跑过但失败/疑似未刷新，到兜底时刻再试一次'),
-            (planLive && planLive.installedToday)
-              ? h('div', { style: { ...C.muted, marginTop: '2px' } }, '★ 今天刚安装：新装默认开着定时，但**安装当天不自动跑**，明天起按上面的时刻执行。')
-              : null),
-          h('div', { style: C.muted },
-            (tLast && tLast.lastRun ? '上次定时扫描：' + tLast.lastRun + '（' + (tLast.lastState || '?') + '）' + (tLast.lastRunAt ? ' @' + fmtLocalStamp(tLast.lastRunAt) : '') : '本地还没跑过定时扫描') +
-            '　·　定时器' + ((tLast && !tLast.enabled)
-              ? '未接线（定时开关关着）'
-              : (tLast && tLast.wired) ? '已接线' : '未接线（宿主 timer 服务不可用）') +
-            (tLast && tLast.inFlight ? '　·　正在扫描' : '')),
-          tNote ? h('div', { style: C.muted }, tNote) : null),
-        h('div', { style: { margin: '8px 0', padding: '7px 9px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '8px', background: 'rgba(128,128,128,.05)' } },
-          h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '起点收藏（书页补全）'),
-          h('label', { style: C.row },
-            h('input', { type: 'checkbox', checked: qdEnrich, onChange: function (e) { setQdEnrich(e.target.checked); setDirty(true) } }),
-            h('span', null, qdEnrich ? '已开启' : '已关闭（默认关）'),
-            h('span', { style: C.muted }, '起点任何榜单页都没有收藏，只能逐本进作品页（约 103 KB/本）。开启后靠书页缓存跳过重复的书，只有新入榜/缓存过期的才真打请求。')),
-          h('div', { style: C.muted },
-            '缓存：' + (qdCache && qdCache.cache ? qdCache.cache.books : 0) + ' 本' +
-            (qdCache && qdCache.cache && qdCache.cache.newest ? '（最近 ' + (fmtLocalStamp(qdCache.cache.newest) || qdCache.cache.newest.slice(0, 16)) + '）' : '') +
-            '　·　有效期 ' + ((qdCache && qdCache.ttlDays) || 7) + ' 天'),
+              h('span', { style: C.muted }, why))
+          })),
+          h('div', { style: { ...C.row, marginTop: '2px' } },
+            h('span', { style: { width: '46px', flex: '0 0 auto' } }, '兜底'),
+            h('input', { type: 'time', style: { ...C.btn, width: '92px' }, value: tFall, onChange: function (e) { setTFall(e.target.value) } }),
+            h('span', { style: C.muted }, '当天失败或内容待核对的站，到这个点再补一次（每站每天一次）')),
+          timesDirty ? h('div', { style: C.row },
+            h('button', { style: C.btnOn, onClick: savePlan }, '保存计划'),
+            h('span', { style: { color: '#d9a441' } }, '时刻有改动，未保存')) : null,
+          h('div', { style: C.muted }, '状态更新于 ' + ((planLive && planLive.now) || '—') + (planLive && planLive.installedToday ? '　· 今天刚安装：安装当天不自动跑，明天起按上面的时刻执行' : '')),
+          tNote ? h('div', { style: C.muted }, String(tNote).slice(0, 140)) : null),
+        h(Section, { title: '数据与性能', defaultOpen: false, summary: (ov && ov.storage ? '数据目录 ' + fmtBytes(ov.storage.totalBytes) + ' · 保留 ' + retention + ' 天' : '') },
           h('div', { style: C.row },
-            h('button', {
-              style: C.btn, disabled: busy,
-              onClick: function () {
-                setBusy(true)
-                jpost('/qidianEnrich').then(function (r) { setNote(r && r.note ? r.note : '起点补全完成'); return load() })
-                  .catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) })
+            h('span', { style: C.muted }, '保留'),
+            h('select', {
+              style: { ...C.input, width: 'auto', padding: '1px 4px' },
+              value: String(retention),
+              title: '只影响数据日期目录（快照/报告）；配置、书签、书页缓存永不删',
+              onChange: function (e) {
+                const v = e.target.value === 'forever' ? 'forever' : Number(e.target.value)
+                jpost('/retention', { days: v }).then(function (r) { setRetMsg((r && r.note) || '已更新'); if (props.onSaved) props.onSaved() })
+                  .catch(function (e2) { setRetMsg('设置失败：' + e2) })
               },
-            }, '补全起点收藏（只打没缓存的书）'),
-            h('button', {
-              style: C.btn, disabled: busy,
-              onClick: function () {
-                setBusy(true)
-                jpost('/qidianCache', { clear: true }).then(function (r) { setNote(r && r.note ? r.note : '缓存已清'); return load() })
-                  .catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) })
+            },
+              [30, 90, 180, 365].map(function (n) { return h('option', { key: n, value: String(n) }, n + ' 天') }),
+              h('option', { key: 'forever', value: 'forever' }, '永久保留')),
+            retMsg ? h('span', { style: C.muted }, String(retMsg).slice(0, 80)) : null),
+          ov && ov.storage ? h('div', { style: C.muted },
+            '快照 ' + fmtBytes(ov.storage.snapshotBytes) + ' · state ' + fmtBytes(ov.storage.stateBytes) +
+            ' · ' + ov.storage.dates + ' 天（' + dash(ov.storage.oldest) + ' 起）· 书签 ' + ov.storage.bookmarks + ' 条') : null,
+          h('div', { style: { ...C.row, marginTop: '4px' } },
+            h('span', { style: C.muted }, '起点收藏补全'),
+            h('input', { type: 'checkbox', checked: qdEnrich, onChange: function (e) { setQdEnrich(e.target.checked); setDirty(true) } }),
+            h('span', { style: C.muted }, qdEnrich ? '已开启' : '已关闭（默认关）'),
+            h('button', { style: C.btn, disabled: busy, onClick: function () { setBusy(true); jpost('/qidianEnrich').then(function (r) { setNote((r && r.note) || '起点补全完成'); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '补全起点收藏'),
+            h('button', { style: C.btn, disabled: busy, onClick: function () { setBusy(true); jpost('/qidianCache', { clear: true }).then(function (r) { setNote((r && r.note) || '缓存已清'); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '清空书页缓存')),
+          h('div', { style: C.muted }, '起点书页缓存 ' + (qdCache && qdCache.cache ? qdCache.cache.books : 0) + ' 本 · 有效期 ' + ((qdCache && qdCache.ttlDays) || 7) + ' 天' +
+            (cat.bookCache ? '　· 通用书页缓存 ' + ((cat.bookCache.stat && cat.bookCache.stat.entries) || 0) + ' 本 · 有效期 ' + (cat.bookCache.ttlDays || 7) + ' 天' : '')),
+          h(Section, { title: '高级：请求间隔', defaultOpen: false, summary: '当前 ' + fmtIntervalText(intervalMs) },
+            h('div', { style: C.row },
+              h('select', {
+                style: { ...C.input, width: 'auto', padding: '1px 4px' },
+                value: String(intervalMs),
+                onChange: function (e) { setIntervalMs(Number(e.target.value)) },
               },
-            }, '清空书页缓存（强制重抓）'))),
-        h('div', { style: C.row }, sites.map(function (s) {
-          return h('span', { key: s, style: { marginRight: '6px' } },
-            h('button', { style: C.btn, onClick: function () { setAll(s, true) } }, '全选 ' + siteNameOf(s)),
-            ' ',
-            h('button', { style: C.btn, onClick: function () { setAll(s, false) } }, '全不选'))
-        })),
-        h(VersionRow, { setNote: setNote }),
-        groups.map(function (g) {
-          const derived = g.items.length > 0 && String(g.items[0].boardId).indexOf('fanqie.derived.') === 0
-          return h('div', { key: g.site + g.group },
-            h('div', { style: C.siteBar }, g.siteName + ' · ' + g.group),
-            derived ? h('div', { style: { ...C.muted, margin: '0 0 4px 2px' } }, '本地派生榜：不发请求（0 请求），总是显示在面板里 —— 它不走「显示集」，所以概览里的「隐藏 N 个」不包含它。') : null,
-            h('table', { style: C.table },
-              h('tbody', null, g.items.map(function (b) {
-                return h('tr', { key: b.boardId },
-                  h('td', { style: { ...C.td, width: '22px' } }, h('input', { type: 'checkbox', checked: has(b.boardId), onChange: function (e) { toggle(b.boardId, e.target.checked) } })),
-                  h('td', { style: C.td }, b.label))
-              }))))
-        }))
+                [200, 500, 1000, 2000, 5000].map(function (v) { return h('option', { key: v, value: String(v) }, v + ' ms' + (v === 1000 ? '（默认）' : '')) }),
+                h('option', { key: 0, value: '0' }, '不限速（仅本地测试）')),
+              h('button', { style: C.btn, disabled: busy, onClick: function () { setBusy(true); jpost('/select', { requestIntervalMs: intervalMs }).then(function () { setNote('请求间隔已改为 ' + (intervalMs === 0 ? '不限速' : intervalMs + 'ms')); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '应用'),
+              h('span', { style: C.muted }, '1s 是本项目自定的保守值（不是站点要求）；调小更快，也更容易被站点注意到')))),
+        h(Section, { title: '关于与诊断', defaultOpen: false, summary: (sv.webServer ? '服务正常' : 'webServer 未注册') + ' · 定时' + (sv.timerArmed ? '已接线' : '未接线') },
+          h(VersionRow, { setNote: setNote }),
+          h('div', { style: C.muted }, '服务：webServer ' + (sv.webServer ? '✓' : '✗') + ' · timer ' + (sv.timerService ? '✓' : '✗') + ' · 定时器' + (sv.timerArmed ? '已接线' : '未接线')),
+          note ? h('div', { style: C.muted }, '最近提示：' + String(note).slice(0, 160)) : null,
+          h('div', { style: C.row },
+            h('button', { style: C.btn, onClick: function () { try { navigator.clipboard.writeText(diag()); setNote('诊断信息已复制（不含凭证）') } catch (e) { setNote('复制失败：' + e) } } }, '复制诊断信息'))))
     }
     /**
      * ★ 版本区（2026-10-16）：显示当前版本 + 「一键更新」。
@@ -1144,13 +1405,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       return ns ? ns + ':' + id : ''
     }
 
-    /** 行详情卡里的书签编辑：备注（失焦保存）+ 夹 */
+    /** 行详情卡里的书签编辑：备注 + 夹一起**显式保存**（失败保留草稿） */
     function DetailBookmarkEditor(props) {
       const store = bmStore.use()
       const bk = props.bookKey
       const [note, setNote] = React.useState('')
       const [folders, setFolders] = React.useState('')
       const [msg, setMsg] = React.useState(null)
+      const [busy, setBusy] = React.useState(false)
       const [loaded, setLoaded] = React.useState(false)
       React.useEffect(function () {
         if (!bk) return
@@ -1162,22 +1424,30 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       }, [bk, store.total])
       if (!bk || !store.has(bk)) return null
       const save = function () {
-        store.act({ action: 'update', bookKey: bk, note: note, folders: folders.split(/[\s,，]+/).filter(Boolean) })
-          .then(function () { setMsg('已保存'); return store.refreshList() })
-          .catch(function (e) { setMsg('保存失败：' + e) })
+        setBusy(true)
+        setMsg(null)
+        store.act({ action: 'update', bookKey: bk, note: note, folders: String(folders || '').split(/[\s,，]+/).filter(Boolean) })
+          .then(function () { setBusy(false); setMsg('已保存'); return store.refreshList() })
+          .catch(function (e) { setBusy(false); setMsg('保存失败：' + e + '（草稿还在）') })
       }
       return h('div', { style: { ...C.detail, marginTop: '6px' } },
         h('div', { style: C.row },
           h('span', { style: C.muted }, '备注'),
-          h('input', { style: { ...C.input, flex: 1, minWidth: '160px' }, value: note, placeholder: '写点什么，可用 #标签', onChange: function (e) { setNote(e.target.value) }, onBlur: save })),
+          h('input', { style: { ...C.input, flex: 1, minWidth: '160px' }, value: note, placeholder: '写点什么，可用 #标签', onChange: function (e) { setNote(e.target.value) } })),
         h('div', { style: C.row },
           h('span', { style: C.muted }, '书签夹'),
-          h('input', { style: { ...C.input, flex: 1, minWidth: '120px' }, value: folders, placeholder: '空格分隔，可属于多个夹', onChange: function (e) { setFolders(e.target.value) }, onBlur: save }),
-          h('span', { style: C.muted }, '（失焦即保存）')),
-        msg ? h('div', { style: C.muted }, msg) : null)
+          h('input', { style: { ...C.input, flex: 1, minWidth: '120px' }, value: folders, placeholder: '空格分隔，可属于多个夹', onChange: function (e) { setFolders(e.target.value) } }),
+          h('button', { style: C.btnOn, disabled: busy || !loaded, onClick: save }, busy ? '保存中…' : '保存')),
+        msg ? h('div', { style: { ...C.muted, color: String(msg).indexOf('失败') >= 0 ? '#d9534f' : null } }, msg) : null)
     }
 
-    /** 「我的书签」：卡片列表 + 搜索/过滤 + 备注夹编辑 + 回收站 + 添加 + 导出 */
+    /**
+     * 「我的书签」：**默认读，按需编辑**。
+     *   · 紧凑卡：书名/作者/站 + 核心指标 + 数据截止 + 备注摘要/标签/夹
+     *   · 备注与夹进同一个编辑面板，**显式保存/取消**；失败保留草稿（不再失焦即存）
+     *   · 批量选择才出现复选框；导出先选范围（已选 / 当前筛选 / 全部）并写出条数
+     *   · 添加作品、回收站、导出都收进「更多」；删除仍可撤销
+     */
     function BookmarksTab(props) {
       const store = bmStore.use()
       const [, force] = React.useState(0)
@@ -1186,17 +1456,28 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const [slide, setSlide] = React.useState(0)
       const [trash, setTrash] = React.useState([])
       const [showTrash, setShowTrash] = React.useState(false)
+      const [confirmPurge, setConfirmPurge] = React.useState(false)
       const [manual, setManual] = React.useState('')
       const [manualSite, setManualSite] = React.useState('')
-      const [local, setLocal] = React.useState({})
-      // ★ 2026-10-16（使用方需求）：勾选导出 + 格式 + 目标目录 + 在文件夹里打开
-      const selS = React.useState([])
-      const sel = selS[0]
-      const setSel = selS[1]
-      const fmtS = React.useState('csv')
+      const [addOpen, setAddOpen] = React.useState(false)
+      const [filtersOpen, setFiltersOpen] = React.useState(false)
+      // 编辑态：草稿只活在本地 state；保存成功才清，失败保留并就地报错
+      // ★ 草稿从组件外恢复：切页/收起把本组件卸了，回来还在（不丢用户写了一半的备注）
+      const [editKey, setEditKey] = React.useState(function () { return DRAFTS.bm ? DRAFTS.bm.bookKey : null })
+      const [draft, setDraft] = React.useState(function () { return DRAFTS.bm ? { note: DRAFTS.bm.note || '', folders: DRAFTS.bm.folders || '' } : { note: '', folders: '' } })
+      const [editErr, setEditErr] = React.useState(null)
+      const [editBusy, setEditBusy] = React.useState(false)
+      const [discardAsk, setDiscardAsk] = React.useState(false)
+      const [detailKey, setDetailKey] = React.useState(null)
+      const [selectMode, setSelectMode] = React.useState(false)
+      const [sel, setSel] = React.useState([])
+      const [exportOpen, setExportOpen] = React.useState(false)
+      const [scope, setScope] = React.useState('filtered')
+      const [exporting, setExporting] = React.useState(false)
+      const fmtS = React.useState(function () { try { return localStorage.getItem('rank-scan-panel:export:fmt:v1') || 'csv' } catch (e) { return 'csv' } })
       const fmt = fmtS[0]
       const setFmt = fmtS[1]
-      const destS = React.useState('')
+      const destS = React.useState(function () { try { return localStorage.getItem('rank-scan-panel:export:dest:v1') || '' } catch (e) { return '' } })
       const dest = destS[0]
       const setDest = destS[1]
       const exS = React.useState(null)
@@ -1208,409 +1489,514 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const load = function () {
         healStore(store)
         if (typeof store.refreshList === 'function') store.refreshList().then(bump).catch(function () { bump() })
-        if (typeof store.trashList === 'function') store.trashList().then(function (t) { setTrash(t); bump() })
+        if (typeof store.trashList === 'function') store.trashList().then(function (t) { setTrash(t) })
       }
-      // 依赖数组里也不能直接摸 store.filters（旧闭包 + 新 store 的组合下它就是 undefined）
       const flt = healStore(store).filters
       React.useEffect(function () { load() }, [flt.q, flt.site, flt.folder, flt.tag])
-      // 撤销：5 秒窗口（只在这里给；刷新页面后就靠回收站）
       React.useEffect(function () {
-        if (!undo) return
-        // 撤销窗口 8 秒（★ 实测：5 秒在下拉/看快照的间隙里就过期了，太紧；回收站仍是兜底）
+        if (!undo) return undefined
         const t = setTimeout(function () { setUndo(null) }, 8000)
         const id = setInterval(function () { setSlide(function (s) { return s >= 100 ? 100 : s + 2 }) }, 100)
         return function () { clearTimeout(t); clearInterval(id) }
       }, [undo])
+      const SITE_NAME = { qidian: '起点', qidiantu: '起点图', ciweimao: '刺猬猫', sfacg: '菠萝包', fanqie: '番茄' }
+      const siteLabel = function (s) { return SITE_NAME[s] || s }
+      const f = flt
+      const setF = function (patch) { healStore(store); store.filters = { ...store.filters, ...patch }; bump() }
+      const list = (store.list && store.list.bookmarks) || []
+      const sites = []
+      list.forEach(function (b) { if (sites.indexOf(b.site) < 0) sites.push(b.site) })
+      const dirtyOf = function (b) {
+        const note0 = String(b.note || '')
+        const fold0 = (b.folders || []).join(' ')
+        return String(draft.note || '') !== note0 || String(draft.folders || '').replace(/\s+/g, ' ').trim() !== fold0.replace(/\s+/g, ' ').trim()
+      }
+      /** 草稿写回组件外 + 登记脏状态（面板切页/收起前据此拦一下） */
+      React.useEffect(function () {
+        if (!editKey) { DRAFTS.bm = null; dirtyGuard.set('bm', false); return }
+        const b = list.filter(function (x) { return x.bookKey === editKey })[0]
+        const dirty = !!(b && dirtyOf(b))
+        DRAFTS.bm = { bookKey: editKey, note: draft.note, folders: draft.folders, dirty: dirty }
+        dirtyGuard.set('bm', dirty)
+      }, [editKey, draft.note, draft.folders, store.total])
+      const startEdit = function (b) {
+        setEditKey(b.bookKey)
+        setDraft({ note: String(b.note || ''), folders: (b.folders || []).join(' ') })
+        setEditErr(null)
+        setDiscardAsk(false)
+      }
+      const closeEdit = function () { setEditKey(null); setDraft({ note: '', folders: '' }); setEditErr(null); setDiscardAsk(false) }
+      const cancelEdit = function (b) {
+        if (dirtyOf(b)) { setDiscardAsk(true); return }
+        closeEdit()
+      }
+      const saveEdit = function (b) {
+        const note = String(draft.note || '')
+        const folders = String(draft.folders || '').split(/[\s,，]+/).filter(Boolean)
+        setEditBusy(true)
+        setEditErr(null)
+        store.act({ action: 'update', bookKey: b.bookKey, note: note, folders: folders })
+          .then(function () { return store.refreshList() })
+          .then(function () { setEditBusy(false); closeEdit(); bump() })
+          .catch(function (e) { setEditBusy(false); setEditErr('保存失败：' + e + '　（草稿还在，可再试一次）') })
+      }
       const doRemove = function (b) {
         setSlide(0)
+        if (editKey === b.bookKey) closeEdit()
         store.act({ action: 'remove', bookKey: b.bookKey }).then(function () { setUndo(b); load() }).catch(function () {})
       }
       const doUndo = function () {
         if (!undo) return
         store.act({ action: 'restore', bookKey: undo.bookKey }).then(function () { setUndo(null); load() }).catch(function () {})
       }
-      const saveNote = function (b, note, folders) {
-        store.act({ action: 'update', bookKey: b.bookKey, note: note, folders: folders })
-          .then(function () { return store.refreshList() }).then(function () { setLocal({}); bump() }).catch(function () {})
-      }
       const doRefresh = function (keys) {
-        store.msg = '刷新中（每本 1 请求，逐本 1 秒）…'; bump()
+        store.msg = '更新中（每本 1 请求，逐本 ' + fmtIntervalText() + '）…'; bump()
         jpost('/bookmark/refresh', { bookKeys: keys }).then(function (r) {
-          store.msg = (r && r.note) || '已刷新'
+          store.msg = (r && r.note) || '已更新'
           return store.refreshList()
-        }).then(function () { bump() }).catch(function (e) { store.msg = '刷新失败：' + e; bump() })
+        }).then(function () { bump() }).catch(function (e) { store.msg = '更新失败：' + e; bump() })
       }
-      const list = (store.list && store.list.bookmarks) || []
-      const sites = []
-      list.forEach(function (b) { if (sites.indexOf(b.site) < 0) sites.push(b.site) })
-      // 站 id → 显示名（书签条目里只有 site 字符串，这里做一层人话映射）
-      const SITE_NAME = { qidian: '起点', qidiantu: '起点图', ciweimao: '刺猬猫', sfacg: '菠萝包', fanqie: '番茄' }
-      const siteLabel = function (s) { return SITE_NAME[s] || s }
-      // 渲染体里统一用这个 f（已 ensure 过）
-      const f = flt
-      const setF = function (patch) { healStore(store); store.filters = { ...store.filters, ...patch }; bump() }
-      const val = function (b, k) { return local[b.bookKey] && local[b.bookKey][k] != null ? local[b.bookKey][k] : (k === 'note' ? b.note : (b.folders || []).join(' ')) }
+      const scopeCount = function () {
+        if (scope === 'selected') return sel.length
+        if (scope === 'all') return store.total || list.length
+        return list.length
+      }
+      const doExport = function () {
+        const fmtV = fmt
+        const destV = String(dest || '').trim()
+        setExporting(true)
+        setExMsg('导出中…')
+        const keysP = scope === 'all'
+          ? jget('/bookmarks').then(function (r) { return ((r && r.bookmarks) || []).map(function (x) { return x.bookKey }) })
+          : Promise.resolve(scope === 'selected' ? sel.slice() : list.map(function (b) { return b.bookKey }))
+        keysP.then(function (keys) {
+          if (!keys || !keys.length) { setExMsg('这个范围没有可导出的条目'); return null }
+          try {
+            localStorage.setItem('rank-scan-panel:export:fmt:v1', fmtV)
+            localStorage.setItem('rank-scan-panel:export:dest:v1', destV)
+          } catch (e) {}
+          return jpost('/bookmark/export-file', { format: fmtV, bookKeys: keys, dest: destV || undefined })
+            .then(function (r) { setExMsg((r && r.note) || ('已导出 ' + keys.length + ' 条')) })
+        }).catch(function (e) { setExMsg('导出失败：' + e) }).then(function () { setExporting(false) })
+      }
+      const addManual = function () {
+        jpost('/bookmark/add-manual', { input: String(manual || '').trim(), site: manualSite || undefined }).then(function (r) {
+          store.msg = (r && r.note) || '已添加'
+          setManual('')
+          return store.refreshList()
+        }).then(function () { bump() }).catch(function (e) { store.msg = '添加失败：' + e; bump() })
+      }
+      const collectTitle = function (b, lab) {
+        const src = b.collectFrom === 'qidian-book-cache' ? '来自起点书页缓存（扫描后补全回填）'
+          : b.collectFrom === 'book-page' ? '来自书页刷新'
+          : b.collectFrom === 'snapshot' ? '来自当天榜单行'
+          : '这个榜的榜单行里没有该数据；点「更新本书数据」可按书页取一次'
+        return lab + '：' + fmtRead(b.collect) + '　·　' + src
+      }
+      const moreItems = [
+        { label: '批量选择', onClick: function () { setSelectMode(true) } },
+        { label: '导出…', onClick: function () { setExportOpen(true) } },
+        { label: '添加作品…', onClick: function () { setAddOpen(true) } },
+        { label: '刷新列表', onClick: load },
+        { sep: true },
+        { label: (showTrash ? '收起' : '打开') + '回收站（' + trash.length + '）', onClick: function () { setShowTrash(!showTrash); store.trashList().then(function (t) { setTrash(t) }) } },
+      ]
       return h('div', null,
         h('div', { style: C.row },
-          h('input', { style: { ...C.input, flex: 1, minWidth: '140px' }, placeholder: '搜书名/作者/备注', value: f.q, onChange: function (e) { setF({ q: e.target.value }) } }),
+          h('input', { style: { ...C.input, flex: 1, minWidth: '130px' }, placeholder: '搜书名/作者/备注', value: f.q, onChange: function (e) { setF({ q: e.target.value }) } }),
           h('select', { style: C.input, value: f.site, onChange: function (e) { setF({ site: e.target.value }) } },
             h('option', { value: '' }, '全部站'), sites.map(function (s) { return h('option', { key: s, value: s }, siteLabel(s)) })),
           h('select', { style: C.input, value: f.folder, onChange: function (e) { setF({ folder: e.target.value }) } },
             h('option', { value: '' }, '全部夹'), (store.folders || []).map(function (x) { return h('option', { key: x, value: x }, x) })),
-          h('button', { style: C.btn, onClick: load }, '刷新列表')),
-        h('div', { style: C.muted }, '共 ' + list.length + ' 条' + (store.total && store.total !== list.length ? '（全部 ' + store.total + ' 条，已过滤）' : '') + '　·　不含回收站'),
+          h('button', { style: filtersOpen ? C.btnOn : C.btn, onClick: function () { setFiltersOpen(!filtersOpen) }, 'aria-expanded': filtersOpen ? 'true' : 'false' }, '筛选'),
+          h(PopMenu, { label: '更多', items: moreItems, width: 200 })),
+        filtersOpen ? h('div', { style: { ...C.row, padding: '4px 6px', border: '1px solid rgba(128,128,128,.28)', borderRadius: '6px' } },
+          h('span', { style: C.muted }, '标签'),
+          h('input', { style: { ...C.input, width: '120px' }, placeholder: '#标签', value: f.tag || '', onChange: function (e) { setF({ tag: String(e.target.value).replace(/^#/, '') }) } }),
+          (f.q || f.site || f.folder || f.tag) ? h('button', { style: C.btn, onClick: function () { setF({ q: '', site: '', folder: '', tag: '' }) } }, '清除筛选') : null,
+          h('span', { style: C.muted }, '备注里写的 #标签 会自动出现在这里')) : null,
+        addOpen ? h('div', { style: { ...C.card, marginTop: '4px' } },
+          h('div', { style: C.row },
+            h('span', { style: C.muted }, '添加作品'),
+            h('input', { style: { ...C.input, flex: 1, minWidth: '150px' }, placeholder: '贴书页 URL 或 qidian:<书号>（纯书号请选站）', value: manual, onChange: function (e) { setManual(e.target.value) } }),
+            h('select', { style: C.input, value: manualSite, onChange: function (e) { setManualSite(e.target.value) } },
+              h('option', { value: '' }, '（URL 可自动识别）'),
+              h('option', { value: 'qidian' }, '起点'), h('option', { value: 'qidiantu' }, '起点图'), h('option', { value: 'ciweimao' }, '刺猬猫'), h('option', { value: 'sfacg' }, '菠萝包'), h('option', { value: 'fanqie' }, '番茄')),
+            h('button', { style: C.btn, disabled: !String(manual || '').trim(), onClick: addManual }, '加入书签'),
+            h('button', { style: C.btn, onClick: function () { setAddOpen(false) } }, '收起'))) : null,
+        h('div', { style: C.muted }, (store.list === null ? '加载中…' : '共 ' + list.length + ' 条' + (store.total && store.total !== list.length ? '（全部 ' + store.total + ' 条，已按筛选）' : '') + '　·　不含回收站')),
         store.health && store.health.error ? h('div', { style: { ...C.muted, color: '#d9534f' } }, '⚠ ' + store.health.error) : null,
-        list.length === 0 ? h('div', { style: C.muted }, f.q || f.site || f.folder ? '没有符合过滤条件的书签' : '还没有书签：在「当前榜单」里点书名旁的 ☆ 就能加') : null,
+        selectMode ? h('div', { style: { ...C.row, padding: '4px 6px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '6px', background: 'rgba(128,128,128,.05)' } },
+          h('span', null, '已选 ' + sel.length + ' 条'),
+          h('button', { style: C.btn, onClick: function () { setSel(list.map(function (b) { return b.bookKey })) } }, '全选当前筛选（' + list.length + '）'),
+          h('button', { style: C.btn, disabled: !sel.length, onClick: function () { setSel([]) } }, '取消选择'),
+          h('button', { style: C.btn, disabled: !sel.length, onClick: function () { setScope('selected'); setExportOpen(true) } }, '导出已选'),
+          h('button', { style: C.btn, onClick: function () { setSelectMode(false); setSel([]) } }, '退出批量选择')) : null,
+        exportOpen ? h('div', { style: { ...C.card, marginTop: '4px' } },
+          h('div', { style: { fontWeight: 600 } }, '导出书签'),
+          h('div', { style: C.row },
+            [['selected', '已选 ' + sel.length + ' 条'], ['filtered', '当前筛选 ' + list.length + ' 条'], ['all', '全部 ' + (store.total || list.length) + ' 条']].map(function (o) {
+              return h('label', { key: o[0], style: C.row },
+                h('input', { type: 'radio', name: 'rs-export-scope', checked: scope === o[0], onChange: function () { setScope(o[0]) } }),
+                h('span', null, o[1]))
+            })),
+          h('div', { style: C.row },
+            h('select', { style: C.input, value: fmt, onChange: function (e) { setFmt(e.target.value) } },
+              h('option', { value: 'csv' }, 'CSV'), h('option', { value: 'json' }, 'JSON'), h('option', { value: 'md' }, 'Markdown')),
+            h('input', { style: { ...C.input, flex: 1, minWidth: '150px' }, placeholder: '导出目录（留空 = 默认目录）', value: dest, onChange: function (e) { setDest(e.target.value) } }),
+            h('button', { style: C.btnOn, disabled: exporting || scopeCount() === 0, title: scopeCount() === 0 ? '这个范围没有条目' : '', onClick: doExport }, exporting ? '导出中…' : '导出 ' + scopeCount() + ' 条'),
+            h('button', { style: C.btn, onClick: function () { jpost('/bookmark/open-folder', { path: String(dest || '').trim() || undefined }).then(function (r) { setExMsg('已打开 ' + ((r && r.opened) || '')) }).catch(function (e) { setExMsg('打不开：' + e) }) } }, '打开文件夹'),
+            h('button', { style: C.btn, onClick: function () { setExportOpen(false) } }, '收起')),
+          exMsg ? h('div', { style: C.muted }, String(exMsg).slice(0, 140)) : null) : null,
+        list.length === 0 ? h('div', { style: C.muted }, store.list === null ? '' : (f.q || f.site || f.folder || f.tag ? '没有符合筛选条件的书签' : '还没有书签：在「榜单」里点书名旁的 ☆ 就能加')) : null,
         list.map(function (b) {
-          const lv = local[b.bookKey] || {}
-          return h('div', { key: b.bookKey, style: C.card },
+          const lab = b.collectLabel || (b.site === 'fanqie' ? '在读' : '收藏')
+          const editing = editKey === b.bookKey
+          const noteText = String(b.note || '').replace(/\s+/g, ' ').trim()
+          const metricText = metricChipText(b.metric, b.collect, lab)
+          const oldMetric = b.metric && b.metric.value != null && b.metric.name === lab && b.metric.value !== b.collect ? b.metric.value : null
+          return h('div', { key: b.bookKey, style: { ...C.card, padding: '6px 8px' } },
             h('div', { style: C.row },
-              h('input', { type: 'checkbox', style: { margin: '0 2px', flex: '0 0 auto' }, checked: sel.indexOf(b.bookKey) >= 0, onChange: function () { toggleSel(b.bookKey) } }),
+              selectMode ? h('input', { type: 'checkbox', style: { margin: '0 2px', flex: '0 0 auto' }, checked: sel.indexOf(b.bookKey) >= 0, onChange: function () { toggleSel(b.bookKey) } }) : null,
               h('span', { style: C.cardTitle }, b.label),
               b.author ? h('span', { style: C.muted }, b.author) : null,
-              b.words != null ? h('span', { style: C.muted }, fmtWords(b.words)) : null,
-              h('span', { style: C.muted }, '数据日期 ' + String(b.capturedAt || '').slice(0, 10) + (b.ageDays != null ? '（' + b.ageDays + ' 天前）' : '')),
-              // 久未更新 ⇒ 明确告诉用户「这本可能已经取不到数了」（否则旧值会被当成现值）
-              b.stale ? h('span', { style: { ...C.chip, color: '#d9534f' }, title: '这张卡片的数据超过 7 天没变新：点「刷新」试试；仍不变则可能已无法更新' }, '已无法更新？') : null,
+              h('span', { style: C.chip }, siteLabel(b.site)),
+              b.collect == null
+                ? h('span', { style: { ...C.chip, opacity: 0.55 }, title: collectTitle(b, lab) }, lab + ' —')
+                : h('span', { style: C.chip, title: collectTitle(b, lab) }, lab + ' ' + fmtRead(b.collect)),
+              oldMetric != null ? h('span', { style: { ...C.chip, opacity: 0.8 }, title: '书签记录：最近一次自动更新时该榜的' + lab + '（与上面的实时值不是同一时点）' }, '书签记录 ' + fmtRead(oldMetric)) : null,
+              metricText ? h('span', { style: C.chip }, metricText) : null,
+              b.capturedAt ? h('span', { style: C.muted, title: '这张卡的数据截止到这一天' }, '截止 ' + mdOf(b.capturedAt) + (b.ageDays != null ? '（' + b.ageDays + ' 天前）' : '')) : null,
+              b.ageDays != null && b.ageDays >= 7 ? h('span', { style: { ...C.chip, color: '#d9a441' }, title: '超过 7 天没有变新：点「更新本书数据」试试；仍不变则这个来源可能取不到数了' }, '数据已 ' + b.ageDays + ' 天未更新') : null,
               b.valueFrom === 'manual' ? h('span', { style: C.chip }, '待补') : null),
             h('div', { style: C.row },
-              /**
-               * ★ 站方数据：起点/起点图/刺猬猫/菠萝包 = 收藏；番茄 = 在读（readCount）。
-               *   来源多样（榜单行自带 / 起点书页缓存 / 书页刷新）⇒ 用 title 说明「这个数哪来的」。
-               *
-               * ★ 2026-10-17（使用者反馈「番茄书签下面又出现两个在读」）：不是去重规则失效 ——
-               *   这两个数**本来就不是同一次读到的**：collect 是最新（快照 / 书页刷新），
-               *   metric.value 是书签最近一次自动更新时那一榜的值。两者数值不同 ⇒ 旧规则（相等才跳过）
-               *   不触发，于是两个 chip 顶着同一个「在读」标签，看起来像复发了。
-               *   现在：同口径时不再并排画两遍，而是「在读 676,671 · 书签记录 652,278」——
-               *   后者明确是另一次记录，不是重复标签。
-               */
-              (function () {
-                const lab = b.collectLabel || (b.site === 'fanqie' ? '在读' : '收藏')
-                const src = b.collectFrom === 'qidian-book-cache' ? '来自起点书页缓存（扫描后补全回填）'
-                  : b.collectFrom === 'book-page' ? '来自书页刷新'
-                  : b.collectFrom === 'snapshot' ? '来自当天榜单行'
-                  : '这个榜的榜单行里没有该数据；点「刷新」可按书页取一次'
-                const out = []
-                out.push(b.collect == null
-                  ? h('span', { key: 'c', style: { ...C.chip, opacity: 0.55 }, title: lab + '：' + src }, lab + ' —')
-                  : h('span', { key: 'c', style: C.chip, title: lab + '：' + fmtRead(b.collect) + '　·　' + src }, lab + ' ' + fmtRead(b.collect)))
-                // 同口径的「另一次记录」：值不同才显示，且换一个不会混淆的标签
-                const mv = b.metric && b.metric.value != null && b.metric.name === lab ? b.metric.value : null
-                if (mv != null && mv !== b.collect) {
-                  out.push(h('span', { key: 'm', style: { ...C.chip, opacity: 0.8 }, title: '书签记录：最近一次自动更新时该榜的' + lab + '（与上面的实时值不是同一时点）' }, '书签记录 ' + fmtRead(mv)))
-                }
-                const t = metricChipText(b.metric, b.collect, lab)
-                if (t) out.push(h('span', { key: 'k', style: C.chip }, t))
-                return out
-              })(),
-              b.firstSeen ? h('span', { style: C.muted }, '首次发现：' + b.firstSeen.boardId + ' 第 ' + (b.firstSeen.rank == null ? '—' : b.firstSeen.rank) + ' 名（' + b.firstSeen.dataDate + '）') : h('span', { style: C.muted }, '手动添加 · 无榜单来源'),
-              b.source === 'manual' ? h('span', { style: C.muted }, '（不在榜 ⇒ 不会自动更新）') : null),
-            (b.seenBoards || []).filter(function (s) { return !b.firstSeen || s.boardId !== b.firstSeen.boardId }).length
-              ? h('div', { style: C.muted }, '也上过：' + (b.seenBoards || []).filter(function (s) { return !b.firstSeen || s.boardId !== b.firstSeen.boardId }).map(function (s) { return s.boardId }).join('、'))
-              : null,
-            (b.tags || []).length ? h('div', { style: C.row }, (b.tags || []).map(function (t) { return h('span', { key: t, style: C.chip }, '#' + t) })) : null,
+              h('button', {
+                style: { ...C.btn, border: '1px dashed rgba(128,128,128,.35)', textAlign: 'left', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                title: noteText ? '编辑备注' : '加备注',
+                onClick: function () { startEdit(b) },
+              }, noteText ? noteText.slice(0, 60) : '＋ 备注'),
+              (b.tags || []).map(function (t) { return h('span', { key: 't' + t, style: C.chip }, '#' + t) }),
+              (b.folders || []).map(function (x) { return h('span', { key: 'f' + x, style: C.chip }, '夹 ' + x) })),
+            editing ? h('div', { style: { ...C.detail, marginTop: '4px' } },
+              h('div', { style: C.row },
+                h('span', { style: C.muted }, '备注'),
+                h('textarea', {
+                  rows: 2, value: draft.note, placeholder: '可用 #标签',
+                  onChange: function (e) { setDraft({ ...draft, note: e.target.value }) },
+                  style: { ...C.input, flex: 1, minWidth: '160px', resize: 'vertical', fontFamily: 'inherit' },
+                })),
+              h('div', { style: C.row },
+                h('span', { style: C.muted }, '书签夹'),
+                h('input', {
+                  style: { ...C.input, flex: 1, minWidth: '120px' }, value: draft.folders, placeholder: '空格分隔，可属于多个夹',
+                  onChange: function (e) { setDraft({ ...draft, folders: e.target.value }) },
+                })),
+              h('div', { style: C.row },
+                h('button', { style: C.btnOn, disabled: editBusy, onClick: function () { saveEdit(b) } }, editBusy ? '保存中…' : '保存'),
+                h('button', { style: C.btn, disabled: editBusy, onClick: function () { cancelEdit(b) } }, '取消'),
+                discardAsk
+                  ? h('span', { style: { ...C.row, color: '#d9a441' } },
+                      h('span', null, '放弃这些改动？'),
+                      h('button', { style: C.btn, onClick: function () { closeEdit() } }, '放弃'),
+                      h('button', { style: C.btn, onClick: function () { setDiscardAsk(false) } }, '继续编辑'))
+                  : null,
+                editErr ? h('span', { style: { color: '#d9534f' } }, editErr) : null)) : null,
             h('div', { style: C.row },
-              h('span', { style: C.muted }, '备注'),
-              h('input', { style: { ...C.input, flex: 1, minWidth: '140px' }, value: val(b, 'note'), placeholder: '可用 #标签',
-                onChange: function (e) { setLocal({ ...local, [b.bookKey]: { ...lv, note: e.target.value } }) },
-                onBlur: function (e) { saveNote(b, e.target.value, (val(b, 'folders')).split(/[\s,，]+/).filter(Boolean)) } }),
-              h('span', { style: C.muted }, '夹'),
-              h('input', { style: { ...C.input, width: '110px' }, value: val(b, 'folders'), placeholder: '可多个',
-                onChange: function (e) { setLocal({ ...local, [b.bookKey]: { ...lv, folders: e.target.value } }) },
-                onBlur: function (e) { saveNote(b, val(b, 'note'), e.target.value.split(/[\s,，]+/).filter(Boolean)) } })),
-            h('div', { style: C.row },
-              h('button', { style: C.btn, onClick: function () { doRefresh([b.bookKey]) } }, '刷新'),
-              // ★ 2026-10-16 使用方：书签卡「打开」与榜单页「书名」走同一条路 —— 首选 DSH 侧栏浏览器，服务不可见才退回新标签
               h('a', { href: b.url || '#', style: { color: 'inherit', padding: '3px 8px' }, title: '在 DSH 侧栏浏览器打开', onClick: function (e) { e.preventDefault(); (props.openLink || function (u) { window.open(u, '_blank', 'noopener,noreferrer') })(b.url) } }, '打开'),
-              h('button', { style: C.btn, onClick: function () { doRemove(b) } }, '删除')))
+              h(PopMenu, { label: '更多', width: 190, items: [
+                { label: '编辑备注/夹', onClick: function () { startEdit(b) } },
+                { label: '更新本书数据（联网）', onClick: function () { doRefresh([b.bookKey]) }, title: '按书页取一次最新读数' },
+                { label: detailKey === b.bookKey ? '收起详情' : '查看详情', onClick: function () { setDetailKey(detailKey === b.bookKey ? null : b.bookKey) } },
+                { sep: true },
+                { label: '删除', onClick: function () { doRemove(b) } },
+              ] })),
+            detailKey === b.bookKey ? h('div', { style: { ...C.detail, marginTop: '4px' } },
+              b.firstSeen
+                ? h('div', { style: C.muted }, '首次发现：' + siteLabel(String(b.firstSeen.boardId).split('.')[0]) + ' · ' + b.firstSeen.boardId + ' 第 ' + (b.firstSeen.rank == null ? '—' : b.firstSeen.rank) + ' 名（' + b.firstSeen.dataDate + '）')
+                : h('div', { style: C.muted }, '手动添加 · 无榜单来源'),
+              b.source === 'manual' ? h('div', { style: C.muted }, '不在任何榜里 ⇒ 不会自动更新；点「更新本书数据」按书页取一次') : null,
+              (b.seenBoards || []).length > 1
+                ? h('div', { style: C.muted }, '也上过：' + (b.seenBoards || []).map(function (s) { return s.boardId }).join('、'))
+                : null,
+              h('div', { style: C.muted }, '备注与夹只由你改：任何自动更新都不会覆盖。')) : null)
         }),
         undo ? h('div', { style: { ...C.row, padding: '5px 7px', border: '1px solid rgba(217,164,65,.5)', borderRadius: '6px', background: 'rgba(217,164,65,.10)' } },
           h('span', null, '已删除「' + undo.label + '」'),
           h('button', { style: C.btnOn, onClick: doUndo }, '撤销'),
           h('span', { style: C.muted }, '（8 秒内；之后可在回收站找回）')) : null,
-        h('div', { style: { ...C.row, marginTop: '8px' } },
-          h('button', { style: C.btn, onClick: function () { setShowTrash(!showTrash); store.trashList().then(function (t) { setTrash(t); bump() }) } }, (showTrash ? '收起' : '展开') + '最近删除（' + trash.length + '）'),
-          trash.length && showTrash ? h('button', { style: C.btn, onClick: function () { jpost('/bookmark', { action: 'purge', bookKeys: trash.map(function (b) { return b.bookKey }) }).then(function () { load() }) } }, '清空回收站') : null),
-        showTrash ? (trash.length === 0 ? h('div', { style: C.muted }, '回收站是空的') : trash.map(function (b) {
-          return h('div', { key: b.bookKey, style: { ...C.card, opacity: 0.75 } },
-            h('div', { style: C.row }, h('span', { style: C.cardTitle }, b.label), h('span', { style: C.muted }, '删除于 ' + String(b.deletedAt).slice(0, 10) + '　还可找回 ' + b.daysLeft + ' 天'),
-              h('button', { style: C.btn, onClick: function () { store.act({ action: 'restore', bookKey: b.bookKey }).then(function () { load() }).catch(function () {}) } }, '恢复')))
-        })) : null,
-        h('div', { style: { ...C.row, marginTop: '10px' } },
-          h('span', { style: C.muted }, '添加作品'),
-          h('input', { style: { ...C.input, flex: 1, minWidth: '150px' }, placeholder: '贴书页 URL 或 qidian:<书号>（纯书号请选站）', value: manual, onChange: function (e) { setManual(e.target.value) } }),
-          h('select', { style: C.input, value: manualSite, onChange: function (e) { setManualSite(e.target.value) } },
-            h('option', { value: '' }, '（URL 可自动识别）'),
-            h('option', { value: 'qidian' }, '起点'), h('option', { value: 'qidiantu' }, '起点图'), h('option', { value: 'ciweimao' }, '刺猬猫'), h('option', { value: 'sfacg' }, '菠萝包'), h('option', { value: 'fanqie' }, '番茄')),
-          h('button', { style: C.btn, disabled: !manual.trim(), onClick: function () {
-            jpost('/bookmark/add-manual', { input: manual.trim(), site: manualSite || undefined }).then(function (r) {
-              store.msg = (r && r.note) || '已添加'
-              setManual('')
-              return store.refreshList()
-            }).then(function () { bump() }).catch(function (e) { store.msg = '添加失败：' + e; bump() })
-          } }, '加入书签')),
-        h('div', { style: { ...C.row, marginTop: '10px', flexWrap: 'wrap' } },
-          h('span', { style: C.muted }, '导出'),
-          h('span', { style: C.muted }, sel.length ? '已选 ' + sel.length + ' 条' : '未选（= 全部 ' + list.length + ' 条）'),
-          h('button', { style: C.btn, onClick: function () { setSel(list.map(function (b) { return b.bookKey })) } }, '全选当前列表'),
-          h('button', { style: C.btn, disabled: !sel.length, onClick: function () { setSel([]) } }, '清空选择'),
-          h('button', {
-            style: C.btn,
-            title: '只勾选当前「站」筛选下的作品',
-            onClick: function () { setSel(list.filter(function (b) { return !f.site || b.site === f.site }).map(function (b) { return b.bookKey })) },
-          }, '按站全选'),
-          h('button', {
-            style: C.btn,
-            title: '只勾选当前「夹」筛选下的作品',
-            onClick: function () { setSel(list.filter(function (b) { return !f.folder || (b.folders || []).indexOf(f.folder) >= 0 }).map(function (b) { return b.bookKey })) },
-          }, '按夹全选'),
-          h('select', { style: C.input, value: fmt, onChange: function (e) { setFmt(e.target.value) } },
-            h('option', { value: 'csv' }, 'CSV'), h('option', { value: 'json' }, 'JSON'), h('option', { value: 'md' }, 'Markdown')),
-          h('input', { style: { ...C.input, flex: 1, minWidth: '180px' }, placeholder: '导出目录（默认 我的文档\\rank-scan-export）', value: dest, onChange: function (e) { setDest(e.target.value) } }),
-          h('button', {
-            style: C.btnOn,
-            onClick: function () {
-              setExMsg('导出中…')
-              jpost('/bookmark/export-file', { format: fmt, bookKeys: sel, dest: dest.trim() || undefined })
-                .then(function (r) { setExMsg((r && r.note) || '已导出'); return store.refreshList() })
-                .then(function () { bump() })
-                .catch(function (e) { setExMsg('导出失败：' + e); bump() })
-            },
-          }, '导出到目录'),
-          h('button', {
-            style: C.btn,
-            title: '在资源管理器 / Finder 里打开导出目录',
-            onClick: function () {
-              jpost('/bookmark/open-folder', { path: dest.trim() || undefined })
-                .then(function (r) { setExMsg('已打开 ' + ((r && r.opened) || '')) })
-                .catch(function (e) { setExMsg('打不开：' + e) })
-            },
-          }, '打开文件夹'),
-          exMsg ? h('span', { style: C.muted, flexBasis: '100%' }, String(exMsg).slice(0, 120)) : null,
-          store.msg ? h('span', { style: C.muted }, store.msg) : null),
-        h('div', { style: C.muted, marginTop: '6px' }, '书签是你的数据：独立于快照与保留策略；备注与夹不会被自动更新覆盖。'))
+        showTrash ? h('div', { style: { marginTop: '8px', padding: '6px 8px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '8px' } },
+          h('div', { style: C.row },
+            h('span', { style: { fontWeight: 600 } }, '回收站（' + trash.length + '）'),
+            trash.length
+              ? (confirmPurge
+                  ? h('span', { style: C.row },
+                      h('span', { style: { color: '#d9534f' } }, '清空后不可恢复，确定？'),
+                      h('button', { style: { ...C.btn, color: '#d9534f' }, onClick: function () { jpost('/bookmark', { action: 'purge', bookKeys: trash.map(function (b) { return b.bookKey }) }).then(function () { setConfirmPurge(false); load() }) } }, '确认清空'),
+                      h('button', { style: C.btn, onClick: function () { setConfirmPurge(false) } }, '取消'))
+                  : h('button', { style: C.btn, onClick: function () { setConfirmPurge(true) } }, '清空回收站'))
+              : null),
+          trash.length === 0 ? h('div', { style: C.muted }, '回收站是空的') : trash.map(function (b) {
+            return h('div', { key: 'tr' + b.bookKey, style: { ...C.card, opacity: 0.8 } },
+              h('div', { style: C.row },
+                h('span', { style: C.cardTitle }, b.label),
+                h('span', { style: C.muted }, '删除于 ' + String(b.deletedAt).slice(0, 10) + '　还可找回 ' + b.daysLeft + ' 天'),
+                h('button', { style: C.btn, onClick: function () { store.act({ action: 'restore', bookKey: b.bookKey }).then(function () { load() }).catch(function () {}) } }, '恢复')))
+          })) : null,
+        exMsg && !exportOpen ? h('div', { style: C.muted }, String(exMsg).slice(0, 140)) : null,
+        store.msg ? h('div', { style: C.muted }, store.msg) : null,
+        h('div', { style: { ...C.muted, marginTop: '6px' } }, '书签是你的数据：独立于快照与保留策略；备注与夹不会被自动更新覆盖。'))
     }
+    /**
+     * 榜单：首屏先给作品 —— 工具栏只留 站/榜/日期/排序 + 「更多」。
+     *   · 抓取条数、扫描本榜、补全、历史直查 都收进「更多」（低频、会联网）
+     *   · 历史直查**按榜的能力**出现：只有能核对内容日期的榜才有入口
+     *   · 状态带一行写清：数据日期 · 源数据日期 · 对比基准（隔几天）· 跨期不可比
+     * ★ 2026-10-22（B）：同一天重扫会静默重读，且不重置站/榜/日期/排序/详情。
+     */
     function BoardTab(props) {
       const ov = props.ov
+      const narrow = !!props.narrow
       const sites = (ov && ov.sites) || []
-      // 收起面板会卸载 BoardTab ⇒ 站/榜选择也要持久化，否则再打开跳回第一个站/第一个榜
+      // 收起面板会卸载 BoardTab ⇒ 站/榜选择要持久化；日期/排序按榜各记各的
       const [stSite, setStSite] = React.useState(function () { return sel.get().site })
       const [bt, setBt] = React.useState(function () { return sel.get().board })
-      const [sd, setSd] = React.useState('')
-      const [ss, setSs] = React.useState('')
+      const [sd, setSd] = React.useState(function () { return sel.pref(sel.get().board, 'date') })
+      const [ss, setSs] = React.useState(function () { return sel.pref(sel.get().board, 'sort') })
       const [data, setData] = React.useState(null)
+      const [err, setErr] = React.useState(null)
       const [pick, setPick] = React.useState(null)
       const [depth, setDepth] = React.useState('')
       const [info, setInfo] = React.useState({ max: 100, can: true, hint: '' })
-      const [enrichBusy, setEnrichBusy] = React.useState(false)
-      const [enrichNote, setEnrichNote] = React.useState(null)
+      const [busy, setBusy] = React.useState(false)
+      const [note, setNote] = React.useState(null)
       const [qDate, setQDate] = React.useState('')
+      // 读取序号：只有最后一次发起的请求允许写界面（防旧响应覆盖）
+      const loadSeqRef = React.useRef(0)
+      const catSeqRef = React.useRef(0)
       const curSite = stSite || (sites[0] && sites[0].site)
       const curBoards = ((sites.filter(function (s) { return s.site === curSite })[0] || {}).boards) || []
       const curBoard = bt || (curBoards[0] && curBoards[0].boardId)
-      // 派生榜（本地按区间算）：没有快照日期 ⇒ 隐藏「日期」下拉；总是显示最新一期
       const isDerived = String(curBoard || '').indexOf('fanqie.derived.') === 0
-      const curMeta = curBoards.filter(function (b) { return b.boardId === curBoard })[0] || {}
-      const mainLabel = curMeta.mainLabel || '名次'
-      // 排序项由宿主按「这个榜真有什么」给出；再按当前列集合过滤一次（没有的列不给排）
       const colKeys = ((data && data.columns) || []).map(function (c) { return c.key })
       const sortOpts = ((data && data.sortOptions) || [{ value: '', label: '默认' }, { value: 'rank', label: '名次' }])
         .filter(function (o) { return !o.value || o.value === 'rank' || colKeys.indexOf(o.value) >= 0 })
-      // ★ 日期下拉只用**这个榜自己**有快照的日期（/board 回的 data.dates）。
-      //   之前用全局 ov.dates ⇒ 给某个榜点一次历史查询，那个日期就出现在所有站点的下拉里（使用方 2026-10-15 反馈）。
+      // 日期下拉只用**这个榜自己**有快照的日期（/board 回的 data.dates）
       const allDates = (data && data.dates && data.dates.length ? data.dates : [])
       const dateOpts = [{ value: '', label: '最新' }].concat(allDates.slice().reverse().map(function (d) { return { value: d, label: d } }))
       React.useEffect(function () {
+        const my = ++catSeqRef.current
         jget('/catalog').then(function (c) {
+          if (my !== catSeqRef.current) return   // 已经换榜了：这份回答作废
           const v = (c.depths || {})[curBoard]
           const b = (c.boards || []).filter(function (x) { return x.boardId === curBoard })[0] || {}
-          // 没配过就显示该站默认（番茄/刺猬猫 30），而不是空着
           setDepth(v != null ? String(v) : (b.depth != null ? String(b.depth) : ''))
           setInfo({ depth: v != null ? v : null, max: b.maxDepth || 100, can: b.canDepth !== false, hint: b.depthHint || '' })
         }).catch(function () {})
       }, [curBoard])
-      const reloadBoard = React.useCallback(function () {
+      /**
+       * silent=true：同日重扫后的静默重读（保留详情卡与选择）。
+       * ★ 2026-10-22（并发）：每次读都领一个序号，回来时序号已经不是最新的就**丢掉** ——
+       *   否则快切榜/快改日期时，先发的旧请求后到，会把新榜的数据覆盖掉。
+       */
+      const reloadBoard = React.useCallback(function (silent) {
         if (!curBoard) return
+        const my = ++loadSeqRef.current
         const q = '/board?boardId=' + encodeURIComponent(curBoard) + (sd ? '&date=' + sd : '') + (ss ? '&sort=' + ss : '')
-        jget(q).then(function (d) { setData(d); setPick(null) }).catch(function (e) { setData({ note: String(e), rows: [], columns: [] }) })
+        jget(q).then(function (d) {
+          if (my !== loadSeqRef.current) return
+          setData(d); setErr(null); if (!silent) setPick(null)
+        })
+          // 读失败**保留现有列表**，只在上方报错（不能清空界面伪装成「没有条目」）
+          .catch(function (e) { if (my !== loadSeqRef.current) return; setErr(String(e)) })
       }, [curBoard, sd, ss])
-      React.useEffect(function () { reloadBoard() }, [reloadBoard])
-      /** 局部下拉构造器（原名 sel，与模块级选择存储 store 区分开） */
+      React.useEffect(function () { reloadBoard(false) }, [reloadBoard])
+      // 同日重扫：修订号变了就静默重读一次（不动站/榜/日期/排序/详情）
+      const revRef = React.useRef(null)
+      React.useEffect(function () {
+        const rev = props.rev || ''
+        if (revRef.current === null) { revRef.current = rev; return }
+        if (rev !== revRef.current) { revRef.current = rev; reloadBoard(true) }
+      }, [props.rev, reloadBoard])
       const selXS = function (label, value, options, onChange) {
         return h('label', { style: C.row }, h('span', { style: C.muted }, label),
           h('select', { value: value, onChange: function (e) { onChange(e.target.value) }, style: C.btn },
             options.map(function (o) { return h('option', { key: o.value, value: o.value }, o.label) })))
       }
-      /** 保存条数后**立即重抓本榜**（否则要等下一次扫描，用户会以为没生效） */
-      const saveDepth = function () {
+      const pickBoard = function (v) { sel.set({ board: v }); setBt(v); setSd(sel.pref(v, 'date')); setSs(sel.pref(v, 'sort')); setPick(null) }
+      const pickSite = function (v) { sel.set({ site: v, board: null }); setStSite(v); setBt(null); setSd(''); setSs(''); setPick(null) }
+      const pickDate = function (v) { setSd(v); sel.setPref(curBoard, 'date', v) }
+      const pickSort = function (v) { setSs(v); sel.setPref(curBoard, 'sort', v) }
+      /** 只保存条数（**不采集**）；另有一个明确的「保存并扫描本榜」 */
+      const saveDepth = function (alsoScan) {
         const n = Math.max(1, Math.min(info.max || 100, Number(depth) || 10))
-        setEnrichBusy(true)
-        setEnrichNote('已设为 ' + n + ' 条，正在重抓本榜…')
+        setBusy(true)
+        setNote('正在保存每榜取数 ' + n + ' 条…')
         jpost('/depth', { boardId: curBoard, depth: n })
-          .then(function () { return jpost('/scan', { boards: curBoard }) })
-          .then(function (r) { setEnrichNote('已保存并重抓：' + ((r && r.boards) || []).map(function (x) { return x.boardId + ' ' + x.rows + ' 条' }).join('')) ; return reloadBoard() })
-          .catch(function (e) { setEnrichNote(String(e)) })
-          .then(function () { setEnrichBusy(false) })
+          .then(function (r) {
+            setNote((r && r.note) || ('已保存：每榜取 ' + n + ' 条'))
+            if (!alsoScan) return null
+            setNote('已保存 ' + n + ' 条，正在扫描本榜…')
+            return jpost('/scan', { boards: curBoard }).then(function (rr) {
+              const got = ((rr && rr.boards) || []).map(function (x) { return x.boardId + ' ' + x.rows + ' 条' }).join('')
+              setNote('已保存并扫描：' + (got || '完成'))
+              return reloadBoard(true)
+            }).catch(function (e2) {
+              // ★ 保存成功、采集失败要**分开说**，否则用户会以为设置没存住、反复点
+              setNote('条数已保存，但扫描失败：' + e2 + '（可稍后重试扫描）')
+            })
+          })
+          .catch(function (e) { setNote('保存失败：' + e) })
+          .then(function () { setBusy(false) })
+      }
+      const scanBoard = function () {
+        setBusy(true)
+        setNote('正在扫描本榜…')
+        jpost('/scan', { boards: curBoard })
+          .then(function (rr) {
+            const b0 = ((rr && rr.boards) || [])[0]
+            setNote(b0 ? '已扫描：' + b0.boardId + ' ' + b0.rows + ' 条' : '已扫描')
+            return reloadBoard(true)
+          })
+          .catch(function (e) { setNote('扫描失败：' + e) })
+          .then(function () { setBusy(false) })
       }
       const doEnrich = function () {
-        setEnrichBusy(true)
-        setEnrichNote('补全中（逐本 1 请求 + ' + fmtIntervalText() + '，可能要几十秒）…')
+        setBusy(true)
+        setNote('补全中（逐本请求 + ' + fmtIntervalText() + '，可能要几十秒）…')
         jpost('/enrich?boardId=' + encodeURIComponent(curBoard)).then(function (r) {
-          setEnrichNote(r && r.note ? r.note : '补全完成')
-          return reloadBoard()
-        }).catch(function (e) { setEnrichNote(String(e)) }).then(function () { setEnrichBusy(false) })
+          setNote(r && r.note ? r.note : '补全完成')
+          return reloadBoard(true)
+        }).catch(function (e) { setNote('补全失败：' + e) }).then(function () { setBusy(false) })
       }
-      /** 起点图支持按日期直查：面板不必等本地有那天的快照 */
+      /**
+       * 按日期回看：只在**支持核对的榜**出现（能力驱动）。
+       * 首订榜的站点口径是 n-1（上架 24 小时后才结算），所以「上架日」与「数据日期」不是一回事，
+       * 这里把两者分开写，不让用户以为选的是同一个日子。
+       */
       const queryDay = function (save) {
-        if (!qDate) { setEnrichNote('先选一个日期'); return }
-        setEnrichBusy(true)
-        setEnrichNote('直查 ' + qDate + ' …')
-        jpost('/day', { boardId: curBoard, date: qDate, save: !!save }).then(function (r) {
-          // ★ 2026-10-17（数据正确性）：宿主会拒绝「站点其实给不出那一天」的直查/落盘（409）。
-          //   这时**不能**再切日期下拉，否则看起来像「补成功了」，实际那天什么都没有。
+        if (!qDate) { setNote('先选上架日'); return }
+        // ★ 上架日 X ⇒ 数据日期 X+1（首订按 n-1 锚；适配器 contentDateFor(数据日) = 数据日-1）
+        const dDate = addDaysStr(qDate, 1)
+        if (!dDate) { setNote('日期格式不对：应为 YYYY-MM-DD'); return }
+        const my = ++loadSeqRef.current
+        setBusy(true)
+        setNote((save ? '抓取' : '查看') + '上架日 ' + qDate + '（数据日期 ' + dDate + '）…')
+        jpost('/day', { boardId: curBoard, date: dDate, save: !!save }).then(function (r) {
+          if (my !== loadSeqRef.current) return null
           if (r && (r.ok === false || r.code)) {
-            setEnrichNote('⚠ 已拒绝：' + (r.error || '站点给不出这一天可核对的数据'))
+            setNote('已拒绝：' + (r.error || '站点给不出这一天可核对的数据'))
             return null
           }
-          const qDateShown = (r && r.date) || qDate
-          setEnrichNote(r && r.note ? r.note : (save ? '已抓取并存入本地快照' : '已直查（未落盘）'))
-          if (save) {
-            // ★ 存本地后要把「日期」下拉切到那一天（使用方 2026-10-15 反馈：点了却跳回最新）
-            //   只设 sd 不手动 reload：sd 变化会由 reloadBoard 的 useEffect 触发，且带上 date 参数。
-            setSd(qDateShown)
-            return null
-          }
-          // ★ 未落盘直查（2026-10-15 使用方反馈「点了还是显示原本的日期」）：
-          //   表格**确实**换成了目标日期的数据，但界面上没有任何地方标出「你现在看的是哪天」，
-          //   而且「排序」还沿用着上一个视图的选择 ⇒ 看起来像没反应。
-          //   现在：① 切到直查视图时把排序复位成「默认（名次）」；② 用醒目的 _queryDate 标出当前查看日期。
+          const shown = (r && r.date) || dDate
+          setNote(r && r.note ? r.note : (save ? '已抓取：上架日 ' + qDate + ' 存为数据日期 ' + dDate + ' 的快照' : '已查看（未落盘）'))
+          if (save) { setSd(shown); sel.setPref(curBoard, 'date', shown); return null }
           setSs('')
           setData(function (prev) {
             return {
               ...(prev || {}),
               boardId: curBoard,
               rows: (r.rowsAll || []).map(function (x) { return { ...x, delta: null, days: null } }),
-              dataDate: qDateShown,
-              // 让「日期」下拉也能显示这一天（直查的日期不在本地 dates 里，临时补进选项）
+              dataDate: shown,
               dates: (function () {
                 const ds = ((prev && prev.dates) || []).slice()
-                if (ds.indexOf(qDateShown) < 0) ds.push(qDateShown)
+                if (ds.indexOf(shown) < 0) ds.push(shown)
                 return ds
               })(),
-              note: '直查站点 ' + qDateShown + (r.contentDate && r.contentDate !== qDateShown ? '（站点内容日期 ' + r.contentDate + '）' : ''),
-              _queryDate: qDateShown,
+              note: '直查站点 ' + shown + (r.contentDate && r.contentDate !== shown ? '（站点内容日期 ' + r.contentDate + '）' : ''),
+              _queryDate: shown,
             }
           })
-        }).catch(function (e) { setEnrichNote(String(e)) }).then(function () { setEnrichBusy(false) })
+        }).catch(function (e) { setNote('直查失败：' + e) }).then(function () { setBusy(false) })
       }
-      /** 番茄全部已抓分类：逐榜补，**显示进度**（每本 1 请求 + 当前请求间隔，榜多就慢） */
-      const doEnrichFanqie = function () {
-        setEnrichBusy(true)
-        jget('/catalog').then(function (cat) {
-          const ids = (cat.captures || []).filter(function (x) { return x.indexOf('fanqie.m.') === 0 })
-          if (!ids.length) { setEnrichNote('抓取集里没有番茄分类榜'); setEnrichBusy(false); return null }
-          let done = 0
-          let filled = 0
-          let seq = Promise.resolve()
-          ids.forEach(function (id) {
-            seq = seq.then(function () {
-              setEnrichNote('番茄补全中 ' + done + '/' + ids.length + ' 个榜（' + id + '）…')
-              return jpost('/enrich?boardId=' + encodeURIComponent(id)).then(function (r) {
-                done += 1
-                filled += (r && r.filled) || 0
-                if (r && r.learned) setEnrichNote('番茄 ' + done + '/' + ids.length + '：字体映射已学到 ' + r.learned + ' 字')
-              }).catch(function () { done += 1 })
-            })
-          })
-          return seq.then(function () {
-            setEnrichNote('番茄补全完成：' + ids.length + ' 个榜，共补 ' + filled + ' 条')
-            return reloadBoard()
-          })
-        }).catch(function (e) { setEnrichNote(String(e)) }).then(function () { setEnrichBusy(false) })
+      // Esc：先关详情卡（面板本身由 Panel 那层关）
+      useEscLayer(pick ? function () { setPick(null); return true } : null)
+      /** 状态带：一行说清「你在看哪份数据、跟哪天比」 */
+      const band = (function () {
+        if (!data) return null
+        const bits = []
+        const src = (data.rows && data.rows[0] && data.rows[0].extra && data.rows[0].extra.showDate) || null
+        bits.push('数据日期 ' + (data.dataDate || '—'))
+        if (src && src !== data.dataDate) bits.push('源数据 ' + src)
+        if (data.baselineDate) {
+          const g = data.dataDate ? dayGap(data.baselineDate, data.dataDate) : null
+          bits.push('对比 ' + data.baselineDate + (g && g > 1 ? '（隔 ' + g + ' 天，变化是累计值）' : ''))
+        } else bits.push('无可比基准（不报 0）')
+        const crossed = !!(data.rows && data.rows[0] && data.rows[0].extra && data.rows[0].extra.periodChanged)
+        if (crossed) bits.push('新期：变化不可比')
+        return bits.join(' · ')
+      })()
+      const enrichMissing = data && data.enrich && data.enrich.missing > 0 ? data.enrich.missing : 0
+      const cols = narrowColumns(data && data.columns, narrow)
+      const viewDate = (data && (data._queryDate || sd)) || ''
+      const menuItems = [
+        { label: '扫描本榜（联网）', disabled: busy, onClick: scanBoard, title: '只抓当前这一榜，不动其它榜' },
+        { sep: true },
+        {
+          rows: h('div', null,
+            h('div', { style: { ...C.muted, marginBottom: '3px' } }, '每榜取多少条'),
+            h('div', { style: C.row },
+              h('input', {
+                type: 'number', min: 1, max: info.max, value: depth, placeholder: String(info.max), disabled: !info.can,
+                title: info.hint, onChange: function (e) { setDepth(e.target.value) },
+                style: { width: '58px', fontSize: '12px', padding: '2px 4px' },
+              }),
+              h('span', { style: C.muted }, info.can ? '条（上限 ' + info.max + '）' : '条 · ' + info.hint),
+              h('button', { style: C.btn, disabled: !info.can || busy, onClick: function () { saveDepth(false) }, title: '只保存，下次扫描生效' }, '保存'),
+              h('button', { style: C.btn, disabled: !info.can || busy, onClick: function () { saveDepth(true) }, title: '保存后立刻抓一次这一榜（会联网）' }, '保存并扫描本榜'))),
+        },
+        { sep: true },
+        {
+          label: enrichMissing ? '补全缺失字段（' + enrichMissing + ' 条）' : '补全缺失字段（当前没有待补）',
+          disabled: busy || !enrichMissing,
+          onClick: doEnrich,
+          title: '只补当前这一榜还没取到的字段（收藏/字数等），可能走书页缓存',
+        },
+        // 补全没跑完必须可见（别让「有行但字段空」静默）
+        enrichMissing ? { rows: h('div', { style: C.muted }, '补全未完成：还缺 ' + enrichMissing + ' 条（补全没跑完或被中断；点上面重试，或等定时续跑）') } : null,
+      ]
+      if (canDayQuery(curBoard)) {
+        menuItems.push({ sep: true })
+        menuItems.push({
+          rows: h('div', null,
+            h('div', { style: { ...C.muted, marginBottom: '3px' } }, '按上架日回看（仅本榜支持核对）'),
+            h('div', { style: C.row },
+              h('input', { type: 'date', value: qDate, onChange: function (e) { setQDate(e.target.value) }, style: { fontSize: '12px', padding: '2px 4px' } }),
+              h('button', { style: C.btn, disabled: busy || !qDate, onClick: function () { queryDay(false) } }, '查看'),
+              h('button', { style: C.btn, disabled: busy || !qDate, onClick: function () { queryDay(true) }, title: '抓取该上架日并存为本地快照（已有快照不覆盖）' }, '存入本地')),
+            h('div', { style: { ...C.muted, marginTop: '2px' } }, '首订按 n-1 锚：选上架日 X ⇒ 请求数据日期 X+1（页面内容日期就是 X）；保存后快照记在 X+1 名下。站点给的日期对不上会被拒绝，不写任何文件。')),
+        })
       }
       return h('div', null,
         h('div', { style: C.row },
-          selXS('站', curSite || '', sites.map(function (s) { return { value: s.site, label: s.siteName } }), function (v) { sel.set({ site: v, board: null }); setStSite(v); setBt(null) }),
-          selXS('榜', curBoard || '', curBoards.map(function (b) { return { value: b.boardId, label: b.name } }), function (v) { sel.set({ board: v }); setBt(v) }),
-          // 派生榜没有快照日期（总是算最新一期）⇒ 不显示日期下拉，避免选了半天没反应
-          isDerived ? null : selXS('日期', sd, dateOpts, setSd),
-          selXS('排序', ss, sortOpts, setSs)),
-        h('div', { style: C.row },
-          h('span', { style: C.muted }, '每榜取'),
-          h('input', { type: 'number', min: 1, max: info.max, value: depth, placeholder: String(info.max), disabled: !info.can, title: info.hint, onChange: function (e) { setDepth(e.target.value) }, style: { width: '56px', fontSize: '12px', padding: '2px 4px' } }),
-          h('span', { style: C.muted }, info.can ? '条（上限 ' + info.max + '）' : '条 · ' + info.hint),
-          h('button', { style: C.btn, disabled: !info.can || enrichBusy, onClick: saveDepth, title: '改这一榜的取数条数，并立刻重抓**当前打开的这一榜**（换榜重抓不影响别的榜）' }, '保存并重抓本榜'),
-          h('button', { style: enrichBusy ? C.btnOn : C.btn, disabled: enrichBusy, onClick: doEnrich, title: '只补**当前打开的这一榜**的行内字段：起点/起点图三江=精确字数(+收藏)（走书页缓存）；番茄=干净书名/作者；刺猬猫/菠萝包=收藏+字数（逐本 1 请求、' + fmtIntervalText() + '）' }, enrichBusy ? '补全中…' : '补全本榜'),
-          // 只对番茄显示：这按钮是「把该站所有已抓分类一次补完」，在别的站出现是干扰（使用方 2026-10-15）
-          curSite === 'fanqie'
-            ? h('button', { style: enrichBusy ? C.btnOn : C.btn, disabled: enrichBusy, onClick: doEnrichFanqie, title: '把**抓取集里所有番茄分类榜**一次补齐（逐榜、逐本 1 请求 + ' + fmtIntervalText() + '，会很慢）' }, enrichBusy ? '补全中…' : '补齐番茄全部分类')
-            : null,
-          /**
-           * ★ 2026-10-16（补全持久化）：补全没跑完必须**可见**。
-           *   裸行（有行、收藏/字数为空）以前在面板上完全看不出来，只能靠人肉发现「怎么没显示」。
-           *   pending/exhausted 都是「还缺」，点右边「补全本榜」或等定时续跑即可。
-           */
-          (function () {
-            const en = data && data.enrich
-            if (!en || !(en.missing > 0)) return null
-            const label = en.reason === 'exhausted'
-              ? '补全未完成：当日已试 ' + en.tried + ' 次，仍缺 ' + en.missing + ' 条'
-              : en.pending ? '补全未完成：还缺 ' + en.missing + ' 条（定时续跑中，也可点「补全本榜」）'
-              : '本榜有 ' + en.missing + ' 条缺字段（补全没跑完／被打断）'
-            return h('span', {
-              style: { padding: '2px 6px', borderRadius: '4px', fontSize: '12px', background: 'rgba(255,152,0,0.15)', border: '1px solid rgba(255,152,0,0.5)' },
-              title: '裸行（该站榜页给不出这些字段，要进书页取）',
-            }, '⚠ ' + label)
-          })(),
-          data && data.note && String(data.boardId).indexOf('qidian.') !== 0 ? h('span', { style: C.muted }, dash(data.note)) : null),
-        curSite === 'qidiantu'
-          ? h('div', { style: C.row },
-              h('span', { style: C.muted }, '查历史日期（站点可直查）'),
-              h('input', { type: 'date', value: qDate, onChange: function (e) { setQDate(e.target.value) }, style: { fontSize: '12px', padding: '2px 4px' } }),
-              h('button', { style: C.btn, disabled: enrichBusy || !qDate, onClick: function () { queryDay(false) } }, '直接查看'),
-              h('button', { style: C.btn, disabled: enrichBusy || !qDate, onClick: function () { queryDay(true) }, title: '抓取该日期并存为本地快照（当天已有的快照不会被覆盖）' }, '抓取并存入本地'),
-              h('span', { style: { color: '#c62828', fontSize: '12px' }, title: '站点对历史地址往往仍返回当下榜面；宿主会核对页面自报日期，对不上就拒绝，不写任何文件' }, '仅首订榜可按日回看，其余会被拒绝'))
-          : null,
-        // ★ 直查视图的日期横幅（使用方 2026-10-15）：直接查看历史日期时，这里明确写出「你在看哪天」
-        data && data._queryDate
-          ? h('div', { style: { ...C.row, alignItems: 'center', gap: '8px', padding: '4px 6px', background: 'rgba(255,193,7,0.12)', border: '1px solid rgba(255,193,7,0.45)', borderRadius: '4px' } },
-              h('span', { style: { fontWeight: 600 } }, '📅 正在查看直查日期 ' + data._queryDate),
-              h('span', { style: C.muted }, '（未落盘；按日期直查站点，所以没有名次变化/在榜天数）'),
-              h('button', { style: C.btn, onClick: function () { setSs(''); setData(null); reloadBoard() } }, '回到最新'))
-          : null,
-        enrichNote ? h('div', { style: C.muted }, enrichNote) : null,
+          selXS('站', curSite || '', sites.map(function (s) { return { value: s.site, label: s.siteName } }), pickSite),
+          selXS('榜', curBoard || '', curBoards.map(function (b) { return { value: b.boardId, label: b.name } }), pickBoard),
+          isDerived ? null : selXS('日期', sd, dateOpts, pickDate),
+          selXS('排序', ss, sortOpts, pickSort),
+          h(PopMenu, { label: '更多', items: menuItems, width: 260, title: '采集与详情（低频操作）' })),
+        band ? h('div', { style: { ...C.muted, marginTop: '2px' } }, band) : null,
+        viewDate ? h('div', { style: { ...C.row, alignItems: 'center', gap: '6px', padding: '4px 6px', marginTop: '2px', background: 'rgba(255,193,7,0.12)', border: '1px solid rgba(255,193,7,0.45)', borderRadius: '4px' } },
+          h('span', { style: { fontWeight: 600 } }, '正在查看历史：' + viewDate),
+          h('span', { style: C.muted }, data && data._queryDate ? '（直查站点，未落盘）' : '（本地快照）'),
+          h('button', { style: C.btn, onClick: function () { setSs(''); setData(null); pickDate(''); } }, '回到最新')) : null,
         data && data.fallbackFrom ? h('div', { style: C.muted }, '当天（' + data.requestedDate + '）没有快照 ⇒ 回落到 ' + data.fallbackFrom) : null,
-        data && data.baselineDate ? h('div', { style: { ...C.muted, ...(() => {
-          const g = data.dataDate ? dayGap(data.baselineDate, data.dataDate) : null
-          return g && g > 1 ? { color: '#d9a441' } : {}
-        })() } },
-          '基期 ' + data.baselineDate + (function () {
-            const g = data.dataDate ? dayGap(data.baselineDate, data.dataDate) : null
-            return g && g > 1 ? '（隔 ' + g + ' 天：变化列是这 ' + g + ' 天的累计，不是单日）' : ''
-          })() + ' · 数据日期 ' + dash(data.dataDate)) : null,
-        /**
-         * ★ 2026-10-16（起点图首订锚 n-1）：行的 showDate 与快照数据日期不一致时，明确标出源数据日期。
-         *   站点口径：上架 24 小时后才结算首订 ⇒ 抓到的榜永远是 n-1 那天的页面。
-         */
-        data && data.rows && (function () {
-          const src = (data.rows[0] && data.rows[0].extra && data.rows[0].extra.showDate) || null
-          if (!src || src === data.dataDate) return null
-          return h('div', { style: { ...C.row, alignItems: 'center', gap: '6px', padding: '4px 6px', background: 'rgba(33,150,243,0.10)', border: '1px solid rgba(33,150,243,0.40)', borderRadius: '4px' } },
-            h('span', { style: { fontWeight: 600 } }, '源数据 ' + src),
-            h('span', { style: C.muted }, '（首订榜按 n-1 锚点抓取：上架 24 小时后才结算首订；快照数据日期 ' + dash(data.dataDate) + '）'))
-        })(),
-
         data && data.source ? h('div', { style: C.muted }, '来源：' + data.source) : null,
+        err ? h('div', { style: { ...C.row, color: '#d9534f' } },
+          h('span', null, '⚠ 读取失败：' + String(err).slice(0, 120)),
+          h('button', { style: C.btn, onClick: function () { reloadBoard(false) } }, '重试')) : null,
+        note ? h('div', { style: C.muted }, note) : null,
         data && data.rows && data.rows.length
           ? h('table', { style: C.table },
-              h('thead', null, h('tr', null, (data.columns || []).map(function (c) { return h('th', { key: c.key, style: C.th, title: c.note || '' }, c.label) }))),
+              h('thead', null, h('tr', null, cols.map(function (c) { return h('th', { key: c.key, style: C.th, title: c.note || '' }, c.label) }))),
               h('tbody', null, data.rows.map(function (r, i) {
-                return h('tr', { key: r.key || i, style: { cursor: 'pointer' }, onClick: function () { setPick(pick && pick.key === r.key ? null : r) } },
-                  (data.columns || []).map(function (c) {
-                    // 数字列不折行 + 等宽（2026-10-17 P0）：以前「在读变化」「今日增量」会被拆成两行
-                    return h('td', { key: c.key, style: isNumCol(c.key) ? { ...C.td, ...C.num } : C.td }, cell({ ...c, _openLink: props.openLink, _boardId: data.boardId, _dataDate: data.dataDate, _bmKey: bookKeyOf(data.boardId, r.key) }, r))
-                  }))
+                return h('tr', {
+                  key: r.key || i,
+                  tabIndex: 0,
+                  style: { cursor: 'pointer' },
+                  onClick: function () { setPick(pick && pick.key === r.key ? null : r) },
+                  onKeyDown: function (e) { if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setPick(pick && pick.key === r.key ? null : r) } },
+                }, cols.map(function (c) {
+                  return h('td', { key: c.key, style: isNumCol(c.key) ? { ...C.td, ...C.num } : C.td }, cell({ ...c, _openLink: props.openLink, _boardId: data.boardId, _dataDate: data.dataDate, _bmKey: bookKeyOf(data.boardId, r.key) }, r))
+                }))
               })))
           : h('div', { style: C.muted }, data ? dash(data.note || '没有条目') : '加载中…'),
         pick ? h('div', { style: C.detail },
@@ -1624,7 +2010,6 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('a', { href: pick.url || '#', target: '_blank', rel: 'noreferrer', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
             h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); try { navigator.clipboard.writeText(pick.url || '') } catch (err) {} } }, '复制链接'),
             h('button', { style: C.btn, onClick: function () { setPick(null) } }, '关闭')),
-          // 原始数据来源页跳转（起点图首订 → 起点图 /info；刺猬猫首订（约）→ 第三方源）
           (pick.extra || {}).qidiantuUrl || (pick.extra || {}).sourceUrl
             ? h('div', { style: C.row },
                 ((pick.extra || {}).qidiantuUrl
@@ -1635,7 +2020,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                   : null),
                 h('span', { style: C.muted }, '（数据口径以来源页为准）'))
             : null) : null,
-        h('div', { style: C.muted, marginTop: '6px' }, '列随榜变化：该站没有的字段整列不出现；有字段但这条没抓到显示「—」。'))
+        h('div', { style: { ...C.muted, marginTop: '6px' } }, '列随榜变化：该站没有的字段整列不出现；有字段但这条没抓到显示「—」。窄面板下作者/分类等次级列会收起，点行看详情。'))
     }
 
     /**
@@ -1732,11 +2117,34 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const [open, setOpen] = panelOpen.use()
       // 收起面板会卸载 Panel ⇒ 用持久化的 tab（否则每次打开都跳回「概览」）
       const [tab, setTab] = React.useState(function () { return sel.get().tab || 'ov' })
-      const switchTab = function (t) { sel.set({ tab: t }); setTab(t) }
+      const LEAVE_LABEL = { bm: '书签备注', settings: '设置草稿' }
+      const switchTab = function (t) {
+        if (t === tab) return
+        // 有没保存的东西：先拦一下（草稿不会丢，回来还在）
+        if (dirtyGuard.any()) { setLeaveAsk({ tab: t, keys: dirtyGuard.list() }); return }
+        sel.set({ tab: t }); setTab(t)
+      }
+      const doLeave = function () {
+        const ask = leaveAsk
+        setLeaveAsk(null)
+        if (!ask) return
+        if (ask.tab) { sel.set({ tab: ask.tab }); setTab(ask.tab) } else setOpen(false)
+      }
       const [ov, setOv] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
       const [msg, setMsg] = React.useState(null)
       const [rect, setRect] = useRect()
+      const [maxed, setMaxed] = React.useState(false)
+      const savedRect = React.useRef(null)
+      /** 有未保存草稿时切页/收起先问一句（草稿留在 DRAFTS，回来还在） */
+      const [leaveAsk, setLeaveAsk] = React.useState(null)
+      const [, bumpDirty] = React.useState(0)
+      React.useEffect(function () {
+        if (typeof window === 'undefined' || !window.addEventListener) return undefined
+        const onDirty = function () { bumpDirty(function (x) { return x + 1 }) }
+        window.addEventListener('rank-scan:dirty', onDirty)
+        return function () { window.removeEventListener('rank-scan:dirty', onDirty) }
+      }, [])
       const reload = React.useCallback(function () { jget('/overview').then(setOv).catch(function (e) { setMsg(String(e)) }) }, [])
       React.useEffect(function () { reload() }, [reload])
       // 轻量轮询：每 20s 静默刷新（不改变面板尺寸/位置，避免闪烁）
@@ -1761,23 +2169,56 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           .catch(function (e) { setMsg(String(e)) })
           .then(function () { setBusy(false) })
       }
+      /** 最大化：记住原尺寸，还原时回到原位（不改用户的拖动结果） */
+      const toggleMax = function () {
+        if (!maxed) {
+          savedRect.current = rect
+          const vw = Math.max(360, Number(window.innerWidth) || 1200)
+          const vh = Math.max(280, Number(window.innerHeight) || 800)
+          setMaxed(true)
+          setRect({ x: 8, y: 8, w: Math.max(360, vw - 16), h: Math.max(280, vh - 16) })
+          return
+        }
+        setMaxed(false)
+        if (savedRect.current) setRect(savedRect.current)
+      }
+      // Esc：没有菜单/详情打开时收起面板；编辑中不收起（全局处理器已挡）
+      // Esc 的最后一层：没有菜单/详情打开时收起面板（编辑中由全局处理器挡住）
+      const closePanelLayer = React.useCallback(function () {
+        if (dirtyGuard.any()) { setLeaveAsk({ tab: null, keys: dirtyGuard.list() }); return true }
+        setOpen(false)
+        return true
+      }, [setOpen])
+      useEscLayer(closePanelLayer)
       // 收起后：按钮同样可拖动、同样记住位置（用同一份 rect，不再回右上角）
       if (!open) return null
-      return h('div', { style: { ...C.win, left: rect.x + 'px', top: rect.y + 'px', width: rect.w + 'px', height: rect.h + 'px' } },
-        h(DragBar, { rect: rect, setRect: setRect, onCollapse: function () { setOpen(false) } }),
+      const narrow = rect.w < 720
+      const rev = revOf(ov)
+      return h('div', { style: { ...C.win, left: rect.x + 'px', top: rect.y + 'px', width: rect.w + 'px', height: rect.h + 'px', fontSize: '13px' } },
+        h(DragBar, {
+          rect: rect, setRect: setRect, maxed: maxed, onToggleMax: toggleMax,
+          onCollapse: function () {
+            if (dirtyGuard.any()) { setLeaveAsk({ tab: null, keys: dirtyGuard.list() }); return }
+            setOpen(false)
+          },
+        }),
         h('div', { style: C.body },
           h('div', { style: C.tabs },
             h('button', { style: C.tab(tab === 'ov'), onClick: function () { switchTab('ov') } }, '概览'),
-            h('button', { style: C.tab(tab === 'board'), onClick: function () { switchTab('board') } }, '当前榜单'),
-            // 使用方 2026-10-15 口径：我的书签夹在「当前榜单」与「抓什么」之间（榜 → 书签 → 抓取配置）
-            h('button', { style: C.tab(tab === 'bm'), onClick: function () { switchTab('bm') } }, '我的书签'),
-            h('button', { style: C.tab(tab === 'pick'), onClick: function () { switchTab('pick') } }, '抓什么')),
+            h('button', { style: C.tab(tab === 'board'), onClick: function () { switchTab('board') } }, '榜单'),
+            h('button', { style: C.tab(tab === 'bm'), onClick: function () { switchTab('bm') } }, '书签'),
+            h('button', { style: C.tab(tab === 'pick'), onClick: function () { switchTab('pick') } }, '设置')),
           msg ? h('div', { style: C.muted }, msg) : null,
+          leaveAsk ? h('div', { style: { ...C.row, margin: '4px 0', padding: '5px 7px', borderRadius: '6px', border: '1px solid rgba(217,164,65,.55)', background: 'rgba(217,164,65,.12)' } },
+            h('span', null, '有未保存的改动（' + (leaveAsk.keys || []).map(function (k) { return LEAVE_LABEL[k] || k }).join('、') + '）'),
+            h('span', { style: C.muted }, '草稿会保留，下次进来还在'),
+            h('button', { style: C.btnOn, onClick: doLeave }, '仍然离开'),
+            h('button', { style: C.btn, onClick: function () { setLeaveAsk(null) } }, '继续编辑')) : null,
           h(TabBoundary, { name: tab },
-            tab === 'ov' ? h(Overview, { ov: ov, busy: busy, act: act, reload: reload, post: function (p, b) { return jpost(p, b) } })
-              : tab === 'board' ? h(BoardTab, { ov: ov, openLink: props.openLink })
+            tab === 'ov' ? h(Overview, { ov: ov, busy: busy, act: act, reload: reload, narrow: narrow, rev: rev })
+              : tab === 'board' ? h(BoardTab, { ov: ov, openLink: props.openLink, narrow: narrow, rev: rev })
               : tab === 'bm' ? h(BookmarksTab, { openLink: props.openLink })
-              : h(CaptureTab, { onSaved: reload }))),
+              : h(SettingsTab, { ov: ov, onSaved: reload }))),
         h(ResizeHandle, { rect: rect, setRect: setRect }))
     }
 
@@ -1891,6 +2332,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
     return metric.name + ' ' + metric.value
   }
   // 测试缝：宿主只消费 name/inject/apply，多挂一个纯展示函数对运行无影响
-  return { name: 'dsh-rank-scan', inject: inject, apply: apply, __test: { metricChipText: metricChipText } }
+  // 测试缝：宿主只消费 name/inject/apply；多挂纯函数与组件给离线测试用（对运行无影响）
+  return { name: 'dsh-rank-scan', inject: inject, apply: apply, __test: {
+    metricChipText: metricChipText,
+    helpers: { revOf: revOf, statusText: statusText, scanLabel: scanLabel, canDayQuery: canDayQuery, narrowColumns: narrowColumns, mdOf: mdOf },
+    components: { Overview: Overview, BoardTab: BoardTab, BookmarksTab: BookmarksTab, SettingsTab: SettingsTab, PopMenu: PopMenu, Panel: Panel },
+  } }
   },
 })

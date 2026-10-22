@@ -56,6 +56,14 @@ export interface RunScanDeps {
   betweenBoardsMs?: number
   /** ★ 2026-10-17 失败榜自动重试前的等待（默认 5000ms；测试传 0） */
   retryDelayMs?: number
+  /**
+   * ★ 2026-10-22（工作包 A）：这次扫描是「按站/单榜的部分扫描」。
+   *   只影响记录里的 batch 元信息（scan.json 仍是批次记录）；当天每榜最终状态由
+   *   doScan 合并进 <date>/day-index.json，不会因为后一批把前一批覆盖掉。
+   */
+  partial?: boolean
+  /** 部分扫描的站 id（仅为记录与诊断） */
+  batchSite?: string | null
   signal?: AbortSignal
   onProgress?: (r: ScanRecord) => void
 }
@@ -124,7 +132,7 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
         startedAt: stamp(start),
         finishedAt: null,
         outcome: 'running',
-        progress: { done: 0, total: 0 },
+        progress: { done: 0, total: 0, attempts: 0 },
         heartbeatAt: stamp(start),
         budget,
         attempt: (previous.attempt || 1) + 1,
@@ -136,7 +144,7 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
         finishedAt: null,
         trigger: deps.trigger || 'manual',
         outcome: 'running',
-        progress: { done: 0, total: 0 },
+        progress: { done: 0, total: 0, attempts: 0 },
         heartbeatAt: stamp(start),
         budget,
         boards: [],
@@ -153,12 +161,21 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
       jobs.push({ site, boardId })
     }
   }
+  /**
+   * ★ 工作包 A：total = **要跑的不同榜数**；done = 已完成的不同榜数（自动重试不重复计）。
+   *   旧实现每次尝试都 done+1，而自动重试会再跑一遍失败榜 ⇒ 日志出现 progress=3/2（体检 P2-A）。
+   */
   record.progress.total = jobs.length
+  record.progress.done = 0
+  record.progress.attempts = 0
+  record.batch = { site: deps.batchSite ?? null, partial: !!deps.partial, boards: jobs.map((j) => j.boardId) }
 
   const abort = new AbortController()
   const cancelled = () => abort.signal.aborted || (deps.signal ? deps.signal.aborted : false)
 
   const results = new Map<string, BoardResult>()
+  /** ★ 工作包 A：已计入 progress.done 的榜（同一榜的自动重试不再 +1） */
+  const completedBoards = new Set<string>()
   /** ★ 2026-10-17：本榜本次尝试次数（自动重试用它防「同一个榜反复打」） */
   const boardAttempts = new Map<string, number>()
   let jobIndex = 0
@@ -270,7 +287,11 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
       if (selected && res.status === 'ok' && deps.store.bumpRetryCount) {
         await deps.store.bumpRetryCount(job.boardId, dataDate)
       }
-      record.progress.done += 1
+      record.progress.attempts = (record.progress.attempts || 0) + 1
+      if (!completedBoards.has(job.boardId)) {
+        completedBoards.add(job.boardId)
+        record.progress.done += 1
+      }
       lastProgress = deps.clock.now().getTime()
       record.heartbeatAt = stamp(deps.clock.now())
       if (deps.store.heartbeatLock) await deps.store.heartbeatLock(record.heartbeatAt)

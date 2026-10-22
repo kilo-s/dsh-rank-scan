@@ -27,7 +27,9 @@ import { looksSwapped } from './scan/judges.js'
 import { BookmarkService, BookmarkStore } from './scan/bookmark.js'
 import { displayLabel, extractTags, parseBookInput, urlFor, type SiteId } from './scan/bookmark-parse.js'
 import { decodeIfPua } from './scan/fontmap.js'
-import { computeBoardDiff, daysOnBoard, guardCrossPeriod } from './scan/diff.js'
+import { computeBoardDiff, daysOnBoard, guardCrossPeriod, jitterForBoard } from './scan/diff.js'
+import { boardDayState, mergeDayIndex, mergeSlimBoards, previousTrustedDate, revisionDigest, type DayIndex, type DayUpdate, type SnapshotStat } from './scan/daily.js'
+import { judgeFreshness, periodKeyFromRows } from './scan/freshness.js'
 import { boundedFetch } from './scan/bounded-fetch.js'
 import { minRequestIntervalMs, setMinRequestIntervalMs as applyRequestInterval } from './scan/rate-limit.js'
 /**
@@ -40,7 +42,6 @@ import { minRequestIntervalMs, setMinRequestIntervalMs as applyRequestInterval }
 import { readOwnVersion, probeMarket, fetchNpmLatest, normalizeOperation, buildUpdateView } from './scan/update.js'
 import {
   assertDataDate,
-  buildSlim,
   dirSize,
   exportRange,
   historyFor,
@@ -395,6 +396,9 @@ export function apply(ctx: PluginCtx, config: any): void {
       boards: effectiveBoards,
       enrich: !!(opts && opts.enrich),
       retryNonOk: !!(opts && opts.retry),
+      /** ★ 工作包 A：记录本批的范围（scan.json 是批次记录；当天状态在 day-index） */
+      partial: !!(opts && (opts as any).partial),
+      batchSite: opts && (opts as any).site ? String((opts as any).site) : null,
       betweenBoardsMs: 500,
       budget: { maxRequests: st.maxRequests || 600 },
     })
@@ -404,30 +408,69 @@ export function apply(ctx: PluginCtx, config: any): void {
      */
     const artId: string = opts && (opts as any).partial && (opts as any).site ? rec.dataDate + '-' + String((opts as any).site) : rec.dataDate
     /**
-     * ★ 2026-10-16（使用者：到点还没刷新怎么办）：**新鲜度自检**。
-     * 与上一数据日的同一榜比对：key 与主指标 value 全都一样 ⇒ 判「疑似未刷新」（站点还没换榜）。
-     * 只写进 state + 警告，**不在这里多发请求**；补抓由兜底时刻按 stale 重跑（见 siteRetry）。
+     * ★ 工作包 A（2026-10-22）：**唯一的新鲜度/可信度判定点**，取代原来互不相干的两段
+     * （①「与上一数据日 key=value 全等 ⇒ 疑似未刷新」② 刺猬猫「交集 ≤2 ⇒ 换榜」）。三个动机：
+     *   ① 名次榜 value 恒为 null ⇒ 旧签名退化成书号列表，细节数字（收藏/字数）不参与；
+     *   ② 周期榜同一期本来就不变（刺猬猫首订约 issue 478 连两天）⇒ 误判陈旧并触发**整站**兜底补抓；
+     *   ③ 判定只改内存记录 ⇒ 被拒的快照仍在展示/变化/书签里（体检 P1-C）。
+     * 现在：逐榜向前找**上一次可信成功**（跨过缺日），按榜的更新节奏（日/周/期）判定；
+     * 命中 ⇒ 打 <date>/<boardId>.untrusted.json（raw 保留、只隔离使用）+ 记进 day-index。
      */
+    const samePeriodBoards = new Set<string>()
     try {
-      const prevD = previousDataDate(listDataDates(root), rec.dataDate)
+      const flagged: any = {}
       const stS: any = readState()
       const flags: any = { ...(stS.staleFlag || {}) }
       for (const b of rec.boards) {
         if (b.status !== 'ok') continue
         const nx: any = store.readSnapshot(rec.dataDate, b.boardId)
-        const pd = prevD ? store.readSnapshot(prevD, b.boardId) : null
-        if (!nx || !pd || !(nx.rows || []).length) { delete flags[b.boardId]; continue }
-        const sig = (r: any) => String(r.key) + '=' + String(r.value)
-        const a = (nx.rows || []).map(sig).join('|')
-        const c = ((pd as any).rows || []).map(sig).join('|')
-        if (a && a === c) flags[b.boardId] = { date: rec.dataDate, prevDate: prevD, suspected: true }
-        else delete flags[b.boardId]
+        if (!nx || !(nx.rows || []).length) continue
+        const prevD = previousBoardDate(b.boardId, rec.dataDate)
+        const pd: any = prevD ? store.readSnapshot(prevD, b.boardId) : null
+        const verdict = judgeFreshness({
+          boardId: b.boardId,
+          date: rec.dataDate,
+          prevDate: prevD,
+          currentRows: nx.rows || [],
+          previousRows: pd ? (pd.rows || []) : null,
+          currentPeriodKey: periodKeyFromRows(nx.rows || []),
+          previousPeriodKey: pd ? periodKeyFromRows(pd.rows || []) : null,
+        })
+        const swapped = b.boardId.startsWith('ciweimao.') && !!pd && looksSwapped(b.rows, pd.rows)
+        if (swapped || verdict.verdict === 'suspected') {
+          const reason = swapped ? '疑似换榜/降级（与上次有效快照交集 ≤2）' : String(verdict.reason || '疑似未刷新')
+          try { store.markUntrusted(rec.dataDate, b.boardId, { reason, at: new Date().toISOString(), by: trigger }) } catch { /* 标记失败仍按记录处理 */ }
+          b.status = 'stale'
+          b.untrusted = true
+          b.reason = reason
+          b.rows = []
+          delete flags[b.boardId]
+          if (!swapped) flagged[b.boardId] = { date: rec.dataDate, prevDate: prevD, suspected: true }
+        } else {
+          try { store.clearUntrusted(rec.dataDate, b.boardId) } catch { /* 清标记失败不影响结果 */ }
+          delete flags[b.boardId]
+          if (verdict.samePeriod) { b.samePeriod = true; samePeriodBoards.add(b.boardId) }
+        }
       }
+      /**
+       * 适配器自己抛 StaleError 的榜（例如菠萝包判据）同样是「抓到但不可信」：
+       * 若当天目录里残留了更早的快照（同日先成功后判 stale），必须一并隔离，不能让它继续被展示。
+       */
+      for (const b of rec.boards) {
+        if (b.status !== 'stale' || b.untrusted === true) continue
+        b.untrusted = true
+        try { store.markUntrusted(rec.dataDate, b.boardId, { reason: String(b.reason || '适配器判为不可信'), at: new Date().toISOString(), by: trigger }) } catch { /* 标记失败仍按记录处理 */ }
+      }
+      // ★ 只把**真正可疑**的榜交回给兜底队列；「同一期未变化」不进 staleFlag（不再误触整站补抓）
+      Object.assign(flags, flagged)
       stS.staleFlag = flags
       writeState(stS)
-      const suspectBoards = Object.keys(flags).filter((k) => flags[k].date === rec.dataDate)
-      if (suspectBoards.length) rec.warnings.push('疑似未刷新（与上一数据日完全一致，站点可能还没换榜）：' + suspectBoards.join('、'))
-    } catch { /* 自检失败不该挡住扫描 */ }
+      const suspectBoards = Object.keys(flagged)
+      if (suspectBoards.length) rec.warnings.push('以下榜的内容不可信（原始快照已保留，本次不展示、不参与变化）：' + suspectBoards.join('、'))
+      if (samePeriodBoards.size) rec.warnings.push('同一期未变化（正常，不判陈旧）：' + Array.from(samePeriodBoards).join('、'))
+    } catch (e) {
+      rec.warnings.push('新鲜度判定失败（不影响抓取）：' + String(e).slice(0, 60))
+    }
     // 每个榜的「上次扫描」落进 state（部分扫描时 scan.json 只留最后一次 ⇒ 面板要能逐榜查）
     try {
       const stB: any = readState()
@@ -442,44 +485,64 @@ export function apply(ctx: PluginCtx, config: any): void {
       const s = store.readSnapshot(rec.dataDate, b.boardId)
       if (s) snaps.set(b.boardId, s)
     }
-    // 判据后处理：刺猬猫「换榜/降级」（与上次有效快照交集 ≤2）⇒ 该榜本次不出条目
+    // 派生榜不进扫描：如实说一句（否则以后看 scan.json 会以为「漏抓了一个榜」）
     try {
-      const prevDate = previousDataDate(listDataDates(root), rec.dataDate)
-      let changed = false
-      for (const b of rec.boards) {
-        if (b.status !== 'ok' || !b.boardId.startsWith('ciweimao.')) continue
-        const prev = prevDate ? store.readSnapshot(prevDate, b.boardId) : null
-        if (prev && looksSwapped(b.rows, prev.rows)) {
-          b.status = 'stale'
-          b.reason = '疑似换榜/降级（与上次有效快照交集 ≤2）'
-          b.rows = []
-          changed = true
-        }
-      }
-      if (changed) {
-        rec.warnings.push('有榜命中「换榜/降级」判据，本次不出条目')
-        await store.writeScan(rec)
-      }
-      /**
-       * ★ 抓取集里的**派生榜**不会被扫描（它由本地快照算出来，不发请求）：
-       *   `sitesFor()` 明确排除 `fanqie.derived.*`，而 runScan 只遍历各适配器的 boards ⇒ 它天然缺席。
-       *   这是对的，但**必须在记录里说一句**，否则以后看 scan.json 会以为「漏抓了一个榜」（2026-10-15）。
-       */
       const derivedInCapture = ((st.boards as string[]) || []).filter((b) => b.startsWith('fanqie.derived.'))
       if (derivedInCapture.length) {
         rec.warnings.push('派生榜不进扫描（本地按快照计算，0 请求）：' + derivedInCapture.join('、'))
         await store.writeScan(rec)
       }
     } catch (e) {
-      rec.warnings.push('判据后处理失败：' + String(e).slice(0, 50))
+      rec.warnings.push('派生榜说明写入失败：' + String(e).slice(0, 50))
     }
+    /**
+     * ★ 工作包 A：写「精简索引 + 报告」的唯一入口 —— **按日逐榜合并**。
+     *   旧实现 `buildSlim(rec, snaps)` 把整份文件换成「本批跑过的榜」：单榜重抓之后，
+     *   当天其余榜从 slim 里消失 ⇒ 之后 historyFor 判「新入榜/回榜」会把回榜算成新入榜（体检 P1-A ②）。
+     */
+    const writeArtifacts = () => {
+      try {
+        const prevSlim = readSlim(root, artId)
+        const incoming: Record<string, any[]> = {}
+        const drop: string[] = []
+        for (const b of rec.boards) {
+          if (b.untrusted === true) { drop.push(b.boardId); continue }
+          if (b.status !== 'ok') continue
+          const snap = snaps.get(b.boardId)
+          if (!snap || !(snap.rows || []).length) continue
+          incoming[b.boardId] = (snap.rows || []).map((r: any) => ({ key: r.key, rank: r.rank, metric: r.value }))
+        }
+        writeSlim(root, mergeSlimBoards(prevSlim, artId, incoming, drop))
+        writeReport(root, artId, renderReport(rec, root))
+      } catch (e) {
+        rec.warnings.push('精简索引/报告写入失败：' + String(e).slice(0, 60))
+      }
+    }
+    writeArtifacts()
+    /**
+     * ★ 工作包 A：当天**逐榜**状态（批次记录 scan.json 只代表本批）。
+     *   只更新本批真正跑过的榜；A 站失败不会被之后 B 站成功冲掉。
+     */
     try {
-      const slim0: any = buildSlim(rec, snaps)
-      if (artId !== rec.dataDate) slim0.dataDate = artId
-      writeSlim(root, slim0)
-      writeReport(root, artId, renderReport(rec, root))
+      const idxPrev = store.readDayIndex(rec.dataDate)
+      const batchIds = new Set((rec.batch && rec.batch.boards) || rec.boards.map((b) => b.boardId))
+      const updates: DayUpdate[] = rec.boards
+        .filter((b) => batchIds.has(b.boardId))
+        .map((b) => ({
+          boardId: b.boardId,
+          status: b.status,
+          reason: b.reason ?? null,
+          rows: b.untrusted === true ? 0 : (b.rows || []).length,
+          trusted: b.untrusted !== true,
+          at: b.capturedAt || rec.finishedAt || rec.startedAt,
+          by: trigger,
+          capturedAt: b.capturedAt ?? null,
+          contentDate: b.contentDate ?? null,
+          samePeriod: b.samePeriod === true,
+        }))
+      await store.writeDayIndex(mergeDayIndex(idxPrev, rec.dataDate, updates, new Date().toISOString()))
     } catch (e) {
-      rec.warnings.push('精简索引/报告写入失败：' + String(e).slice(0, 60))
+      rec.warnings.push('逐榜状态索引写入失败：' + String(e).slice(0, 60))
     }
     /**
      * ★ 2026-10-17（补全移出阻塞路径）：把补全**从 /scan 的等待里摘出去**。
@@ -510,12 +573,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       const queued = Object.keys(((readState() as any).enrichPending) || {}).length
       rec.warnings.push('补全已转入后台：' + queued + ' 个榜待补（抓榜数据已可用；面板顶部显示进度）')
       await store.writeScan(rec)
-      try {
-        const slimD: any = buildSlim(rec, snaps)
-        if (artId !== rec.dataDate) slimD.dataDate = artId
-        writeSlim(root, slimD)
-        writeReport(root, artId, renderReport(rec, root))
-      } catch { /* 索引写失败不影响扫描结果 */ }
+      writeArtifacts()
       startEnrichWorker('扫描后后台补全')
       /**
        * ★ 关键：不再跑 postScanEnrich（同步阻塞那 5 分钟）。
@@ -539,10 +597,7 @@ export function apply(ctx: PluginCtx, config: any): void {
           const pendingN = res.filter((x: any) => still[x.boardId]).length
           rec.warnings.push('补全：' + res.length + ' 个榜跑了补全（' + total + ' 请求）' + (pendingN ? '；其中 ' + pendingN + ' 个仍缺字段，已记待办由定时续跑或在面板点「补齐本榜」' : ''))
           await store.writeScan(rec)
-          const slim1: any = buildSlim(rec, snaps)
-          if (artId !== rec.dataDate) slim1.dataDate = artId
-          writeSlim(root, slim1)
-          writeReport(root, artId, renderReport(rec, root))
+          writeArtifacts()
         }
       } catch (e) {
         rec.warnings.push('扫描后补全失败：' + String(e).slice(0, 50))
@@ -1034,6 +1089,55 @@ export function apply(ctx: PluginCtx, config: any): void {
     return rec ? rec.boards.map((b: any) => b.boardId) : []
   }
 
+  /**
+   * ★ 工作包 A（2026-10-22）：当天逐榜状态索引 + 可信度 + 数据 revision。
+   *   三者都以「这一次请求要展示的数据日期」为键读取，缺文件时回退老口径（不报错）。
+   */
+  function dayIndexOf(date: string | null | undefined): DayIndex | null {
+    if (!date) return null
+    try { return new FileStore(root).readDayIndex(date) } catch { return null }
+  }
+  /** 这一天的这份快照是否被拒（stale 隔离；raw 仍在盘上） */
+  function isUntrusted(date: string, boardId: string): boolean {
+    try { return new FileStore(root).isUntrusted(date, boardId) } catch { return false }
+  }
+  /**
+   * ★ 工作包 A：**该榜自己的上一次可信成功数据日**（跨过缺日、跨过被拒快照）。
+   *   旧口径只看「全局上一数据日期」：该榜那天没跑成功就判「首次采集」⇒ 变化整列空、
+   *   概览涨/新/退为 null（体检 P1-B：三江 10-18 缺一天，10-19 被误判 firstEver）。
+   */
+  function previousBoardDate(boardId: string, date: string, dates?: string[]): string | null {
+    const st = new FileStore(root)
+    return previousTrustedDate(dates || listDataDates(root), date, (d) => st.readSnapshot(d, boardId), (d) => st.isUntrusted(d, boardId))
+  }
+  /**
+   * ★ 工作包 A：手工补数（/day 落盘、/repair）之后把「这一榜这一天」恢复为可信，
+   *   并同步当天逐榜索引 —— 否则隔离标记会一直挂着，展示端永远不给看。
+   */
+  async function trustBoardDay(date: string, boardId: string, at: string): Promise<void> {
+    const store = new FileStore(root)
+    try { store.clearUntrusted(date, boardId) } catch { /* 清标记失败不影响补数结果 */ }
+    const snap: any = store.readSnapshot(date, boardId)
+    const rows = snap && Array.isArray(snap.rows) ? snap.rows.length : 0
+    const idxPrev = store.readDayIndex(date)
+    const updates: DayUpdate[] = [{
+      boardId, status: 'ok', reason: null, rows, trusted: true, at, by: 'manual', capturedAt: at, contentDate: null,
+    }]
+    await store.writeDayIndex(mergeDayIndex(idxPrev, date, updates, at))
+  }
+
+  /** 同一数据日期内数据是否变化（前端据此重取；含补全改写的快照） */
+  function dataRevision(date: string | null | undefined): string | null {
+    if (!date) return null
+    const store = new FileStore(root)
+    const idx = (() => { try { return store.readDayIndex(date) } catch { return null } })()
+    let stats: SnapshotStat[] = []
+    let untrusted: string[] = []
+    try { stats = store.snapshotStats(date) } catch { stats = [] }
+    try { untrusted = store.untrustedBoards(date) } catch { untrusted = [] }
+    return revisionDigest(idx ? idx.revision : 0, stats, untrusted)
+  }
+
   function diffFor(boardId: string, date: string, prevDate: string | null, jitter?: number, slimAll?: any[]) {
     const store = new FileStore(root)
     const current = store.readSnapshot(date, boardId)
@@ -1116,7 +1220,13 @@ export function apply(ctx: PluginCtx, config: any): void {
   function mainLabelOf(boardId: string, meta: any): string {
     if (boardId.startsWith('fanqie.derived.')) return '今日涨幅'
     if (meta && meta.metric === 'value') {
-      if (boardId.startsWith('qidiantu.')) return '首订'
+      /**
+       * ★ 2026-10-22（工作包 A）：三江的主指标是**收藏增量**（value / periodTotal），不是首订。
+       *   旧实现把所有 qidiantu.* 一律叫「首订」⇒ 排序项、书签 metric 全带错标签（体检 P3）。
+       */
+      if (boardId === 'qidiantu.sanjiang') return '收藏增量'
+      if (boardId === 'qidiantu.shouding') return '首订'
+      if (boardId.startsWith('qidiantu.')) return '收藏增量'
       if (boardId === 'ciweimao.buy.latest') return '首订（约）'
       return '在读'
     }
@@ -1177,6 +1287,11 @@ export function apply(ctx: PluginCtx, config: any): void {
       let best: { boardId: string; date: string; row: any } | null = null
       for (const date of dates) {
         for (const boardId of boards) {
+          /**
+           * ★ 工作包 A：**被拒快照不参与书签自动更新** —— 否则 tab 里会写进一份
+           *   站方还没刷新的旧值，且之后看起来像「今天的数据」。
+           */
+          if (isUntrusted(date, boardId)) continue
           const snap: any = store.readSnapshot(date, boardId)
           if (!snap || !Array.isArray(snap.rows)) continue
           const row = snap.rows.find((r: any) => String(r.key) === String(bm.bookKey.split(':').slice(1).join(':')))
@@ -1239,13 +1354,21 @@ export function apply(ctx: PluginCtx, config: any): void {
     const store = new FileStore(root)
     const rec: any = latest ? await store.readScan(latest) : null
     const prevDate = latest ? previousDataDate(dates, latest) : null
+    /**
+     * ★ 工作包 A：**当天逐榜状态**以 day-index.json 为准（scan.json 只是一批）。
+     *   没有 day-index 的旧数据回退到老口径（rec.boards / 快照存在性），不报错、不伪造。
+     */
+    const day = latest ? store.readDayIndex(latest) : null
     const slimAll = listSlim(root).map(d => readSlim(root, d)).filter(Boolean) as any[]
     const rows: any[] = []
     for (const boardId of st.boards as string[]) {
       const meta = boardMeta(boardId)
       const b = rec && rec.boards ? rec.boards.find((x: any) => x.boardId === boardId) : null
+      const dstate = boardDayState(day, boardId)
       const snap = latest ? store.readSnapshot(latest, boardId) : null
-      const diff = snap && latest && prevDate ? diffFor(boardId, latest, prevDate, undefined, slimAll) : null
+      // ★ 逐榜基准：该榜自己的上一次可信成功（跨过缺日），不是「全局上一数据日」
+      const bPrev = snap && latest ? previousBoardDate(boardId, latest, dates) : null
+      const diff = snap && latest && bPrev ? diffFor(boardId, latest, bPrev, undefined, slimAll) : null
       const c = diff && (diff as any).counts ? (diff as any).counts : null
       /**
        * ★ 2026-10-17（发布前修）：**本地派生榜**（fanqie.derived.*）永远不会有 scan 记录、
@@ -1259,7 +1382,19 @@ export function apply(ctx: PluginCtx, config: any): void {
         name: meta.name,
         site: meta.site,
         siteName: meta.siteName,
-        status: derived ? 'ok' : b ? b.status : snap ? 'ok' : 'missing',
+        /**
+         * ★ 工作包 A：优先用当天逐榜状态（含 missing/stale/truncated/login_required 五态）；
+         *   没有 day-index 才回退老口径。派生榜按设计不扫描 ⇒ 恒 ok。
+         */
+        status: derived ? 'ok' : dstate ? dstate.status : b ? b.status : snap ? 'ok' : 'missing',
+        /** true = 内容可信（stale 隔离后为 false；前端据此不给「正常」字样） */
+        trusted: derived ? true : dstate ? dstate.trusted !== false : !(latest && isUntrusted(latest, boardId)),
+        /** true = 同一期未变化（周期榜正常形态） */
+        samePeriod: dstate ? dstate.samePeriod === true : false,
+        /** 当天最近一次尝试（失败原因留在这里，不被之后的成功批次冲掉） */
+        attempt: dstate ? dstate.lastAttempt : null,
+        /** 当天最近一次可信成功的时刻（没有就 null） */
+        lastSuccessAt: dstate && dstate.lastSuccess ? dstate.lastSuccess.at : null,
         up: c ? c.up : null,
         newCount: c ? c.new + c.rebound : null,
         out: c ? c.out : null,
@@ -1270,6 +1405,8 @@ export function apply(ctx: PluginCtx, config: any): void {
          *   ③ 都没有（本地派生榜 / 今天没抓到的榜）就留 null，面板显示「—」，不再拿别人的时间冒充。
          */
         lastCapture: (function () {
+          // ★ 工作包 A：优先「当天最近一次可信成功」；否则退回本批的 capturedAt / 旧兜底
+          if (dstate && dstate.lastSuccess && dstate.lastSuccess.at) return String(dstate.lastSuccess.at)
           const own = b && (b as any).capturedAt ? String((b as any).capturedAt) : null
           if (own) return own
           if (derived) return null
@@ -1279,7 +1416,11 @@ export function apply(ctx: PluginCtx, config: any): void {
           const mt = latest ? store.snapshotMtime(boardId, latest) : null
           return mt ? new Date(mt).toISOString() : null
         })(),
-        note: derived ? '本地派生（0 请求，打开榜页时现算）' : b ? b.reason || null : snap ? null : '今天还没扫（或该榜抓取失败）',
+        note: derived
+          ? '本地派生（0 请求，打开榜页时现算）'
+          : dstate
+            ? (dstate.reason || (dstate.samePeriod ? '同一期未变化（正常）' : null))
+            : b ? b.reason || null : snap ? null : '今天还没扫（或该榜抓取失败）',
         extended: !!meta.extended,
         source: meta.source || null,
         mainLabel: mainLabelOf(boardId, meta),
@@ -1295,6 +1436,12 @@ export function apply(ctx: PluginCtx, config: any): void {
       baselineDate: prevDate,
       firstEver: dates.length < 2,
       counts,
+      /**
+       * ★ 工作包 A：同日数据 revision。扫描/单榜重抓/补全只要改写了快照或隔离标记就会变，
+       *   前端不必等「数据日期」变化才重取（体检 P2-C 的后端侧支撑）。
+       */
+      revision: dataRevision(latest),
+      dayRevision: day ? day.revision : null,
       // 派生榜按设计不进 display ⇒ 不能算进「隐藏 N 个」（它不是被藏起来的，是不需要单独扫）
       hiddenCount: rows.filter((r) => !r.displayed && !r.derived).length,
       sites: groupBySite(rows).map((s) => ({ ...s, boards: rows.filter((r) => r.site === s.site) })),
@@ -1450,7 +1597,9 @@ export function apply(ctx: PluginCtx, config: any): void {
     // 该榜有任何本地数据就出这一列（单日时每行是「1 天」；没有更早数据 ≠ 没历史）
     const hasHistory = shouldShowDays(meta.site, datesFor.length)
     // 列集合统一过一遍站点口径（起点图不出名次变化、三江不出重复的 daily、刺猬猫首订不出在榜天数）
-    const columns = applyColumnPolicy(columnsFor(meta, { hasBaseline: dates.length > 1, hasHistory }), boardId)
+    // ★ 工作包 A：「有基准」要按**该榜自己**有没有上一次可信快照判（不能拿全局日期数冒充）
+    const boardPrev = previousBoardDate(boardId, date, dates)
+    const columns = applyColumnPolicy(columnsFor(meta, { hasBaseline: !!boardPrev, hasHistory }), boardId)
     // 派生榜（番茄在读涨幅榜 / 七日累计）：纯本地算，不发请求
     if (boardId.startsWith('fanqie.derived.')) {
       const read = (b: string, d: string) => store.readSnapshot(d, b)
@@ -1494,7 +1643,41 @@ export function apply(ctx: PluginCtx, config: any): void {
     }
     if (!snap) return { boardId, meta, columns, dataDate: useDate, dates: datesFor, rows: [], note: '该榜在这天没有快照（也没找到更早的可用快照）' }
     const effDate = fallbackFrom || date
-    const prevDate = previousDataDate(dates, effDate)
+    /**
+     * ★ 工作包 A：逐榜基准 = **该榜自己的上一次可信成功**（跨过缺日、跨过被拒快照）。
+     *   旧口径只看全局上一数据日：该榜缺一天 → previousPer 为空 → 整列变化空、firstEver=true（体检 P1-B）。
+     */
+    const prevDate = previousBoardDate(boardId, effDate, dates)
+    /**
+     * ★ 工作包 A：**stale 隔离**。raw 快照保留在盘上（证据），但不进展示：
+     *   返回空行 + 明确状态，前端只需按 status/note 显示说明（不再拿被拒页面当今天榜单）。
+     */
+    if (isUntrusted(effDate, boardId)) {
+      const mark = store.readUntrusted(effDate, boardId)
+      return {
+        boardId,
+        meta: { ...meta, mainLabel: mainLabelOf(boardId, meta) },
+        sortOptions: sortOptionsFor(boardId, meta, { hasHistory }),
+        depth: (st.depths || {})[boardId] ?? (meta.site === 'fanqie' ? 30 : 10),
+        columns,
+        dataDate: effDate,
+        requestedDate: date,
+        fallbackFrom,
+        dates: datesFor,
+        baselineDate: prevDate,
+        firstEver: !prevDate,
+        counts: null,
+        status: 'stale',
+        trusted: false,
+        rawRows: (snap.rows || []).length,
+        attempt: store.readDayIndex(effDate)?.boards?.[boardId]?.lastAttempt || null,
+        revision: dataRevision(effDate),
+        enrich: null,
+        rows: [],
+        note: '本次抓到内容不可信（' + String((mark && mark.reason) || '疑似未刷新/换榜') + '）。原始快照已保留在 ' + effDate + '/' + boardId + '.json，但本次不展示、不参与变化。',
+        source: meta.source || null,
+      }
+    }
     const diff: any = prevDate ? diffFor(boardId, effDate, prevDate) : null
     const byKey = new Map<string, any>()
     if (diff) {
@@ -1527,9 +1710,16 @@ export function apply(ctx: PluginCtx, config: any): void {
       boardId,
       prevDate,
       date: effDate,
-      periodKeyOf: boardId === 'ciweimao.buy.latest'
-        ? (dt: string) => keyFromSnap(dt === effDate ? snap : prevSnap, 'issue')
-        : undefined,
+      /**
+       * ★ 工作包 A：期键一律取快照里的**真实期号** —— 三江 = extra.periodStart，
+       *   刺猬猫首订(约) = extra.issue。旧实现只给刺猬猫接了这个口，三江退回「本周日」推算，
+       *   而缺日/跨周时推算出的期与站点实际期不一致 ⇒ 跨期保护会漏判。
+       */
+      periodKeyOf: boardId === 'qidiantu.sanjiang'
+        ? (dt: string) => keyFromSnap(dt === effDate ? snap : prevSnap, 'periodStart')
+        : boardId === 'ciweimao.buy.latest'
+          ? (dt: string) => keyFromSnap(dt === effDate ? snap : prevSnap, 'issue')
+          : undefined,
     })
     const crossPeriod = guard.crossed
     const prevByKey = new Map<string, number>()
@@ -1626,7 +1816,7 @@ export function apply(ctx: PluginCtx, config: any): void {
           groupOut = dd ? dd.group : 'flat'
         } else if (pr != null && cr != null) {
           deltaOut = pr - cr
-          groupOut = dd ? dd.group : (Math.abs(deltaOut) <= 2 ? 'flat' : deltaOut > 0 ? 'up' : 'down')
+          groupOut = dd ? dd.group : (Math.abs(deltaOut) <= jitterForBoard(boardId) ? 'flat' : deltaOut > 0 ? 'up' : 'down')
         } else if (typeof (r.extra && r.extra.rankPosDiff) === 'number') {
           /**
            * ★ 回退到站方给的名次差（2026-10-15 体检发现）：
@@ -1664,6 +1854,12 @@ export function apply(ctx: PluginCtx, config: any): void {
     const effSort = sort || defaultSortFor(boardId)
     if (effSort) rows = rows.slice().sort((a: any, b: any) => compareDesc(num(sortVal(a, effSort)), num(sortVal(b, effSort))))
     if (limit > 0) rows = rows.slice(0, limit)
+    /**
+     * ★ 工作包 A：状态取**当天逐榜索引**（而不是「最后一批扫描记录」）。
+     *   旧实现读 scan.json：一天 5 批之后只剩最后一站的记录 ⇒ 其余站的状态被洗成 ok/missing。
+     */
+    const dayIdxB = store.readDayIndex(effDate)
+    const dstateB = boardDayState(dayIdxB, boardId)
     const statusRow = (await store.readScan(effDate) as any)
     const brd = statusRow && statusRow.boards ? statusRow.boards.find((x: any) => x.boardId === boardId) : null
     /**
@@ -1699,7 +1895,13 @@ export function apply(ctx: PluginCtx, config: any): void {
       baselineDate: diff ? diff.baselineDate : null,
       firstEver: diff ? diff.firstEver : true,
       counts: diff ? diff.counts : null,
-      status: brd ? brd.status : 'ok',
+      status: dstateB ? dstateB.status : brd ? brd.status : 'ok',
+      trusted: dstateB ? dstateB.trusted !== false : !isUntrusted(effDate, boardId),
+      samePeriod: dstateB ? dstateB.samePeriod === true : false,
+      /** 当天最近一次尝试（含失败原因）—— 失败不会被之后别的站的成功冲掉 */
+      attempt: dstateB ? dstateB.lastAttempt : null,
+      /** 同名数据日期内的数据 revision（前端据此重取，不必等跨日） */
+      revision: dataRevision(effDate),
       enrich: enrichInfo,
       rows,
       // ★ 跨期当天必须写明「变化列为什么是空的」（口径说明跟着数据一起走，别只活在代码注释里）
@@ -1722,14 +1924,24 @@ export function apply(ctx: PluginCtx, config: any): void {
     const slimAll = listSlim(root).map(d => readSlim(root, d)).filter(Boolean) as any[]
     const entries: any[] = []
     let firstEver = true
+    /** ★ 工作包 A：当天有快照但被拒的榜（不让它们的变化漏进来） */
+    const excluded: { boardId: string; reason: string }[] = []
+    /** ★ 工作包 A：确实没有可比基准的榜（如实说明，而不是静默跳过） */
+    const noBaseline: string[] = []
     for (const boardId of st.boards as string[]) {
       if (!(st.display as string[]).includes(boardId)) continue
       if (boardId.startsWith('fanqie.derived.')) continue
       const snap = store.readSnapshot(useDate, boardId)
       if (!snap) continue
       const meta = boardMeta(boardId)
-      if (!prevDate) continue
-      const d: any = diffFor(boardId, useDate, prevDate, undefined, slimAll)
+      if (isUntrusted(useDate, boardId)) { excluded.push({ boardId, reason: '内容不可信（已隔离）' }); continue }
+      /**
+       * ★ 工作包 A：逐榜基准（跨过缺日）。缺基准的榜不再「静默跳过且被算成没变化」，
+       *   而是进 noBaseline 列表，由 note 如实说明。
+       */
+      const prevB = previousBoardDate(boardId, useDate, dates)
+      if (!prevB) { noBaseline.push(boardId); continue }
+      const d: any = diffFor(boardId, useDate, prevB, undefined, slimAll)
       if (d.firstEver) continue
       firstEver = false
       const push = (group: string, list: any[], sign: string) => {
@@ -1739,6 +1951,8 @@ export function apply(ctx: PluginCtx, config: any): void {
             siteName: meta.siteName,
             boardId,
             boardName: meta.name,
+            /** ★ 工作包 A：该榜自己的对比基准日（各榜基准可能不同，顶层的 baselineDate 只是汇总） */
+            baselineDate: d.baselineDate,
             group,
             title: e.title,
             delta: e.delta == null ? '' : sign + String(e.delta),
@@ -1757,7 +1971,15 @@ export function apply(ctx: PluginCtx, config: any): void {
       firstEver: firstEver && !entries.length,
       count: entries.length,
       sites: groupChanges(entries),
-      note: prevDate ? null : '还没有上一数据日：无基准，不报 0',
+      /** ★ 工作包 A：同日内数据变化就换 revision（前端不必等跨日） */
+      revision: dataRevision(useDate),
+      excluded,
+      noBaseline,
+      note: [
+        prevDate ? null : '还没有上一数据日：无基准，不报 0',
+        excluded.length ? '已隔离 ' + excluded.length + ' 个不可信榜（不参与变化）' : null,
+        noBaseline.length ? noBaseline.length + ' 个榜没有可比基准（缺更早的可信快照）' : null,
+      ].filter(Boolean).join('；') || null,
     }
   }
 
@@ -2911,6 +3133,8 @@ export function apply(ctx: PluginCtx, config: any): void {
             if (body.save) {
               const store3 = new FileStore(root)
               await store3.writeSnapshot({ boardId, dataDate: date, metric: (res as any).metric || 'value', rows: res.rows })
+              // ★ 工作包 A：手工补数成功 ⇒ 解除隔离标记并同步当天逐榜状态
+              await trustBoardDay(date, boardId, new Date().toISOString())
             }
             return send(200, {
               ok: true, boardId, date, saved: !!body.save, contentDate: verdict.contentDate, expected: verdict.expected,
@@ -2949,6 +3173,8 @@ export function apply(ctx: PluginCtx, config: any): void {
             const contentDate = verdictR.contentDate
             const store2 = new FileStore(root)
             await store2.writeSnapshot({ boardId: b, dataDate: date, metric: res.metric || 'value', rows: res.rows })
+            // ★ 工作包 A：修数成功 ⇒ 解除隔离、同步逐榜状态
+            await trustBoardDay(date, b, new Date().toISOString())
             // 同步当天 scan.json 的记录，保持「快照 = 记录」
             const rec2: any = await store2.readScan(date)
             if (rec2) {
@@ -3054,7 +3280,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             const got = await withScanLock(() => doScan('manual', { retry: true, enrichAfter: true, partial: true }))
             if (!got.ok) return send(409, { error: '已有扫描在进行中，请等它跑完' })
             const rec2: any = got.value
-            return send(200, { ok: true, outcome: rec2.outcome, dataDate: rec2.dataDate, attempt: rec2.attempt, progress: rec2.progress })
+            return send(200, { ok: true, outcome: rec2.outcome, dataDate: rec2.dataDate, attempt: rec2.attempt, progress: rec2.progress, revision: dataRevision(rec2.dataDate) })
           }
           if (p === '/api/rank-scan/scan') {
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })
@@ -3083,9 +3309,22 @@ export function apply(ctx: PluginCtx, config: any): void {
             if (!got.ok) return send(409, { error: '已有扫描在进行中（定时或另一个手动扫描），请等它跑完' })
             const rec: any = got.value
             const stR: any = readState()
+            const dayAfter: any = new FileStore(root).readDayIndex(rec.dataDate)
             return send(200, {
               ok: true, outcome: rec.outcome, dataDate: rec.dataDate, attempt: rec.attempt, progress: rec.progress,
               scannedAll: !bsel,
+              /** ★ 工作包 A：同日 revision（前端据此重新取 overview/board/changes） */
+              revision: dataRevision(rec.dataDate),
+              /** 当天**逐榜**最终状态（不是本批）——A 站失败不会被 B 站成功冲掉 */
+              day: dayAfter
+                ? Object.keys(dayAfter.boards).map((k: string) => ({
+                    boardId: k,
+                    status: dayAfter.boards[k].status,
+                    reason: dayAfter.boards[k].reason,
+                    trusted: dayAfter.boards[k].trusted !== false,
+                    samePeriod: dayAfter.boards[k].samePeriod === true,
+                  }))
+                : null,
               enrich: stR.enrichRun ? { ...stR.enrichRun, active: timerState.enrichWorker } : null,
               enrichPending: Object.keys((stR.enrichPending) || {}).length,
               boards: (rec.boards || []).map((b: any) => ({ boardId: b.boardId, status: b.status, rows: (b.rows || []).length })),

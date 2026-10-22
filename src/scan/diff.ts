@@ -21,6 +21,15 @@ export interface MetricDelta {
   value: number
 }
 
+/**
+ * ★ 工作包 A（2026-10-22）：名次型榜的「持平」阈值按站不同。
+ *   统一理解单页 §5：起点榜 |Δ|≤2 记持平（并列会小幅互换）；**刺猬猫/菠萝包取 1**。
+ *   以前全站写死 2 ⇒ 这两站真实的 ±1/±2 升降被判成「持平」，变化页漏报、概览少计。
+ */
+export function jitterForBoard(boardId: string): number {
+  return boardId.startsWith('ciweimao.') || boardId.startsWith('sfacg.') ? 1 : 2
+}
+
 export interface BoardDiff {
   boardId: string
   metric: Metric
@@ -140,7 +149,7 @@ export function computeBoardDiff(input: {
   periodKeyOf?: (date: string) => string | null | undefined
 }): BoardDiff {
   const { boardId, metric, current, previous, history } = input
-  const jitter = typeof input.jitter === 'number' ? input.jitter : 2
+  const jitter = typeof input.jitter === 'number' ? input.jitter : jitterForBoard(boardId)
   const base: BoardDiff = {
     boardId,
     metric,
