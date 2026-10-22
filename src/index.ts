@@ -416,12 +416,14 @@ export function apply(ctx: PluginCtx, config: any): void {
      * 现在：逐榜向前找**上一次可信成功**（跨过缺日），按榜的更新节奏（日/周/期）判定；
      * 命中 ⇒ 打 <date>/<boardId>.untrusted.json（raw 保留、只隔离使用）+ 记进 day-index。
      */
+    const batchIds = new Set(rec.batch?.boards || rec.boards.map((b) => b.boardId))
+    const batchBoards = rec.boards.filter((b) => batchIds.has(b.boardId))
     const samePeriodBoards = new Set<string>()
     try {
       const flagged: any = {}
       const stS: any = readState()
       const flags: any = { ...(stS.staleFlag || {}) }
-      for (const b of rec.boards) {
+      for (const b of batchBoards) {
         if (b.status !== 'ok') continue
         const nx: any = store.readSnapshot(rec.dataDate, b.boardId)
         if (!nx || !(nx.rows || []).length) continue
@@ -456,7 +458,7 @@ export function apply(ctx: PluginCtx, config: any): void {
        * 适配器自己抛 StaleError 的榜（例如菠萝包判据）同样是「抓到但不可信」：
        * 若当天目录里残留了更早的快照（同日先成功后判 stale），必须一并隔离，不能让它继续被展示。
        */
-      for (const b of rec.boards) {
+      for (const b of batchBoards) {
         if (b.status !== 'stale' || b.untrusted === true) continue
         b.untrusted = true
         try { store.markUntrusted(rec.dataDate, b.boardId, { reason: String(b.reason || '适配器判为不可信'), at: new Date().toISOString(), by: trigger }) } catch { /* 标记失败仍按记录处理 */ }
@@ -475,12 +477,12 @@ export function apply(ctx: PluginCtx, config: any): void {
     try {
       const stB: any = readState()
       const bls: any = { ...(stB.boardLastScan || {}) }
-      for (const b of rec.boards) bls[b.boardId] = { date: rec.dataDate, at: new Date().toISOString(), outcome: String(b.status), by: trigger }
+      for (const b of batchBoards) bls[b.boardId] = { date: rec.dataDate, at: new Date().toISOString(), outcome: String(b.status), by: trigger }
       stB.boardLastScan = bls
       writeState(stB)
     } catch { /* 记不上不该影响扫描结果 */ }
     const snaps = new Map<string, any>()
-    for (const b of rec.boards) {
+    for (const b of batchBoards) {
       if (b.status !== 'ok') continue
       const s = store.readSnapshot(rec.dataDate, b.boardId)
       if (s) snaps.set(b.boardId, s)
@@ -505,7 +507,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         const prevSlim = readSlim(root, artId)
         const incoming: Record<string, any[]> = {}
         const drop: string[] = []
-        for (const b of rec.boards) {
+        for (const b of batchBoards) {
           if (b.untrusted === true) { drop.push(b.boardId); continue }
           if (b.status !== 'ok') continue
           const snap = snaps.get(b.boardId)
@@ -525,7 +527,6 @@ export function apply(ctx: PluginCtx, config: any): void {
      */
     try {
       const idxPrev = store.readDayIndex(rec.dataDate)
-      const batchIds = new Set((rec.batch && rec.batch.boards) || rec.boards.map((b) => b.boardId))
       const updates: DayUpdate[] = rec.boards
         .filter((b) => batchIds.has(b.boardId))
         .map((b) => ({
@@ -556,7 +557,7 @@ export function apply(ctx: PluginCtx, config: any): void {
      * 同步通道（postScanEnrich）第一行就是「关了就直接返回」，defer 分支以前不看 ⇒ 用户关掉自动补全照样跑。
      */
     if (opts && opts.deferEnrich && readState().autoEnrich !== false) {
-      const only = (opts as any).partial ? rec.boards.map((b: any) => b.boardId) : undefined
+      const only = (opts as any).partial ? batchBoards.filter((b) => b.untrusted !== true).map((b) => b.boardId) : undefined
       /**
        * ★ 2026-10-17（审查续核 ①）：起点/起点图另有「起点收藏与三江字数」开关（qidianEnrich）。
        * 同步通道在 postScanEnrich 里判过它；而 defer 路径的 worker 直接调 enrichBoard → qidianEnrichBoard，
@@ -585,7 +586,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     // 整站扫描后补全「站上不给」的字数/收藏（刺猬猫 2 + 菠萝包 3；单榜扫描不跑）
     if (opts && opts.enrichAfter && !opts.deferEnrich) {
       try {
-        const res = await postScanEnrich((opts as any) && (opts as any).partial ? rec.boards.map((b: any) => b.boardId) : undefined)
+        const res = await postScanEnrich((opts as any) && (opts as any).partial ? batchBoards.filter((b) => b.untrusted !== true).map((b) => b.boardId) : undefined)
         if (res && res.length) {
           const total = res.reduce((n, x) => n + (x.requests || 0), 0)
           /**
@@ -835,7 +836,7 @@ export function apply(ctx: PluginCtx, config: any): void {
    *
    *   为什么需要它：跑失败也会写 siteLastRun=today（防 30 秒一次无脑重试），于是 due 永远不会再排它，
    *   而旧兜底分支只认「疑似未刷新」⇒ 一次失败 = 当天彻底没了。现在这类站进兜底队列，22:30 再试一次。
-   *   判据：该站今天所有榜里，没有任何一次「计划时刻之后」的成功抓取。
+   *   判据：该站实际抓取集内任一榜没有「计划时刻之后」的成功抓取（本地派生榜除外）。
    */
   function sitesFailedToday(sites: string[], today: string, siteTimes?: Record<string, string>): string[] {
     const st: any = readState()
@@ -846,14 +847,11 @@ export function apply(ctx: PluginCtx, config: any): void {
       if (((st as any).siteLastRun || {})[s] !== today) continue
       const plan = times[s] || DEFAULT_SITE_TIMES[s] || DEFAULT_FALLBACK_TIME
       const bs = ((st.boards as string[]) || []).filter((b: string) => siteOfBoard(b) === s)
-      let latest: string | null = null
-      for (const b of bs) {
+      const incomplete = bs.filter((b: string) => !b.startsWith('fanqie.derived.')).some((b: string) => {
         const hit = bls[b]
-        if (!hit || hit.date !== today || hit.outcome !== 'ok') continue
-        const hm = hmOf(new Date(String(hit.at)))
-        if (!latest || hm > latest) latest = hm
-      }
-      if (!latest || latest < plan) out.push(s)
+        return !hit || hit.date !== today || hit.outcome !== 'ok' || hmOf(new Date(String(hit.at))) < plan
+      })
+      if (incomplete) out.push(s)
     }
     return out
   }
@@ -874,6 +872,8 @@ export function apply(ctx: PluginCtx, config: any): void {
       fallbackTime: st.fallbackTime || DEFAULT_FALLBACK_TIME,
       ranToday: sitesRanToday(sites, localDate(new Date()), st.siteTimes || DEFAULT_SITE_TIMES),
       failed: sitesFailedToday(sites, localDate(new Date()), st.siteTimes || DEFAULT_SITE_TIMES),
+      retried: st.siteRetry || {},
+      stale: SITE_ORDER.filter((s) => Object.keys(st.staleFlag || {}).some((b) => siteOfBoard(b) === s && st.staleFlag[b]?.date === localDate(new Date()))),
     })
     /**
      * ★ 2026-10-16（疑问「关闭状态为什么显示今天已跑」）：把「这个站今天抓过没、谁抓的、几点抓的」
@@ -1124,6 +1124,9 @@ export function apply(ctx: PluginCtx, config: any): void {
       boardId, status: 'ok', reason: null, rows, trusted: true, at, by: 'manual', capturedAt: at, contentDate: null,
     }]
     await store.writeDayIndex(mergeDayIndex(idxPrev, date, updates, at))
+    if (snap) writeSlim(root, mergeSlimBoards(readSlim(root, date), date, {
+      [boardId]: snap.rows.map((r: any) => ({ key: r.key, rank: r.rank, metric: r.value })),
+    }))
   }
 
   /** 同一数据日期内数据是否变化（前端据此重取；含补全改写的快照） */
@@ -1175,15 +1178,15 @@ export function apply(ctx: PluginCtx, config: any): void {
       // ★ 跨期不可比 ⇒ 调用方必须把变化列判为「不可比」（置空 / 显示「新期」）
       crossPeriod: !!d.crossPeriod,
       counts: { new: d.newEntry.length, rebound: d.rebound.length, up: d.up.length, down: d.down.length, flat: d.flat.length, out: d.out.length },
-      newEntry: d.newEntry.slice(0, 20),
-      rebound: d.rebound.slice(0, 20),
-      up: d.up.slice(0, 20),
-      down: d.down.slice(0, 20),
+      newEntry: d.newEntry,
+      rebound: d.rebound,
+      up: d.up,
+      down: d.down,
       // ★ flat 必须一起回传：面板要按它给「持平」的行标记名次 delta=0。
       //   2026-10-15 修：此前 flat 整组丢掉 ⇒ 名次没动/±2 内的行 delta 落 null，
       //   「变化」列大面积显示「—」（实测起点 20 行里 18 行是「—」，真实 flat=17）。
       flat: d.flat.slice(0, 200),
-      out: d.out.slice(0, 20),
+      out: d.out,
       metricDelta: d.metricDelta.slice(0, 20),
     }
   }
@@ -1368,8 +1371,9 @@ export function apply(ctx: PluginCtx, config: any): void {
       const snap = latest ? store.readSnapshot(latest, boardId) : null
       // ★ 逐榜基准：该榜自己的上一次可信成功（跨过缺日），不是「全局上一数据日」
       const bPrev = snap && latest ? previousBoardDate(boardId, latest, dates) : null
-      const diff = snap && latest && bPrev ? diffFor(boardId, latest, bPrev, undefined, slimAll) : null
-      const c = diff && (diff as any).counts ? (diff as any).counts : null
+      const trusted = dstate ? dstate.trusted !== false : !(latest && isUntrusted(latest, boardId))
+      const diff = trusted && snap && latest && bPrev ? diffFor(boardId, latest, bPrev, undefined, slimAll) : null
+      const c = diff && !diff.crossPeriod && (diff as any).counts ? (diff as any).counts : null
       /**
        * ★ 2026-10-17（发布前修）：**本地派生榜**（fanqie.derived.*）永远不会有 scan 记录、
        *   也不会落快照文件（数据是打开榜页时现算的）⇒ 旧口径「b ? … : snap ? 'ok' : 'missing'」
@@ -1377,7 +1381,13 @@ export function apply(ctx: PluginCtx, config: any): void {
        *   ⇒ 概览永远显示「异常 1 个榜」。它不是「没扫到」，是「不需要扫」：状态直接给 ok。
        */
       const derived = boardId.startsWith('fanqie.derived.')
+      const today = localDate(new Date())
+      const attemptedToday = (st.boardLastScan as any)?.[boardId]?.date === today || (latest === today && !!(dstate || b))
+      const plannedTime = (st.siteTimes as Record<string, string>)?.[meta.site] || DEFAULT_SITE_TIMES[meta.site] || DEFAULT_FALLBACK_TIME
+      const scheduleState = !derived && st.timerEnabled && !attemptedToday
+        ? (hmOf(new Date()) < plannedTime ? 'waiting' : 'due') : null
       rows.push({
+        scheduleState, plannedTime,
         boardId,
         name: meta.name,
         site: meta.site,
@@ -1894,7 +1904,8 @@ export function apply(ctx: PluginCtx, config: any): void {
       dates: datesFor,
       baselineDate: diff ? diff.baselineDate : null,
       firstEver: diff ? diff.firstEver : true,
-      counts: diff ? diff.counts : null,
+      counts: diff && !crossPeriod ? diff.counts : null,
+      crossPeriod,
       status: dstateB ? dstateB.status : brd ? brd.status : 'ok',
       trusted: dstateB ? dstateB.trusted !== false : !isUntrusted(effDate, boardId),
       samePeriod: dstateB ? dstateB.samePeriod === true : false,
@@ -1944,6 +1955,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       const d: any = diffFor(boardId, useDate, prevB, undefined, slimAll)
       if (d.firstEver) continue
       firstEver = false
+      if (d.crossPeriod) { excluded.push({ boardId, reason: '新期不可比（不参与变化）' }); continue }
       const push = (group: string, list: any[], sign: string) => {
         for (const e of list || [])
           entries.push({
@@ -1970,14 +1982,14 @@ export function apply(ctx: PluginCtx, config: any): void {
       baselineDate: prevDate,
       firstEver: firstEver && !entries.length,
       count: entries.length,
-      sites: groupChanges(entries),
+      sites: groupChanges(entries).map((site) => ({ ...site, groups: site.groups.map((g) => ({ ...g, count: g.items.length })) })),
       /** ★ 工作包 A：同日内数据变化就换 revision（前端不必等跨日） */
       revision: dataRevision(useDate),
       excluded,
       noBaseline,
       note: [
         prevDate ? null : '还没有上一数据日：无基准，不报 0',
-        excluded.length ? '已隔离 ' + excluded.length + ' 个不可信榜（不参与变化）' : null,
+        excluded.length ? excluded.length + ' 个榜不参与变化（内容隔离或新期不可比）' : null,
         noBaseline.length ? noBaseline.length + ' 个榜没有可比基准（缺更早的可信快照）' : null,
       ].filter(Boolean).join('；') || null,
     }
@@ -2017,6 +2029,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     push('ciweimao', '刺猬猫', '第三方', 'ciweimao.buy.latest', '首订（约）· 第三方源')
     for (const [id, meta] of Object.entries(SFACG_BOARDS)) push('sfacg', '菠萝包', '榜单', id, meta.name)
     return {
+      defaultCaptures: defaultState().boards,
       boards: rows, captures: st.boards, displays: st.display, depths: st.depths || {}, autoEnrich: st.autoEnrich !== false,
       // 起点书页补全：开关状态 + 缓存规模（面板据此显示「已缓存 N 本 / 截止时间」）
       qidian: { enrich: st.qidianEnrich === true, cache: cacheStats(root), ttlDays: Math.round(QIDIAN_CACHE_TTL_MS / 86400000) },

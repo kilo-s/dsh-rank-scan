@@ -77,9 +77,9 @@ test('★ 回归：healStore 必须能把「上一代的旧 store」补成当前
   assert.equal(healStore(withData).filters.q, '仙')
 })
 
-test('★ 页签顺序：概览 → 当前榜单 → 我的书签 → 抓什么（既定口径）', () => {
+test('★ 页签顺序：概览 → 榜单 → 书签 → 设置（已批准口径）', () => {
   const src = readFileSync(BUNDLE, 'utf8')
-  const order = ['ov', 'board', 'bm', 'pick'].map((k) => src.indexOf("switchTab('" + k + "')"))
+  const order = ['ov', 'board', 'bm', 'pick'].map((k) => src.lastIndexOf("switchTab('" + k + "')"))
   order.forEach((idx, i) => assert.ok(idx >= 0, '页签 ' + ['ov', 'board', 'bm', 'pick'][i] + ' 不见了'))
   for (let i = 1; i < order.length; i++) {
     assert.ok(order[i] > order[i - 1], '页签顺序错了：' + ['ov', 'board', 'bm', 'pick'][i] + ' 必须在 ' + ['ov', 'board', 'bm', 'pick'][i - 1] + ' 之后')

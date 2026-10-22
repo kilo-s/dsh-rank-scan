@@ -150,7 +150,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       tab: (on) => ({ padding: '3px 9px', cursor: 'pointer', border: 'none', background: 'transparent', color: 'inherit',
         borderBottom: on ? '2px solid currentColor' : '2px solid transparent', fontWeight: on ? 600 : 400 }),
       table: { width: '100%', borderCollapse: 'collapse', fontSize: '12px' },
-      th: { textAlign: 'left', padding: '2px 5px', borderBottom: '1px solid rgba(128,128,128,.3)', whiteSpace: 'nowrap', fontWeight: 600 },
+      th: { textAlign: 'left', padding: '2px 5px', borderBottom: '1px solid rgba(128,128,128,.3)', whiteSpace: 'nowrap', fontWeight: 600, position: 'sticky', top: 0, zIndex: 3, background: 'var(--dsh-surface, #fff)' },
       td: { padding: '2px 5px', borderBottom: '1px solid rgba(128,128,128,.1)', verticalAlign: 'top' },
       /**
        * ★ 2026-10-17（易用性 P0）：数字列以前会折行（「退 1」被拆成两行、20 个榜的表拉高一倍）。
@@ -782,12 +782,40 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const c = ov.counts || {}
       const total = (c.ok || 0) + (c.missing || 0) + (c.stale || 0) + (c.login_required || 0) + (c.truncated || 0)
       const rows = (ov.sites || []).flatMap(function (s) { return (s.boards || []).map(function (b) { return { ...b, siteName: s.siteName } }) })
-      const badRows = rows.filter(function (b) { return b.status !== 'ok' })
+
       const scan = ov.scan || null
       const plan = (ov.services && ov.services.schedule) || null
       const staleIds = plan && plan.staleFlag
         ? Object.keys(plan.staleFlag).filter(function (k) { return plan.staleFlag[k] && plan.staleFlag[k].date === ov.dataDate })
         : []
+      /**
+       * ★ Spec S3（2026-10-22）：「未到计划」和「待补跑」不是失败。
+       *   按站分时抓取（起点 01:30 / 番茄 08:30 / 菠萝包 09:30 / 刺猬猫 10:40 / 起点图 12:40）⇒
+       *   每天中午之前打开概览，没到点的站本来就该是空的。旧实现把它们算成 missing，于是出现
+       *   「已采集 0/20 · 待处理 18 项 · 重试失败 18 个榜」的假警报（Spec S3 / 方案 3.3）。
+       *   口径：后端逐榜给 scheduleState=waiting|due（含 plannedTime）就用它；
+       *   没给（旧宿主/旧数据）就退回 timer-plan 的站级 waiting/due 队列；两者都没有才当失败。
+       */
+      const siteOfBoardId = function (id) { return String(id || '').split('.')[0] }
+      const scheduleStateOf = function (b) {
+        if (b.scheduleState === 'waiting' || b.scheduleState === 'due') return b.scheduleState
+        if (b.scheduleState === null) return null
+        if (b.status === 'ok') return null
+        const site = siteOfBoardId(b.boardId)
+        if (((plan && plan.due) || []).indexOf(site) >= 0) return 'due'
+        if (((plan && plan.waiting) || []).indexOf(site) >= 0) return 'waiting'
+        return null
+      }
+      const plannedTimeOf = function (b) {
+        if (b.plannedTime) return String(b.plannedTime)
+        const times = (plan && plan.siteTimes) || (ov.defaults && ov.defaults.siteTimes) || {}
+        return times[siteOfBoardId(b.boardId)] || ''
+      }
+      const waitingRows = rows.filter(function (b) { return scheduleStateOf(b) === 'waiting' })
+      const dueRows = rows.filter(function (b) { return scheduleStateOf(b) === 'due' })
+      // 「失败/待修」= 既不是 ok，也不是「还没到点」「等到兜底补跑」
+      const badRows = rows.filter(function (b) { return b.status !== 'ok' && !scheduleStateOf(b) })
+      rememberBoardNames(rows)
       const enrichPending = enrichStatus && typeof enrichStatus.pending === 'number' ? enrichStatus.pending : 0
       /** 「需要处理」= 状态异常 + 内容待核对 + 字段待补（**没有问题就整块不出现**） */
       const issues = []
@@ -796,36 +824,70 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           : b.status === 'login_required' ? '起点 cookie 失效：导出 cookie 后上传即可恢复'
           : b.status === 'truncated' ? '没抓完（预算用尽或被取消）'
           : b.status === 'stale' ? '抓到的内容不可信（疑似未刷新或换榜）' : '状态异常'
-        issues.push({ key: 'b-' + b.boardId, name: b.siteName + ' · ' + b.name, why: why, detail: b.note || '', status: b.status })
+        issues.push({
+          key: 'b-' + b.boardId,
+          name: b.siteName + ' · ' + b.name,
+          why: why,
+          detail: b.note || '',
+          status: b.status,
+          boardId: b.boardId,
+          // Spec S5：问题要带**发生时间**（day-index 的 lastAttempt.at 早已具备），否则看不出是哪次尝试失败的
+          at: (b.attempt && b.attempt.at) || b.lastCapture || null,
+        })
       })
       staleIds.forEach(function (id) {
         if (badRows.some(function (b) { return b.boardId === id })) return
         const b = rows.filter(function (x) { return x.boardId === id })[0] || { name: id, siteName: '' }
-        issues.push({ key: 's-' + id, name: (b.siteName ? b.siteName + ' · ' : '') + b.name, why: '与上一数据日整榜一致：站点可能还没换榜（内容待核对）', detail: '', status: 'stale' })
+        issues.push({ key: 's-' + id, name: (b.siteName ? b.siteName + ' · ' : '') + b.name, why: '与上一数据日整榜一致：站点可能还没换榜（内容待核对）', detail: '', status: 'stale', boardId: id, at: b.lastCapture || null })
       })
       if (enrichPending > 0) {
-        issues.push({ key: 'enrich', name: '字段补全', why: enrichPending + ' 个榜还缺字段（进榜页点「补全缺失字段」，或等定时续跑）', detail: '', status: 'enrich' })
+        issues.push({ key: 'enrich', name: '字段补全', why: enrichPending + ' 个榜还缺字段（进榜页点「补全缺失字段」，或等定时续跑）', detail: '', status: 'enrich', boardId: null, at: null })
       }
       const hasNoteCol = rows.some(function (b) { return !!b.note })
-      /** 今天的变化：拍平成条目，便于按分组筛 */
+      /**
+       * 今天的变化：按**站**分组展示（Spec S6），行可点进榜保上下文。
+       * ★ 条数必须用后端给的真实总数：diffFor 每类只回前 20 条预览，
+       *   旧实现拿「预览条数」当「总条数」，首订换批那天会写成「今天的变化（20 条）」而实际 100+。
+       */
       const chgEntries = []
+      const chgTotals = {}
+      let chgSum = 0
       if (chg && chg.sites) {
         chg.sites.forEach(function (s) {
           (s.groups || []).forEach(function (g) {
-            (g.items || []).forEach(function (it) { chgEntries.push({ siteName: s.siteName, group: g.group, it: it }) })
+            const items = g.items || []
+            const n = typeof g.count === 'number' ? g.count : items.length
+            chgTotals[g.group] = (chgTotals[g.group] || 0) + n
+            chgSum += n
+            items.forEach(function (it) { chgEntries.push({ site: s.site, siteName: s.siteName, group: g.group, it: it }) })
           })
         })
       }
       const groupNames = []
       chgEntries.forEach(function (e) { if (groupNames.indexOf(e.group) < 0) groupNames.push(e.group) })
-      const groupCount = function (g) { return chgEntries.filter(function (e) { return e.group === g }).length }
+      const groupCount = function (g) { return chgTotals[g] || 0 }
       const shownEntries = chgFilter ? chgEntries.filter(function (e) { return e.group === chgFilter }) : chgEntries
+      const chgRealTotal = typeof (chg && chg.count) === 'number' && chg.count > chgSum ? chg.count : chgSum
+      const previewLimited = chgRealTotal > chgEntries.length
+      /** 首订榜每天整批换新（上架作品），叫「新入榜」会被读成榜单竞争意义的新入榜（Spec S7） */
+      const changesGroupLabel = function (group, boardId) {
+        return String(boardId || '').indexOf('qidiantu.shouding') === 0 && group === '新入榜' ? '本批上架' : group
+      }
+      /** 按站分组：同站的变化连在一起，行上不必再重复站名 */
+      const shownBySite = []
+      shownEntries.forEach(function (e) {
+        const last = shownBySite[shownBySite.length - 1]
+        if (last && last.site === e.site) last.items.push(e)
+        else shownBySite.push({ site: e.site, siteName: e.siteName, items: [e] })
+      })
       return h('div', null,
         /* ① 摘要带：日期 + 采集/待处理（文字，不靠颜色） */
         h('div', { style: C.row },
           h('span', { title: '扫描开始时刻的本地自然日', style: { fontWeight: 600 } }, '数据日期 ' + dash(ov.dataDate)),
           h('span', { style: C.muted }, '·'),
           h('span', null, '已采集 ' + (c.ok || 0) + '/' + total),
+          waitingRows.length ? h('span', { style: C.muted, title: '这些站今天还没到自己的抓取时刻：不是失败' }, '· 未到计划 ' + waitingRows.length) : null,
+          dueRows.length ? h('span', { style: { color: '#d9a441' }, title: '已过计划时刻但还没抓到：等兜底，或点「扫描已选榜」马上跑' }, '· 待补跑 ' + dueRows.length) : null,
           h('span', { style: issues.length ? { color: '#d9a441', fontWeight: 600 } : { color: '#3f9b4f' } },
             issues.length ? '待处理 ' + issues.length + ' 项' : '无待处理'),
           ov.hiddenCount ? h('span', { style: C.muted }, '· 未显示 ' + ov.hiddenCount + ' 个榜') : null),
@@ -861,15 +923,23 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         issues.length ? h('div', { style: { margin: '6px 0', padding: '6px 8px', borderRadius: '8px', border: '1px solid rgba(217,164,65,.55)', background: 'rgba(217,164,65,.10)' } },
           h('div', { style: { fontWeight: 600, marginBottom: '2px' } }, '需要处理'),
           issues.map(function (it) {
+            /**
+             * Spec S5：一条问题要给「榜名 + 发生时间 + 影响 + 可执行动作」。
+             *   以前只有一个泛化「重试失败 N 个榜」，看不出是哪次尝试、也没法直接进榜看。
+             */
             return h('div', { key: it.key, style: { ...C.row, alignItems: 'baseline' } },
               h('span', { style: C.dot(it.status === 'stale' || it.status === 'enrich' ? 'warn' : 'bad') }),
               h('span', { style: { fontWeight: 600 } }, it.name),
+              it.at ? h('span', { style: C.muted }, fmtLocalHM(it.at)) : null,
               h('span', null, it.why),
-              it.detail ? h('span', { style: C.muted }, '（' + String(it.detail).slice(0, 80) + '）') : null)
+              it.detail ? h('span', { style: C.muted }, '（' + String(it.detail).slice(0, 80) + '）') : null,
+              it.boardId ? h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.onOpenBoard && props.onOpenBoard(it.boardId) }, title: '在「榜单」页打开这一榜（保上下文）' }, '查看本榜') : null,
+              it.boardId ? h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.onRescanBoard && props.onRescanBoard(it.boardId) }, title: '只重扫这一榜（会联网）' }, '重扫本榜') : null)
           })) : null,
         /* ④ 今天的变化 */
-        h('div', { style: C.siteBar }, '今天的变化' + (chg && chg.count ? '（' + chg.count + ' 条）' : '')),
+        h('div', { style: C.siteBar }, '今天的变化' + (chgRealTotal ? '（' + chgRealTotal + ' 条）' : '')),
         chg && chg.note ? h('div', { style: C.muted }, chg.note) : null,
+        previewLimited ? h('div', { style: C.muted }, '下表每榜每类最多列 20 条（本次 ' + chgEntries.length + ' 条，共 ' + chgRealTotal + ' 条）；点行到榜页看全部。') : null,
         chg && chg.count === 0 ? h('div', { style: C.muted }, '没有变化条目（或还没有可比基准）') : null,
         chgEntries.length ? h('div', { style: C.row },
           [{ label: '全部', value: '' }].concat(groupNames.map(function (g) { return { label: g, value: g } })).map(function (o) {
@@ -877,17 +947,29 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               key: 'f-' + (o.value || 'all'),
               style: chgFilter === o.value ? C.btnOn : C.btn,
               onClick: function () { setChgFilter(o.value) },
-            }, o.label + (o.value ? ' ' + groupCount(o.value) : ' ' + chgEntries.length))
+            }, o.label + ' ' + (o.value ? groupCount(o.value) : chgRealTotal))
           })) : null,
         shownEntries.length ? h('table', { style: C.table },
-          h('thead', null, h('tr', null, ['分组', '站', '榜', '书名', '变化'].map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
-          h('tbody', null, shownEntries.map(function (e, i) {
-            return h('tr', { key: 'c' + i },
-              h('td', { style: C.td }, e.group),
-              h('td', { style: C.td }, e.siteName),
-              h('td', { style: { ...C.td, maxWidth: '150px' } }, h('span', { style: C.ellip, title: e.it.boardName }, e.it.boardName)),
-              h('td', { style: C.td }, e.it.title, ' ', h(BookmarkStar, { bookKey: bookKeyOf(e.it.boardId, e.it.title), boardId: e.it.boardId, row: null, title: e.it.title })),
-              h('td', { style: { ...C.td, ...C.num } }, dash(e.it.delta)))
+          h('thead', null, h('tr', null, ['分组', '榜', '书名', '变化'].map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
+          h('tbody', null, shownBySite.flatMap(function (g) {
+            const head = h('tr', { key: 'ch-' + g.site },
+              h('td', { style: { ...C.td, paddingTop: '7px', fontWeight: 600, color: 'rgba(128,128,128,.95)' }, colSpan: 4 },
+                g.siteName + ' · ' + g.items.length + ' 条'))
+            const body = g.items.map(function (e, i) {
+              return h('tr', {
+                key: 'c-' + g.site + i,
+                style: { cursor: 'pointer' },
+                title: '在「榜单」页打开：' + boardLabel(e.it.boardId),
+                onClick: function () { props.onOpenBoard && props.onOpenBoard(e.it.boardId) },
+              },
+                h('td', { style: C.td }, changesGroupLabel(e.group, e.it.boardId)),
+                h('td', { style: { ...C.td, maxWidth: '150px' } }, h('span', { style: C.ellip, title: e.it.boardName }, e.it.boardName)),
+                h('td', { style: C.td }, e.it.title, ' ',
+                  h('span', { onClick: function (ev) { ev.stopPropagation() } },
+                    h(BookmarkStar, { bookKey: bookKeyOf(e.it.boardId, e.it.title), boardId: e.it.boardId, row: null, title: e.it.title }))),
+                h('td', { style: { ...C.td, ...C.num } }, dash(e.it.delta)))
+            })
+            return [head].concat(body)
           }))) : null,
         /* ⑤ 全部榜单（可折叠） */
         h('div', { style: { ...C.row, marginTop: '8px' } },
@@ -950,6 +1032,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const [tLast, setTLast] = React.useState(null)
       const [planLive, setPlanLive] = React.useState(null)
       const [retMsg, setRetMsg] = React.useState(null)
+      /** 站分组默认展开（含已勾选榜的站更该展开）；只记「被收起」的，避免新站默认藏着 */
+      const [closedGroups, setClosedGroups] = React.useState({})
       const load = React.useCallback(function () {
         jget('/catalog').then(function (c) {
           setCat(c)
@@ -1027,13 +1111,35 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         setPicked(on ? picked.concat(ids.filter(function (i) { return picked.indexOf(i) < 0 })) : picked.filter(function (i) { return ids.indexOf(i) < 0 }))
         setDirty(true)
       }
+      /**
+       * ★ Spec S4「恢复默认」：只改**草稿**，并说清将新增/移除多少 —— 保存后才生效。
+       *   默认集来自 catalog 的 defaultCaptures（宿主 defaultState().boards，唯一权威）；
+       *   宿主没给就明确拒绝，不自己猜一套默认集（猜出来的东西会让「恢复默认」变成另一种事故）。
+       */
+      const restoreDefaults = function () {
+        const def = cat && Array.isArray(cat.defaultCaptures) ? cat.defaultCaptures.slice() : null
+        if (!def || !def.length) {
+          setNote('这台宿主没有提供默认抓取集（catalog.defaultCaptures 缺失），只能手动勾选')
+          return
+        }
+        const add = def.filter(function (id) { return picked.indexOf(id) < 0 })
+        const del = picked.filter(function (id) { return def.indexOf(id) < 0 })
+        setPicked(def)
+        setDirty(true)
+        setNote('已恢复默认抓取：将新增 ' + add.length + ' 个、移除 ' + del.length + ' 个（点「保存设置」才落盘）')
+      }
+      const toggleGroup = function (key) {
+        const nx = Object.assign({}, closedGroups)
+        nx[key] = !nx[key]
+        setClosedGroups(nx)
+      }
       const save = function () {
         setBusy(true)
         jpost('/select', { captures: picked, autoEnrich: !!autoEnrich, qidianEnrich: !!qdEnrich }).then(function (r) {
           setNote((r && r.note ? r.note : '已保存：' + picked.length + ' 个榜') + '（下次扫描生效）')
           setDirty(false)
-          DRAFTS.settings = null
-          dirtyGuard.set('settings', false)
+          DRAFTS.settings = timesDirty ? { picked: picked.slice(), autoEnrich: !!autoEnrich, qdEnrich: !!qdEnrich, times: tTimes, fall: tFall, dirty: false } : null
+          dirtyGuard.set('settings', timesDirty)
           if (props.onSaved) props.onSaved()
           try { window.dispatchEvent(new Event('rank-scan:saved')) } catch (e) {}
           return load()
@@ -1059,7 +1165,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         const prev = tOn
         setTOn(next)
         setTNote(next ? '正在开启…' : '正在关闭…')
-        jpost('/timer', { enabled: next, siteTimes: tTimes, fallbackTime: tFall }).then(function (r) {
+        jpost('/timer', { enabled: next }).then(function (r) {
           setTNote((r && r.note ? r.note : '已' + (next ? '开启' : '关闭')) + '（立即生效）')
           return jget('/catalog').then(function (c) { setTLast(c.timer || null) })
         }).catch(function (e) {
@@ -1122,10 +1228,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           })),
           groups.map(function (g) {
             const derived = g.items.length > 0 && String(g.items[0].boardId).indexOf('fanqie.derived.') === 0
-            return h('div', { key: g.site + g.group },
-              h('div', { style: C.siteBar }, g.siteName + ' · ' + g.group),
+            const gkey = g.site + '|' + g.group
+            const closed = !!closedGroups[gkey]
+            // Spec 4.4：站分组可折叠（20 个榜全铺开时找不到想改的那个）
+            return h('div', { key: gkey },
+              h('div', { style: { ...C.siteBar, cursor: 'pointer' }, onClick: function () { toggleGroup(gkey) }, title: '点一下折叠/展开这一组' },
+                (closed ? '▸ ' : '▾ ') + g.siteName + ' · ' + g.group + '（' + g.items.length + '）'),
               derived ? h('div', { style: { ...C.muted, margin: '0 0 4px 2px' } }, '本地派生榜：不发请求，总是显示；不计入「未显示 N 个」。') : null,
-              h('table', { style: C.table },
+              closed ? null : h('table', { style: C.table },
                 h('tbody', null, g.items.map(function (b) {
                   return h('tr', { key: b.boardId },
                     h('td', { style: { ...C.td, width: '22px' } }, h('input', { type: 'checkbox', checked: has(b.boardId), onChange: function (e) { toggle(b.boardId, e.target.checked) } })),
@@ -1138,11 +1248,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               // 放弃改动 = 真的丢掉草稿（否则 load 会按草稿再恢复一遍，等于没放弃）
               dirty ? h('button', { style: C.btn, disabled: busy, onClick: function () { DRAFTS.settings = null; dirtyGuard.set('settings', false); setNote('已放弃改动'); load() } }, '放弃改动') : null,
               dirty ? h('span', { style: { color: '#d9a441' } }, '有未保存的改动') : null,
+              h('button', { style: C.btn, disabled: busy, onClick: restoreDefaults, title: '把勾选恢复成插件默认抓取集（只改草稿，保存后生效）' }, '恢复默认'),
               note ? h('span', { style: C.muted }, String(note).slice(0, 100)) : null)),
-          h('label', { style: C.row },
-            h('input', { type: 'checkbox', checked: autoEnrich, onChange: function (e) { setAutoEnrich(e.target.checked); setDirty(true) } }),
-            h('span', null, '扫描后自动补全缺失字段'),
-            h('span', { style: C.muted }, '（榜页没有收藏/字数时要进书页取；补全在后台跑，抓榜先返回）'))),
+        ),
         h(Section, { title: '扫描计划', defaultOpen: false, summary: (tOn ? '已开启' : '已关闭') + ' · 兜底 ' + (tFall || '') + ' · ' + (tLast && tLast.wired ? '定时器已接线' : '定时器未接线') },
           h('label', { style: C.row },
             h('input', { type: 'checkbox', checked: tOn, onChange: function (e) { toggleTimer(e.target.checked) } }),
@@ -1195,6 +1303,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           ov && ov.storage ? h('div', { style: C.muted },
             '快照 ' + fmtBytes(ov.storage.snapshotBytes) + ' · state ' + fmtBytes(ov.storage.stateBytes) +
             ' · ' + ov.storage.dates + ' 天（' + dash(ov.storage.oldest) + ' 起）· 书签 ' + ov.storage.bookmarks + ' 条') : null,
+          h('label', { style: C.row },
+            h('input', { type: 'checkbox', checked: autoEnrich, onChange: function (e) { setAutoEnrich(e.target.checked); setDirty(true) } }),
+            h('span', null, '扫描后自动补全缺失字段'),
+            h('span', { style: C.muted }, '（榜页没有收藏/字数时要进书页取；补全在后台跑，抓榜先返回）')),
           h('div', { style: { ...C.row, marginTop: '4px' } },
             h('span', { style: C.muted }, '起点收藏补全'),
             h('input', { type: 'checkbox', checked: qdEnrich, onChange: function (e) { setQdEnrich(e.target.checked); setDirty(true) } }),
@@ -1397,6 +1509,24 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
     }
 
     /** 榜 + 站内书号 ⇒ bookKey（与 host 端同一套命名空间规则；起点图归并到 qidian） */
+    /**
+     * 榜名注册表：概览/目录任一处拿到 name 就记下来。
+     * 书签详情、导出提示等处用它把 boardId 换成「站 · 榜名」（以前直接把 `qidiantu.shouding` 这种内部 id 甩给使用者）。
+     */
+    const BOARD_NAMES = (window.__rankScanBoardNames = window.__rankScanBoardNames || {})
+    const rememberBoardNames = function (list) {
+      (list || []).forEach(function (b) {
+        if (!b || !b.boardId) return
+        const label = b.name || b.label
+        if (!label) return
+        BOARD_NAMES[b.boardId] = b.siteName ? b.siteName + ' · ' + label : label
+      })
+    }
+    const boardLabel = function (boardId) {
+      const id = String(boardId || '')
+      return BOARD_NAMES[id] || (id || '—')
+    }
+
     function bookKeyOf(boardId, key) {
       const id = String(key == null ? '' : key).trim()
       if (!id) return ''
@@ -1712,11 +1842,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               ] })),
             detailKey === b.bookKey ? h('div', { style: { ...C.detail, marginTop: '4px' } },
               b.firstSeen
-                ? h('div', { style: C.muted }, '首次发现：' + siteLabel(String(b.firstSeen.boardId).split('.')[0]) + ' · ' + b.firstSeen.boardId + ' 第 ' + (b.firstSeen.rank == null ? '—' : b.firstSeen.rank) + ' 名（' + b.firstSeen.dataDate + '）')
+                ? h('div', { style: C.muted }, '首次发现：' + boardLabel(b.firstSeen.boardId) + ' 第 ' + (b.firstSeen.rank == null ? '—' : b.firstSeen.rank) + ' 名（' + b.firstSeen.dataDate + '）')
                 : h('div', { style: C.muted }, '手动添加 · 无榜单来源'),
               b.source === 'manual' ? h('div', { style: C.muted }, '不在任何榜里 ⇒ 不会自动更新；点「更新本书数据」按书页取一次') : null,
               (b.seenBoards || []).length > 1
-                ? h('div', { style: C.muted }, '也上过：' + (b.seenBoards || []).map(function (s) { return s.boardId }).join('、'))
+                ? h('div', { style: C.muted }, '也上过：' + (b.seenBoards || []).map(function (s) { return boardLabel(s.boardId) }).join('、'))
                 : null,
               h('div', { style: C.muted }, '备注与夹只由你改：任何自动更新都不会覆盖。')) : null)
         }),
@@ -1917,6 +2047,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         const src = (data.rows && data.rows[0] && data.rows[0].extra && data.rows[0].extra.showDate) || null
         bits.push('数据日期 ' + (data.dataDate || '—'))
         if (src && src !== data.dataDate) bits.push('源数据 ' + src)
+        /** Spec S7：首订榜整批换的是「本期上架作品」，不标清会被读成榜单竞争意义的新入榜 */
+        if (String(curBoard || '').indexOf('qidiantu.shouding') === 0) {
+          bits.push('本期上架作品' + (src ? '（上架日 ' + src + '）' : '') + ' · 首订 = 上架后首订')
+        }
         if (data.baselineDate) {
           const g = data.dataDate ? dayGap(data.baselineDate, data.dataDate) : null
           bits.push('对比 ' + data.baselineDate + (g && g > 1 ? '（隔 ' + g + ' 天，变化是累计值）' : ''))
@@ -1974,6 +2108,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           selXS('排序', ss, sortOpts, pickSort),
           h(PopMenu, { label: '更多', items: menuItems, width: 260, title: '采集与详情（低频操作）' })),
         band ? h('div', { style: { ...C.muted, marginTop: '2px' } }, band) : null,
+        /* Spec 4.2：补全缺多少条要**就近可见**，别只藏在「更多」菜单里 */
+        enrichMissing ? h('div', { style: { ...C.row, marginTop: '2px' } },
+          h('span', { style: { color: '#d9a441' } }, '补全未完成：还缺 ' + enrichMissing + ' 条字段'),
+          h('button', { style: C.btn, disabled: busy, onClick: doEnrich }, '补全'),
+          h('span', { style: C.muted }, '（榜页没给收藏/字数，要进书页取；1 秒/本）')) : null,
         viewDate ? h('div', { style: { ...C.row, alignItems: 'center', gap: '6px', padding: '4px 6px', marginTop: '2px', background: 'rgba(255,193,7,0.12)', border: '1px solid rgba(255,193,7,0.45)', borderRadius: '4px' } },
           h('span', { style: { fontWeight: 600 } }, '正在查看历史：' + viewDate),
           h('span', { style: C.muted }, data && data._queryDate ? '（直查站点，未落盘）' : '（本地快照）'),
@@ -2163,9 +2302,20 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         document.addEventListener('visibilitychange', onVis)
         return function () { clearInterval(t); document.removeEventListener('visibilitychange', onVis) }
       }, [reload, busy, open])
-      const act = function (path) {
+      /**
+       * 跳到某个榜（概览的「查看本榜」与变化行都走这里）：写进 sel 再切页，
+       * BoardTab 挂载时按 sel 初始化 ⇒ 站/榜/日期/排序/详情都保留（Spec S6「保上下文」）。
+       */
+      const openBoard = function (boardId) {
+        const id = String(boardId || '')
+        if (!id) return
+        sel.set({ site: id.split('.')[0], board: id })
+        switchTab('board')
+      }
+      /** path + 可选 JSON body（概览「重扫本榜」要传 {boards}，以前 act 吞掉了 body） */
+      const act = function (path, body) {
         setBusy(true)
-        jpost(path).then(function (r) { setMsg(r && r.note ? r.note : '完成：' + (r.outcome || 'ok')); return reload() })
+        jpost(path, body).then(function (r) { setMsg(r && r.note ? r.note : '完成：' + (r.outcome || 'ok')); return reload() })
           .catch(function (e) { setMsg(String(e)) })
           .then(function () { setBusy(false) })
       }
@@ -2189,7 +2339,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         setOpen(false)
         return true
       }, [setOpen])
-      useEscLayer(closePanelLayer)
+      useEscLayer(open ? closePanelLayer : null)
       // 收起后：按钮同样可拖动、同样记住位置（用同一份 rect，不再回右上角）
       if (!open) return null
       const narrow = rect.w < 720
@@ -2215,7 +2365,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('button', { style: C.btnOn, onClick: doLeave }, '仍然离开'),
             h('button', { style: C.btn, onClick: function () { setLeaveAsk(null) } }, '继续编辑')) : null,
           h(TabBoundary, { name: tab },
-            tab === 'ov' ? h(Overview, { ov: ov, busy: busy, act: act, reload: reload, narrow: narrow, rev: rev })
+            tab === 'ov' ? h(Overview, {
+              ov: ov, busy: busy, act: act, reload: reload, narrow: narrow, rev: rev,
+              onOpenBoard: openBoard,
+              onRescanBoard: function (boardId) { act('/scan', { boards: String(boardId) }) },
+            })
               : tab === 'board' ? h(BoardTab, { ov: ov, openLink: props.openLink, narrow: narrow, rev: rev })
               : tab === 'bm' ? h(BookmarksTab, { openLink: props.openLink })
               : h(SettingsTab, { ov: ov, onSaved: reload }))),
@@ -2335,7 +2489,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
   // 测试缝：宿主只消费 name/inject/apply；多挂纯函数与组件给离线测试用（对运行无影响）
   return { name: 'dsh-rank-scan', inject: inject, apply: apply, __test: {
     metricChipText: metricChipText,
-    helpers: { revOf: revOf, statusText: statusText, scanLabel: scanLabel, canDayQuery: canDayQuery, narrowColumns: narrowColumns, mdOf: mdOf },
+    helpers: { revOf: revOf, statusText: statusText, scanLabel: scanLabel, canDayQuery: canDayQuery, narrowColumns: narrowColumns, mdOf: mdOf, boardLabel: boardLabel, rememberBoardNames: rememberBoardNames },
     components: { Overview: Overview, BoardTab: BoardTab, BookmarksTab: BookmarksTab, SettingsTab: SettingsTab, PopMenu: PopMenu, Panel: Panel },
   } }
   },
