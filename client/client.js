@@ -139,6 +139,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         display: 'flex', flexDirection: 'column', overflow: 'hidden' },
       titlebar: { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 8px 6px 10px',
         borderBottom: '1px solid rgba(128,128,128,.25)', cursor: 'move', userSelect: 'none', background: 'rgba(128,128,128,.06)' },
+      // 最大化时标题栏不可拖（提示靠 title 文案），避免「拖了没反应」的错觉
+      titlebarLocked: { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 8px 6px 10px',
+        borderBottom: '1px solid rgba(128,128,128,.25)', cursor: 'default', userSelect: 'none', background: 'rgba(128,128,128,.06)' },
       title: { fontWeight: 600, fontSize: '13px', marginRight: '2px' },
       body: { padding: '8px 10px 10px', overflow: 'auto', flex: '1 1 auto' },
       row: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', margin: '5px 0' },
@@ -265,11 +268,71 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const vh = Math.max(240, Number(window.innerHeight) || 800)
       const num = (v, fb) => (Number.isFinite(Number(v)) ? Number(v) : fb)
       const r = raw && typeof raw === 'object' ? raw : {}
-      const w = Math.min(Math.max(420, num(r.w, 660)), Math.max(420, vw - 16))
-      const h = Math.min(Math.max(240, num(r.h, 480)), Math.max(240, vh - 16))
-      const x = Math.min(Math.max(0, num(r.x, Math.max(8, vw - 700))), Math.max(0, vw - 80))
-      const y = Math.min(Math.max(0, num(r.y, 64)), Math.max(0, vh - 48))
+      const M = 8
+      const w = Math.min(Math.max(420, num(r.w, 660)), Math.max(320, vw - 2 * M))
+      const h = Math.min(Math.max(240, num(r.h, 480)), Math.max(240, vh - 2 * M))
+      /**
+       * ★ 2026-10-23（面板跑到屏幕外）：旧写法只夹 x <= vw-80、y <= vh-48，
+       *   于是 x + w 可以远超视口宽 —— 换小屏/浏览器缩放后整块面板挂在右边外面，
+       *   表头与「收起」按钮全在屏幕外（使用者现场：右侧整片被切掉、收不回来）。
+       *   现在按**右下边界**夹：保证 x + w <= vw - 8、y + h <= vh - 8。
+       */
+      const x = Math.min(Math.max(M, num(r.x, Math.max(M, vw - w - 24))), Math.max(M, vw - w - M))
+      const y = Math.min(Math.max(M, num(r.y, 64)), Math.max(M, vh - h - M))
       return { x: x, y: y, w: w, h: h }
+    }
+    /** 最大化状态的本地记忆：{ maxed, saved } —— 收起面板再打开不能丢掉「还原尺寸」 */
+    const LS_MAX = 'rank-scan-panel:max:v1'
+    const readMaxState = function () {
+      try {
+        const raw = localStorage.getItem(LS_MAX)
+        if (!raw) return null
+        const o = JSON.parse(raw)
+        return o && typeof o === 'object' ? o : null
+      } catch (e) { return null }
+    }
+    const writeMaxState = function (v) {
+      try {
+        if (v) localStorage.setItem(LS_MAX, JSON.stringify(v))
+        else localStorage.removeItem(LS_MAX)
+      } catch (e) {}
+    }
+    /**
+     * ★ 2026-10-23（最大化盖住桌面版窗口按钮）：
+     *   「最大化」以前直接铺满整个视口（x=8,y=8），把 DSH 自己的顶栏/窗口按钮压在下面 ——
+     *   而桌面版的窗口按钮在页面**之上**，正好盖住面板标题栏的「还原 / 收起」，点不出来就收不回去。
+     *   这里量出应用顶栏（贴顶、又不到半屏高的那个容器）的高度，最大化时让开它。
+     */
+    const topChromeInset = function () {
+      if (typeof document === 'undefined') return 0
+      const vh = Math.max(240, Number(window.innerHeight) || 800)
+      const inPanel = function (el) { return !!(el && el.closest && el.closest('[data-rank-scan-win]')) }
+      try {
+        const marks = document.querySelectorAll('header, [role="banner"], [data-dsh-titlebar]')
+        for (let i = 0; i < marks.length; i++) {
+          const el = marks[i]
+          if (inPanel(el)) continue
+          const r = el.getBoundingClientRect()
+          if (r.top <= 0 && r.bottom > 8 && r.bottom < vh * 0.4) return Math.round(r.bottom)
+        }
+      } catch (e) {}
+      // 兜底：从顶部取一个点，沿祖先链找「贴着顶、又不到半屏高」的容器 = 应用顶栏
+      try {
+        const vw = Math.max(280, Number(window.innerWidth) || 1200)
+        const pts = [[Math.round(vw * 0.5), 2], [Math.max(8, vw - 12), 2]]
+        for (let p = 0; p < pts.length; p++) {
+          let n = document.elementFromPoint(pts[p][0], pts[p][1])
+          for (let d = 0; n && d < 8; d++) {
+            if (n === document.body || n === document.documentElement) break
+            if (!inPanel(n)) {
+              const r = n.getBoundingClientRect()
+              if (r.top <= 0 && r.bottom > 8 && r.bottom < vh * 0.4) return Math.round(r.bottom)
+            }
+            n = n.parentElement
+          }
+        }
+      } catch (e) {}
+      return 0
     }
 
     /* ────────────────────────────────────────────────────────────────────────
@@ -280,7 +343,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
      *   · useEscLayer  Esc 的层级关闭（菜单 → 详情 → 面板），编辑中不关面板
      * ──────────────────────────────────────────────────────────────────────── */
     /** 2026-10-22：'2026-10-22' → '10-22'（状态带里省宽度，年份放 title） */
-    const mdOf = function (v) { const s = String(v == null ? '' : v); return s.length >= 10 ? s.slice(5) : s }
+    // ★ 2026-10-23：以前是 s.slice(5)（切到末尾）⇒ 书签卡上显示「截止 10-17T04:00:00.000Z」。只取 5..10。
+    const mdOf = function (v) { const s = String(v == null ? '' : v); return s.length >= 10 ? s.slice(5, 10) : s }
     /**
      * 数据修订号：**同一天再扫一次**也要让概览/榜单重读（以前只盯 dataDate，当天不变就永远不刷）。
      * 宿主目前不下发 revision ⇒ 用「扫描记录 + 计数 + 存储缓存时间」拼一个安全的替代值：
@@ -347,13 +411,55 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
      */
     function PopMenu(props) {
       const [open, setOpen] = React.useState(false)
+      const [pos, setPos] = React.useState(null)
       const wrapRef = React.useRef(null)
       const btnRef = React.useRef(null)
+      const menuRef = React.useRef(null)
       const close = React.useCallback(function () {
         setOpen(false)
         const b = btnRef.current
         if (b && typeof b.focus === 'function') { try { b.focus() } catch (e) {} }
       }, [])
+      /**
+       * ★ 2026-10-23（菜单超出面板 / 屏幕外，使用者：「当前面板显示不了这个更多，画面超出界面了」）：
+       *   旧写法是 position:absolute + right:0，锚在按钮那一小块 span 上 ——
+       *   ① 书签卡里的「更多」在**左边**，right:0 让菜单整体往左溢出面板，被浮窗的 overflow:hidden 裁掉（只剩一条）；
+       *   ② 往下开时菜单一旦超过面板底边也直接被裁，面板小一点就什么都点不到。
+       *   改成**相对视口**定位：按按钮实际位置量一遍，下方放不下翻到上方，左右夹在视口里，
+       *   高度放不下就在菜单内滚动。浮窗上没有 transform/filter ⇒ fixed 子元素不会被它的 overflow 裁。
+       */
+      const place = React.useCallback(function () {
+        const btn = btnRef.current
+        const el = menuRef.current
+        if (!btn || !el) return
+        const vw = Math.max(280, Number(window.innerWidth) || 1200)
+        const vh = Math.max(200, Number(window.innerHeight) || 800)
+        const M = 6
+        const b = btn.getBoundingClientRect()
+        const mw = el.offsetWidth
+        const mh = el.offsetHeight
+        let left = b.left
+        if (left + mw > vw - M) left = vw - M - mw
+        if (left < M) left = M
+        let top = b.bottom + 4
+        if (top + mh > vh - M) {
+          const up = b.top - 4 - mh
+          top = up >= M ? up : Math.max(M, vh - M - mh)
+        }
+        setPos({ left: Math.round(left), top: Math.round(top), maxH: Math.max(120, vh - 2 * M) })
+      }, [])
+      React.useLayoutEffect(function () {
+        if (!open) { setPos(null); return undefined }
+        place()
+        // 面板滚动 / 窗口缩放：菜单跟着按钮重新定位（别悬在一个已经滚走的位置上）
+        const onMove = function () { place() }
+        if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('resize', onMove)
+        if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('scroll', onMove, true)
+        return function () {
+          if (typeof window !== 'undefined' && window.removeEventListener) window.removeEventListener('resize', onMove)
+          if (typeof document !== 'undefined' && document.removeEventListener) document.removeEventListener('scroll', onMove, true)
+        }
+      }, [open, place])
       useEscLayer(open ? function () { close(); return true } : null)
       React.useEffect(function () {
         if (!open) return undefined
@@ -394,8 +500,13 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           onClick: function () { setOpen(!open) },
         }, (props.label || '更多') + (open ? ' ▴' : ' ▾')),
         open ? h('div', {
+          ref: menuRef,
           role: 'menu',
-          style: { position: 'absolute', zIndex: 90, right: '0', top: '100%', marginTop: '4px', minWidth: (props.width || 230) + 'px',
+          style: { position: 'fixed', zIndex: 90, left: (pos ? pos.left : 0) + 'px', top: (pos ? pos.top : 0) + 'px',
+            // 先量后放：没量到之前先占位不可见，避免闪一下再跳位置
+            visibility: pos ? 'visible' : 'hidden',
+            minWidth: (props.width || 230) + 'px', maxWidth: 'min(420px, calc(100vw - 12px))',
+            maxHeight: (pos ? pos.maxH : 420) + 'px', overflowY: 'auto', overflowX: 'hidden',
             padding: '5px', borderRadius: '8px', border: '1px solid rgba(128,128,128,.35)', background: 'var(--dsh-surface, #fff)',
             boxShadow: '0 8px 20px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: '4px' },
         }, items.map(function (it, i) {
@@ -654,6 +765,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const beginDrag = useWindowDrag()
       const start = (e) => {
         if (e.button !== undefined && e.button !== 0) return
+        // 最大化时锁住拖动：位置由视口决定，拖出来的位移会被还原时覆盖（看着像「拖不动」）
+        if (props.locked) return
         // 标题栏只承担拖动：按钮/输入框/链接上的按下不拖窗（否则点输入框会把窗拖走）
         if (e.target && e.target.closest && e.target.closest('button, input, select, textarea, a')) return
         const r0 = props.rect
@@ -664,7 +777,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         })
         e.preventDefault()
       }
-      return h('div', { style: C.titlebar, onMouseDown: start },
+      return h('div', { style: props.locked ? C.titlebarLocked : C.titlebar, onMouseDown: start },
         h('span', { style: C.title }, '扫榜面板'),
         h('span', { style: { flex: 1 } }),
         h('button', {
@@ -1242,7 +1355,16 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                     h('td', { style: C.td }, b.label))
                 }))))
           }),
-          h('div', { style: { position: 'sticky', bottom: '0', marginTop: '6px', padding: '5px 7px', border: '1px solid ' + (dirty ? 'rgba(217,164,65,.6)' : 'rgba(128,128,128,.28)') + '', borderRadius: '6px', background: dirty ? 'rgba(217,164,65,.12)' : 'rgba(128,128,128,.06)' } },
+          /**
+           * ★ 2026-10-23（设置页 UI 重叠）：这条「保存设置」是 sticky 吸底，但背景只有 6%~12% 的灰/黄
+           *   ⇒ 下面滚上来的勾选行直接透出来，和按钮文字叠在一起。改成**不透明底 + 高 z**，
+           *   并加一道向上的投影，让「内容从下面滚过去」这件事看得出来。
+           */
+          h('div', { style: { position: 'sticky', bottom: '0', zIndex: 4, marginTop: '6px', padding: '5px 7px',
+            border: '1px solid ' + (dirty ? 'rgba(217,164,65,.6)' : 'rgba(128,128,128,.28)') + '', borderRadius: '6px',
+            background: 'var(--dsh-surface, #fff)',
+            backgroundImage: dirty ? 'linear-gradient(rgba(217,164,65,.16), rgba(217,164,65,.16))' : 'linear-gradient(rgba(128,128,128,.06), rgba(128,128,128,.06))',
+            boxShadow: '0 -8px 12px -8px rgba(0,0,0,.28)' } },
             h('div', { style: C.row },
               h('button', { style: dirty ? C.btnOn : C.btn, disabled: busy || !dirty, onClick: save }, dirty ? '保存设置（' + picked.length + ' 个榜）' : '已保存（' + picked.length + ' 个榜）'),
               // 放弃改动 = 真的丢掉草稿（否则 load 会按草稿再恢复一遍，等于没放弃）
@@ -2100,6 +2222,47 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('div', { style: { ...C.muted, marginTop: '2px' } }, '首订按 n-1 锚：选上架日 X ⇒ 请求数据日期 X+1（页面内容日期就是 X）；保存后快照记在 X+1 名下。站点给的日期对不上会被拒绝，不写任何文件。')),
         })
       }
+      /**
+       * ★ 2026-10-23（窄面板「作品只显示书名前面的信息，后面一大片空白」）：
+       *   以前窄的时候是把次级列**整列删掉**、再让表格 width:100% 铺满 ⇒ 每行只剩名次 + 书名，
+       *   右半张桌子全空，被删掉的指标也没有别处可看。窄的时候改成**卡片行**：
+       *   第一行 名次 · 书名 · 作者 · 星标；第二行把这一榜要看的指标做成 chip（放不下自动换行）。
+       */
+      const CHIP_SKIP = { title: 1, rank: 1, author: 1, cat: 1, subCat: 1, updated: 1, days: 1 }
+      const chipCols = ((data && data.columns) || []).filter(function (c) { return !CHIP_SKIP[c.key] }).slice(0, 6)
+      const rowCellProps = function (r, c) {
+        return { ...c, _openLink: props.openLink, _boardId: data.boardId, _dataDate: data.dataDate, _bmKey: bookKeyOf(data.boardId, r.key) }
+      }
+      const narrowRow = function (r, i) {
+        const open = !!(pick && pick.key === r.key)
+        const ex = r.extra || {}
+        const titleText = (r.title || '') + (ex.titleSuspect || ex.titleTruncated ? ' ⚠' : '')
+        const chips = chipCols.map(function (c) {
+          const v = cell(rowCellProps(r, c), r)
+          if (v === '—' || v === null || v === undefined || v === '') return null
+          return h('span', { key: 'c' + c.key, style: C.chip, title: c.note || c.label },
+            h('span', { style: { opacity: 0.62 } }, c.label), ' ', v)
+        }).filter(Boolean)
+        return h('div', {
+          key: r.key || ('row' + i),
+          tabIndex: 0,
+          style: { ...C.card, padding: '5px 8px', margin: '5px 0', cursor: 'pointer',
+            borderColor: open ? 'rgba(128,128,128,.62)' : undefined,
+            background: open ? 'rgba(128,128,128,.10)' : undefined },
+          onClick: function () { setPick(open ? null : r) },
+          onKeyDown: function (e) { if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setPick(open ? null : r) } },
+        },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0 } },
+            h('span', { style: { ...C.num, ...C.muted, flex: '0 0 auto', minWidth: '16px', textAlign: 'right' } }, dash(r.rank)),
+            h('a', {
+              href: r.url || '#', title: '在 DSH 侧栏浏览器打开',
+              style: { color: 'inherit', fontWeight: 600, flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+              onClick: function (e) { e.preventDefault(); e.stopPropagation(); (props.openLink || function (u) { window.open(u, '_blank', 'noopener,noreferrer') })(r.url) },
+            }, titleText),
+            r.author ? h('span', { style: { ...C.muted, flex: '0 0 auto', maxWidth: '92px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: r.author }, r.author) : null,
+            h(BookmarkStar, { bookKey: bookKeyOf(data.boardId, r.key), row: r, boardId: data.boardId, dataDate: data.dataDate })),
+          chips.length ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '3px' } }, chips) : null)
+      }
       return h('div', null,
         h('div', { style: C.row },
           selXS('站', curSite || '', sites.map(function (s) { return { value: s.site, label: s.siteName } }), pickSite),
@@ -2124,7 +2287,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('button', { style: C.btn, onClick: function () { reloadBoard(false) } }, '重试')) : null,
         note ? h('div', { style: C.muted }, note) : null,
         data && data.rows && data.rows.length
-          ? h('table', { style: C.table },
+          ? (narrow
+              ? h('div', null, data.rows.map(narrowRow))
+              : h('table', { style: C.table },
               h('thead', null, h('tr', null, cols.map(function (c) { return h('th', { key: c.key, style: C.th, title: c.note || '' }, c.label) }))),
               h('tbody', null, data.rows.map(function (r, i) {
                 return h('tr', {
@@ -2134,9 +2299,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                   onClick: function () { setPick(pick && pick.key === r.key ? null : r) },
                   onKeyDown: function (e) { if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setPick(pick && pick.key === r.key ? null : r) } },
                 }, cols.map(function (c) {
-                  return h('td', { key: c.key, style: isNumCol(c.key) ? { ...C.td, ...C.num } : C.td }, cell({ ...c, _openLink: props.openLink, _boardId: data.boardId, _dataDate: data.dataDate, _bmKey: bookKeyOf(data.boardId, r.key) }, r))
+                  return h('td', { key: c.key, style: isNumCol(c.key) ? { ...C.td, ...C.num } : C.td }, cell(rowCellProps(r, c), r))
                 }))
-              })))
+              }))))
           : h('div', { style: C.muted }, data ? dash(data.note || '没有条目') : '加载中…'),
         pick ? h('div', { style: C.detail },
           h('div', { style: { fontWeight: 600 } }, dash(pick.title)),
@@ -2273,8 +2438,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const [busy, setBusy] = React.useState(false)
       const [msg, setMsg] = React.useState(null)
       const [rect, setRect] = useRect()
-      const [maxed, setMaxed] = React.useState(false)
-      const savedRect = React.useRef(null)
+      /**
+       * ★ 2026-10-23（最大化收不回来）：以前 maxed 只是组件内 state、savedRect 只存内存 ——
+       *   收起面板（组件卸载）再打开，窗口还是铺满的，但 already「最大化」状态丢了 ⇒ 记下的原尺寸也没了，
+       *   之后再点「最大化」会把铺满的尺寸当成原尺寸，永远回不到可拖动的大小。
+       *   现在最大化状态 + 还原尺寸一起进 localStorage，并且最大化**不写** LS_POS（不污染用户拖出来的位置）。
+       */
+      const [maxed, setMaxed] = React.useState(function () { const m = readMaxState(); return !!(m && m.maxed) })
+      const savedRect = React.useRef((function () { const m = readMaxState(); return m && m.saved ? m.saved : null })())
       /** 有未保存草稿时切页/收起先问一句（草稿留在 DRAFTS，回来还在） */
       const [leaveAsk, setLeaveAsk] = React.useState(null)
       const [, bumpDirty] = React.useState(0)
@@ -2319,18 +2490,30 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           .catch(function (e) { setMsg(String(e)) })
           .then(function () { setBusy(false) })
       }
-      /** 最大化：记住原尺寸，还原时回到原位（不改用户的拖动结果） */
+      /**
+       * 最大化 =「铺满可用区域」，**不是**铺满整个视口：
+       *   顶部让开应用顶栏（桌面版的窗口按钮在页面之上，压住就点不到「还原/收起」）。
+       *   每次都按当前视口重算 ⇒ 最大化状态下改窗口大小也始终贴合、不会溢出。
+       */
+      const maxRect = function () {
+        const vw = Math.max(360, Number(window.innerWidth) || 1200)
+        const vh = Math.max(260, Number(window.innerHeight) || 800)
+        const top = topChromeInset() + 8
+        return { x: 8, y: top, w: Math.max(320, vw - 16), h: Math.max(200, vh - top - 8) }
+      }
+      /** 最大化/还原：记住原尺寸，还原时回到原位（不改用户的拖动结果） */
       const toggleMax = function () {
         if (!maxed) {
-          savedRect.current = rect
-          const vw = Math.max(360, Number(window.innerWidth) || 1200)
-          const vh = Math.max(280, Number(window.innerHeight) || 800)
+          savedRect.current = { x: rect.x, y: rect.y, w: rect.w, h: rect.h }
           setMaxed(true)
-          setRect({ x: 8, y: 8, w: Math.max(360, vw - 16), h: Math.max(280, vh - 16) })
+          writeMaxState({ maxed: true, saved: savedRect.current })
           return
         }
         setMaxed(false)
-        if (savedRect.current) setRect(savedRect.current)
+        const back = savedRect.current
+        savedRect.current = null
+        writeMaxState(null)
+        if (back) setRect(back)
       }
       // Esc：没有菜单/详情打开时收起面板；编辑中不收起（全局处理器已挡）
       // Esc 的最后一层：没有菜单/详情打开时收起面板（编辑中由全局处理器挡住）
@@ -2342,11 +2525,13 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       useEscLayer(open ? closePanelLayer : null)
       // 收起后：按钮同样可拖动、同样记住位置（用同一份 rect，不再回右上角）
       if (!open) return null
-      const narrow = rect.w < 720
+      // 实际渲染用的矩形：最大化时按视口现算，其余时候用用户拖出来的位置/尺寸
+      const shown = maxed ? maxRect() : rect
+      const narrow = shown.w < 720
       const rev = revOf(ov)
-      return h('div', { style: { ...C.win, left: rect.x + 'px', top: rect.y + 'px', width: rect.w + 'px', height: rect.h + 'px', fontSize: '13px' } },
+      return h('div', { 'data-rank-scan-win': '1', style: { ...C.win, left: shown.x + 'px', top: shown.y + 'px', width: shown.w + 'px', height: shown.h + 'px', fontSize: '13px' } },
         h(DragBar, {
-          rect: rect, setRect: setRect, maxed: maxed, onToggleMax: toggleMax,
+          rect: shown, setRect: setRect, maxed: maxed, locked: maxed, onToggleMax: toggleMax,
           onCollapse: function () {
             if (dirtyGuard.any()) { setLeaveAsk({ tab: null, keys: dirtyGuard.list() }); return }
             setOpen(false)
@@ -2373,7 +2558,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               : tab === 'board' ? h(BoardTab, { ov: ov, openLink: props.openLink, narrow: narrow, rev: rev })
               : tab === 'bm' ? h(BookmarksTab, { openLink: props.openLink })
               : h(SettingsTab, { ov: ov, onSaved: reload }))),
-        h(ResizeHandle, { rect: rect, setRect: setRect }))
+        // 最大化时不显示缩放手柄（尺寸由视口决定，拖了也没用）
+        maxed ? null : h(ResizeHandle, { rect: rect, setRect: setRect }))
     }
 
     /** 打开作品页：
