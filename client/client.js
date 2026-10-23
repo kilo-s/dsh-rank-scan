@@ -837,6 +837,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
      */
     function Overview(props) {
       const ov = props.ov
+      /**
+       * ★ 2026-10-23（窄面板版式）：概览两张表以前一律四列铺开 —— 420px 时「分组/榜/书名/变化」
+       *   互相挤成一条，备注列更会被压成一字一行。这里按面板宽度决定：
+       *   变化列表 <620 换成卡片行（分组 chip + 书名 + 变化，榜名放第二行）；
+       *   全部榜单 <620 不显示备注列，备注改到榜名下面一行。
+       */
+      const avail = Math.max(320, Number(props.width) || (props.narrow ? 420 : 900))
+      const chgNarrow = avail < 620
       const enrichS = React.useState(null)
       const enrichStatus = enrichS[0]
       const enrichRun = enrichStatus && enrichStatus.enrichRun ? enrichStatus.enrichRun : null
@@ -1055,28 +1063,55 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               onClick: function () { setChgFilter(o.value) },
             }, o.label + ' ' + (o.value ? groupCount(o.value) : chgRealTotal))
           })) : null,
-        shownEntries.length ? h('table', { style: C.table },
-          h('thead', null, h('tr', null, ['分组', '榜', '书名', '变化'].map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
-          h('tbody', null, shownBySite.flatMap(function (g) {
-            const head = h('tr', { key: 'ch-' + g.site },
-              h('td', { style: { ...C.td, paddingTop: '7px', fontWeight: 600, color: 'rgba(128,128,128,.95)' }, colSpan: 4 },
-                g.siteName + ' · ' + g.items.length + ' 条'))
-            const body = g.items.map(function (e, i) {
-              return h('tr', {
-                key: 'c-' + g.site + i,
-                style: { cursor: 'pointer' },
-                title: '在「榜单」页打开：' + boardLabel(e.it.boardId),
-                onClick: function () { props.onOpenBoard && props.onOpenBoard(e.it.boardId) },
-              },
-                h('td', { style: C.td }, changesGroupLabel(e.group, e.it.boardId)),
-                h('td', { style: { ...C.td, maxWidth: '150px' } }, h('span', { style: C.ellip, title: e.it.boardName }, e.it.boardName)),
-                h('td', { style: C.td }, e.it.title, ' ',
-                  h('span', { onClick: function (ev) { ev.stopPropagation() } },
-                    h(BookmarkStar, { bookKey: bookKeyOf(e.it.boardId, e.it.title), boardId: e.it.boardId, row: null, title: e.it.title }))),
-                h('td', { style: { ...C.td, ...C.num } }, dash(e.it.delta)))
-            })
-            return [head].concat(body)
-          }))) : null,
+        /**
+         * 变化列表：宽的时候是表格（分组 / 榜 / 书名 / 变化），窄的时候换卡片行 ——
+         *   420px 下四列表格会把「分组/榜/书名/变化」挤成一条，书名被折成两行、星标掉到下一行。
+         *   卡片行：第一行 分组 chip + 书名 + 星标 + 变化，第二行 榜名（次要信息，省略号）。
+         */
+        shownEntries.length ? (chgNarrow
+          ? h('div', null, shownBySite.map(function (g) {
+              return h('div', { key: 'nc-' + g.site },
+                h('div', { style: { ...C.muted, marginTop: '6px', fontWeight: 600 } }, g.siteName + ' · ' + g.items.length + ' 条'),
+                g.items.map(function (e, i) {
+                  return h('div', {
+                    key: 'nci-' + g.site + i,
+                    tabIndex: 0,
+                    title: '在「榜单」页打开：' + boardLabel(e.it.boardId),
+                    style: { ...C.card, padding: '4px 7px', margin: '4px 0', cursor: 'pointer' },
+                    onClick: function () { props.onOpenBoard && props.onOpenBoard(e.it.boardId) },
+                    onKeyDown: function (ev) { if (ev && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); props.onOpenBoard && props.onOpenBoard(e.it.boardId) } },
+                  },
+                    h('div', { style: { display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0 } },
+                      h('span', { style: { ...C.chip, flex: '0 0 auto', margin: 0 } }, changesGroupLabel(e.group, e.it.boardId)),
+                      h('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: e.it.title }, e.it.title),
+                      h('span', { style: { flex: '0 0 auto' }, onClick: function (ev) { ev.stopPropagation() } },
+                        h(BookmarkStar, { bookKey: bookKeyOf(e.it.boardId, e.it.title), boardId: e.it.boardId, row: null, title: e.it.title })),
+                      h('span', { style: { ...C.num, flex: '0 0 auto' }, title: '名次变化' }, dash(e.it.delta))),
+                    h('div', { style: { ...C.muted, marginTop: '1px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, e.it.boardName))
+                }))
+            }))
+          : h('table', { style: C.table },
+              h('thead', null, h('tr', null, ['分组', '榜', '书名', '变化'].map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
+              h('tbody', null, shownBySite.flatMap(function (g) {
+                const head = h('tr', { key: 'ch-' + g.site },
+                  h('td', { style: { ...C.td, paddingTop: '7px', fontWeight: 600, color: 'rgba(128,128,128,.95)' }, colSpan: 4 },
+                    g.siteName + ' · ' + g.items.length + ' 条'))
+                const body = g.items.map(function (e, i) {
+                  return h('tr', {
+                    key: 'c-' + g.site + i,
+                    style: { cursor: 'pointer' },
+                    title: '在「榜单」页打开：' + boardLabel(e.it.boardId),
+                    onClick: function () { props.onOpenBoard && props.onOpenBoard(e.it.boardId) },
+                  },
+                    h('td', { style: { ...C.td, whiteSpace: 'nowrap' } }, changesGroupLabel(e.group, e.it.boardId)),
+                    h('td', { style: { ...C.td, maxWidth: '160px' } }, h('span', { style: { ...C.ellip, maxWidth: Math.max(90, Math.round(avail * 0.2)) + 'px' }, title: e.it.boardName }, e.it.boardName)),
+                    h('td', { style: { ...C.td, minWidth: '140px' } }, e.it.title, ' ',
+                      h('span', { onClick: function (ev) { ev.stopPropagation() } },
+                        h(BookmarkStar, { bookKey: bookKeyOf(e.it.boardId, e.it.title), boardId: e.it.boardId, row: null, title: e.it.title }))),
+                    h('td', { style: { ...C.td, ...C.num } }, dash(e.it.delta)))
+                })
+                return [head].concat(body)
+              })))) : null,
         /* ⑤ 全部榜单（可折叠） */
         h('div', { style: { ...C.row, marginTop: '8px' } },
           h('button', {
@@ -1085,14 +1120,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             onClick: function () { setShowAll(!showAll) },
           }, (showAll ? '▾ ' : '▸ ') + '全部榜单（' + total + '）')),
         showAll ? h('table', { style: C.table },
-          h('thead', null, h('tr', null, ['榜（按站）', '涨 / 新 / 退', '状态'].concat(hasNoteCol ? ['备注'] : []).map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
+          h('thead', null, h('tr', null, ['榜（按站）', '涨 / 新 / 退', '状态'].concat(hasNoteCol && !chgNarrow ? ['备注'] : []).map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
           h('tbody', null, (ov.sites || []).flatMap(function (s) {
             const okN = s.boards.filter(function (b) { return b.status === 'ok' }).length
             const times = s.boards.map(function (b) { return b.lastCapture ? fmtLocalHM(b.lastCapture) : '' })
             const sameTime = times.length > 0 && times.every(function (t) { return t === times[0] })
             const headTime = sameTime ? times[0] : ''
             const head = h('tr', { key: 'h-' + s.site },
-              h('td', { style: { ...C.td, paddingTop: '7px', fontWeight: 600 }, colSpan: hasNoteCol ? 4 : 3 },
+              h('td', { style: { ...C.td, paddingTop: '7px', fontWeight: 600 }, colSpan: hasNoteCol && !chgNarrow ? 4 : 3 },
                 h('span', { style: C.dot(okN === s.boards.length ? 'ok' : 'bad') }),
                 ' ' + s.siteName,
                 h('span', { style: C.muted }, '  ' + s.boards.length + ' 个榜 · 已采集 ' + okN + (headTime ? ' · 抓取 ' + headTime : ''))))
@@ -1100,15 +1135,18 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               const noBase = b.up === null && b.newCount === null && b.out === null
               const label = b.name + (b.derived ? ' · 本地派生' : b.displayed ? '' : ' · 未显示')
               return h('tr', { key: b.boardId },
-                h('td', { style: { ...C.td, paddingLeft: '16px' } }, h('span', { style: C.ellip, title: label }, label)),
-                h('td', { style: { ...C.td, ...C.num } }, noBase ? '—' : h('span', null,
+                h('td', { style: { ...C.td, paddingLeft: '16px', maxWidth: Math.max(140, Math.round(avail * 0.5)) } },
+                  h('span', { style: { ...C.ellip, maxWidth: Math.max(120, Math.round(avail * 0.46)) + 'px' }, title: label }, label),
+                  // 窄面板不单开「备注」列（会被压成一字一行），备注改到榜名下面
+                  hasNoteCol && chgNarrow && b.note ? h('div', { style: { ...C.muted, whiteSpace: 'normal' } }, dash(b.note)) : null),
+                h('td', { style: { ...C.td, ...C.num } }, noBase ? '—' : h('span', { style: { whiteSpace: 'nowrap' } },
                   '涨 ', h('span', { style: b.up > 0 ? C.up : null }, dash(b.up)), ' / ',
                   '新 ', h('span', { style: { fontWeight: 600 } }, dash(b.newCount)), ' / ',
                   '退 ', h('span', { style: b.out > 0 ? C.down : null }, dash(b.out)))),
                 h('td', { style: C.td }, b.status === 'ok'
                   ? (headTime ? h('span', { style: C.muted }, '—') : (b.lastCapture ? fmtLocalHM(b.lastCapture) : '—'))
                   : h('span', { style: { color: b.status === 'stale' ? '#d9a441' : '#d9534f' } }, statusText(b.status))),
-                hasNoteCol ? h('td', { style: C.td }, dash(b.note)) : null)
+                hasNoteCol && !chgNarrow ? h('td', { style: C.td }, dash(b.note)) : null)
             })
             return [head].concat(rowsOut)
           }))) : null)
@@ -2230,6 +2268,33 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
        */
       const CHIP_SKIP = { title: 1, rank: 1, author: 1, cat: 1, subCat: 1, updated: 1, days: 1 }
       const chipCols = ((data && data.columns) || []).filter(function (c) { return !CHIP_SKIP[c.key] }).slice(0, 6)
+      /** 该行是否正展开详情 */
+      const isOpen = function (r) { return !!(pick && pick.key === r.key) }
+      /**
+       * ★ 2026-10-23（点了没反应）：详情卡原来挂在**整张列表之后** ⇒ 列表一长就在视口外
+       *   （实测 820×640 面板：详情卡 top=738、可视区底 731，根本没进画面）。
+       *   现在改成「点哪一行，详情就展开在哪一行下面」。
+       */
+      const detailCard = function (r) {
+        const ex = r.extra || {}
+        return h('div', { style: { ...C.detail, marginTop: '4px' } },
+          h('div', { style: { fontWeight: 600 } }, dash(r.title)),
+          h('div', { style: C.muted }, '作者 ' + dash(r.author) + ' · 名次 ' + dash(r.rank) + ' · 字数 ' + fmtWords(ex.wordsText || ex.wordsCnt || ex.wordNumber || ex.words)),
+          h('div', { style: C.muted }, '更新 ' + fmtTime(ex.lastChapterUpdateTime)),
+          h('div', { style: C.row },
+            h(BookmarkStar, { bookKey: bookKeyOf(curBoard, r.key), row: r, boardId: curBoard, dataDate: data && data.dataDate }),
+            h(DetailBookmarkEditor, { bookKey: bookKeyOf(curBoard, r.key) }),
+            h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
+            h('a', { href: r.url || '#', target: '_blank', rel: 'noreferrer', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
+            h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); try { navigator.clipboard.writeText(r.url || '') } catch (err) {} } }, '复制链接'),
+            h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); setPick(null) } }, '关闭')),
+          ex.qidiantuUrl || ex.sourceUrl
+            ? h('div', { style: C.row },
+                (ex.qidiantuUrl ? h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.qidiantuUrl) } }, '看起点图原始页') : null),
+                (ex.sourceUrl ? h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.sourceUrl) } }, '看原数据来源页') : null),
+                h('span', { style: C.muted }, '（数据口径以来源页为准）'))
+            : null)
+      }
       const rowCellProps = function (r, c) {
         return { ...c, _openLink: props.openLink, _boardId: data.boardId, _dataDate: data.dataDate, _bmKey: bookKeyOf(data.boardId, r.key) }
       }
@@ -2288,42 +2353,28 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         note ? h('div', { style: C.muted }, note) : null,
         data && data.rows && data.rows.length
           ? (cards
-              ? h('div', null, data.rows.map(narrowRow))
+              ? h('div', null, data.rows.map(function (r, i) {
+                  // 卡片行 + 展开时紧跟其后的详情卡（详情别再挂到列表末尾）
+                  return h('div', { key: 'w' + (r.key || i) }, narrowRow(r, i), isOpen(r) ? detailCard(r) : null)
+                }))
               : h('table', { style: C.table },
               h('thead', null, h('tr', null, cols.map(function (c) { return h('th', { key: c.key, style: C.th, title: c.note || '' }, c.label) }))),
-              h('tbody', null, data.rows.map(function (r, i) {
-                return h('tr', {
+              h('tbody', null, data.rows.flatMap(function (r, i) {
+                const tr = h('tr', {
                   key: r.key || i,
                   tabIndex: 0,
                   style: { cursor: 'pointer' },
-                  onClick: function () { setPick(pick && pick.key === r.key ? null : r) },
-                  onKeyDown: function (e) { if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setPick(pick && pick.key === r.key ? null : r) } },
+                  onClick: function () { setPick(isOpen(r) ? null : r) },
+                  onKeyDown: function (e) { if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setPick(isOpen(r) ? null : r) } },
                 }, cols.map(function (c) {
                   return h('td', { key: c.key, style: isNumCol(c.key) ? { ...C.td, ...C.num } : C.td }, cell(rowCellProps(r, c), r))
                 }))
+                // 详情卡作为紧跟那一行的一行（colSpan 占满），点哪一行就在哪一行下面展开
+                return isOpen(r)
+                  ? [tr, h('tr', { key: 'd' + (r.key || i) }, h('td', { colSpan: Math.max(1, cols.length), style: { padding: '0 0 4px' } }, detailCard(r)))]
+                  : [tr]
               }))))
           : h('div', { style: C.muted }, data ? dash(data.note || '没有条目') : '加载中…'),
-        pick ? h('div', { style: C.detail },
-          h('div', { style: { fontWeight: 600 } }, dash(pick.title)),
-          h('div', { style: C.muted }, '作者 ' + dash(pick.author) + ' · 名次 ' + dash(pick.rank) + ' · 字数 ' + fmtWords((pick.extra || {}).wordsText || (pick.extra || {}).wordsCnt || (pick.extra || {}).wordNumber || (pick.extra || {}).words)),
-          h('div', { style: C.muted }, '更新 ' + fmtTime((pick.extra || {}).lastChapterUpdateTime)),
-          h('div', { style: C.row },
-            h(BookmarkStar, { bookKey: bookKeyOf(curBoard, pick.key), row: pick, boardId: curBoard, dataDate: data && data.dataDate }),
-            h(DetailBookmarkEditor, { bookKey: bookKeyOf(curBoard, pick.key) }),
-            h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(pick.url); else window.open(pick.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
-            h('a', { href: pick.url || '#', target: '_blank', rel: 'noreferrer', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
-            h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); try { navigator.clipboard.writeText(pick.url || '') } catch (err) {} } }, '复制链接'),
-            h('button', { style: C.btn, onClick: function () { setPick(null) } }, '关闭')),
-          (pick.extra || {}).qidiantuUrl || (pick.extra || {}).sourceUrl
-            ? h('div', { style: C.row },
-                ((pick.extra || {}).qidiantuUrl
-                  ? h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(pick.extra.qidiantuUrl) } }, '看起点图原始页')
-                  : null),
-                ((pick.extra || {}).sourceUrl
-                  ? h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(pick.extra.sourceUrl) } }, '看原数据来源页')
-                  : null),
-                h('span', { style: C.muted }, '（数据口径以来源页为准）'))
-            : null) : null,
         h('div', { style: { ...C.muted, marginTop: '6px' } }, '列随榜变化：该站没有的字段整列不出现；有字段但这条没抓到显示「—」。面板变窄时列会按宽度自动收起（先收作者/分类/字数这类次级列，名次/变化/书名与该榜主指标一直在），再窄就换成卡片行；点行看详情。'))
     }
 
@@ -2517,7 +2568,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('button', { style: C.btn, onClick: function () { setLeaveAsk(null) } }, '继续编辑')) : null,
           h(TabBoundary, { name: tab },
             tab === 'ov' ? h(Overview, {
-              ov: ov, busy: busy, act: act, reload: reload, narrow: narrow, rev: rev,
+              ov: ov, busy: busy, act: act, reload: reload, narrow: narrow, width: rect.w, rev: rev,
               onOpenBoard: openBoard,
               onRescanBoard: function (boardId) { act('/scan', { boards: String(boardId) }) },
             })

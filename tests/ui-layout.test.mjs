@@ -70,3 +70,22 @@ test('书签卡的「截止」只显示 MM-DD（mdOf 不许把 ISO 串整段切�
   const s = src()
   assert.ok(s.includes('s.length >= 10 ? s.slice(5, 10) : s'), 'mdOf 必须 slice(5, 10)，否则卡上显示 10-17T04:00:00.000Z')
 })
+
+test('⑤ 点行展开的详情必须就在那一行下面（不再挂到整张列表之后，长列表里等于看不见）', () => {
+  const s = src()
+  assert.ok(s.includes('const isOpen = function (r)'), '必须有「这一行是否展开」的判定')
+  assert.ok(s.includes('const detailCard = function (r)'), '详情卡要抽成按行渲染的函数')
+  assert.ok(s.includes("data.rows.flatMap(function (r, i) {"), '表格模式要把详情作为紧跟那一行的一行插进去')
+  assert.ok(s.includes("h('tr', { key: 'd' + (r.key || i) }"), '详情行必须紧跟在被点的那一行后面')
+  assert.ok(s.includes('narrowRow(r, i), isOpen(r) ? detailCard(r) : null'), '卡片模式同理：详情紧跟卡片')
+  assert.ok(!/\n\s+pick \? h\('div', \{ style: C\.detail \},/.test(s), '旧的「列表末尾挂一张详情」写法不许回来')
+})
+
+test('⑥ 概览在窄面板下换版式：变化列表改卡片行，全部榜单不再挤备注列', () => {
+  const s = src()
+  assert.ok(s.includes('width: rect.w, rev: rev'), '概览要拿到面板宽度才能决定版式')
+  assert.ok(s.includes('const chgNarrow = avail < 620'), '窄/宽要有个明确的阈值')
+  assert.ok(s.includes('shownEntries.length ? (chgNarrow'), '变化列表窄的时候走卡片行，不是四列硬挤')
+  assert.ok(s.includes('hasNoteCol && !chgNarrow'), '全部榜单窄的时候不显示备注列（会被压成一字一行）')
+  assert.ok(s.includes('hasNoteCol && chgNarrow && b.note'), '备注要改到榜名下面一行，不能直接丢掉')
+})
