@@ -139,9 +139,6 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         display: 'flex', flexDirection: 'column', overflow: 'hidden' },
       titlebar: { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 8px 6px 10px',
         borderBottom: '1px solid rgba(128,128,128,.25)', cursor: 'move', userSelect: 'none', background: 'rgba(128,128,128,.06)' },
-      // 最大化时标题栏不可拖（提示靠 title 文案），避免「拖了没反应」的错觉
-      titlebarLocked: { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 8px 6px 10px',
-        borderBottom: '1px solid rgba(128,128,128,.25)', cursor: 'default', userSelect: 'none', background: 'rgba(128,128,128,.06)' },
       title: { fontWeight: 600, fontSize: '13px', marginRight: '2px' },
       body: { padding: '8px 10px 10px', overflow: 'auto', flex: '1 1 auto' },
       row: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', margin: '5px 0' },
@@ -281,59 +278,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const y = Math.min(Math.max(M, num(r.y, 64)), Math.max(M, vh - h - M))
       return { x: x, y: y, w: w, h: h }
     }
-    /** 最大化状态的本地记忆：{ maxed, saved } —— 收起面板再打开不能丢掉「还原尺寸」 */
-    const LS_MAX = 'rank-scan-panel:max:v1'
-    const readMaxState = function () {
-      try {
-        const raw = localStorage.getItem(LS_MAX)
-        if (!raw) return null
-        const o = JSON.parse(raw)
-        return o && typeof o === 'object' ? o : null
-      } catch (e) { return null }
-    }
-    const writeMaxState = function (v) {
-      try {
-        if (v) localStorage.setItem(LS_MAX, JSON.stringify(v))
-        else localStorage.removeItem(LS_MAX)
-      } catch (e) {}
-    }
     /**
-     * ★ 2026-10-23（最大化盖住桌面版窗口按钮）：
-     *   「最大化」以前直接铺满整个视口（x=8,y=8），把 DSH 自己的顶栏/窗口按钮压在下面 ——
-     *   而桌面版的窗口按钮在页面**之上**，正好盖住面板标题栏的「还原 / 收起」，点不出来就收不回去。
-     *   这里量出应用顶栏（贴顶、又不到半屏高的那个容器）的高度，最大化时让开它。
+     * ★ 2026-10-23（使用者口径）：「最大化」整块去掉 —— 它跟宿主界面必然重叠（铺满就把
+     *   DSH 自己的顶栏夹在下面），拖到哪、缩到多大本来就能自己决定，多一个会打架的按钮不值得。
+     *   面板只剩：拖动标题栏 + 右下角拖拽缩放，位置尺寸照旧记在 LS_POS 里。
      */
-    const topChromeInset = function () {
-      if (typeof document === 'undefined') return 0
-      const vh = Math.max(240, Number(window.innerHeight) || 800)
-      const inPanel = function (el) { return !!(el && el.closest && el.closest('[data-rank-scan-win]')) }
-      try {
-        const marks = document.querySelectorAll('header, [role="banner"], [data-dsh-titlebar]')
-        for (let i = 0; i < marks.length; i++) {
-          const el = marks[i]
-          if (inPanel(el)) continue
-          const r = el.getBoundingClientRect()
-          if (r.top <= 0 && r.bottom > 8 && r.bottom < vh * 0.4) return Math.round(r.bottom)
-        }
-      } catch (e) {}
-      // 兜底：从顶部取一个点，沿祖先链找「贴着顶、又不到半屏高」的容器 = 应用顶栏
-      try {
-        const vw = Math.max(280, Number(window.innerWidth) || 1200)
-        const pts = [[Math.round(vw * 0.5), 2], [Math.max(8, vw - 12), 2]]
-        for (let p = 0; p < pts.length; p++) {
-          let n = document.elementFromPoint(pts[p][0], pts[p][1])
-          for (let d = 0; n && d < 8; d++) {
-            if (n === document.body || n === document.documentElement) break
-            if (!inPanel(n)) {
-              const r = n.getBoundingClientRect()
-              if (r.top <= 0 && r.bottom > 8 && r.bottom < vh * 0.4) return Math.round(r.bottom)
-            }
-            n = n.parentElement
-          }
-        }
-      } catch (e) {}
-      return 0
-    }
 
     /* ────────────────────────────────────────────────────────────────────────
      * ★ 2026-10-22（简明性 / 易用性，工作包 B·C·D）共用小件
@@ -537,13 +486,65 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         open ? h('div', { style: { marginTop: '4px' } }, props.children)
           : (props.summary ? h('div', { style: { ...C.muted, marginTop: '2px' } }, props.summary) : null))
     }
-    /** 窄面板要收起的次级列（书名/名次或主指标/变化/书签 之外的） */
-    const SECONDARY_COLS = { author: 1, cat: 1, subCat: 1, words: 1, collect: 1, collectBase: 1, score: 1, updated: 1, fans: 1, ratio: 1, days: 1, buyNumRaw: 1, settledDays: 1 }
-    const narrowColumns = function (columns, narrow) {
-      const list = columns || []
-      if (!narrow) return list
-      const kept = list.filter(function (c) { return !SECONDARY_COLS[c.key] })
-      return kept.length ? kept : list.slice(0, 3)
+    /**
+     * ★ 2026-10-23（使用者：「要拉到很大才显示全」）：
+     *   以前是**固定阈值删列**：<720px 一口气把作者/分类/字数/收藏…全删掉（只剩名次/书名/主指标，
+     *   中间一大片空白），≥720px 又把**全部**列铺开 —— 首订榜 10 列、三江 15 列，得拉到 1000px 以上
+     *   才装得下，中间宽度只能横向滚动。
+     *   现在**按可用宽度装列**：先估算每列要占多少，超了就从「最不重要」的那列开始一列一列丢，
+     *   列序不变；名次 / 变化 / 书名 / 该榜主指标**永不丢**。宽度再小（<560）才整体换成卡片行。
+     */
+    const COL_PRIO = {
+      value: 1, read: 1, collectBase: 1, periodTotal: 1, dailyDelta: 1,
+      collect: 2, ratio: 2, words: 2, readDelta: 2, buyNumRaw: 2,
+      days: 3, author: 4, fans: 4,
+      cat: 5, score: 5,
+      subCat: 6, settledDays: 6,
+      updated: 7,
+    }
+    /** 优先级数字越大越先被丢；7 天增量的 daily0..6 排最后 */
+    const colPrio = function (c) {
+      const k = String((c && c.key) || '')
+      if (/^daily\d+$/.test(k)) return 8
+      return COL_PRIO[k] != null ? COL_PRIO[k] : 3
+    }
+    /**
+     * 列宽估算：**刻意估宽一点**（实测浏览器给数字列的宽度比字面宽）。
+     * 估窄了的后果是真的横向滚动 / 书名被挤成两行，比早收一列难看得多。
+     */
+    const colEst = function (c) {
+      const k = String((c && c.key) || '')
+      if (k === 'title') return 200
+      if (k === 'updated') return 124
+      if (k === 'rank') return 36
+      if (k === 'delta') return 50
+      if (/^daily\d+$/.test(k)) return 46
+      const label = String((c && c.label) || '')
+      return Math.max(64, label.length * 12 + 34)
+    }
+    const mustCol = function (c) {
+      const k = String((c && c.key) || '')
+      return k === 'title' || k === 'rank' || k === 'delta' || colPrio(c) === 1
+    }
+    /** 把列装进 width：永不丢 must 列；同优先级从后往前丢 */
+    const fitColumns = function (columns, width) {
+      const list = (columns || []).slice()
+      if (!list.length) return list
+      const budget = Math.max(320, Number(width) || 320)
+      let sum = list.reduce(function (acc, c) { return acc + colEst(c) }, 0)
+      for (let guard = 0; sum > budget && guard < 80; guard++) {
+        let at = -1
+        let worst = -1
+        for (let i = 0; i < list.length; i++) {
+          if (mustCol(list[i])) continue
+          const pr = colPrio(list[i])
+          if (pr >= worst) { worst = pr; at = i }
+        }
+        if (at < 0) break
+        sum -= colEst(list[at])
+        list.splice(at, 1)
+      }
+      return list
     }
     function useRect() {
       const st = React.useState(() => {
@@ -765,8 +766,6 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const beginDrag = useWindowDrag()
       const start = (e) => {
         if (e.button !== undefined && e.button !== 0) return
-        // 最大化时锁住拖动：位置由视口决定，拖出来的位移会被还原时覆盖（看着像「拖不动」）
-        if (props.locked) return
         // 标题栏只承担拖动：按钮/输入框/链接上的按下不拖窗（否则点输入框会把窗拖走）
         if (e.target && e.target.closest && e.target.closest('button, input, select, textarea, a')) return
         const r0 = props.rect
@@ -777,15 +776,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         })
         e.preventDefault()
       }
-      return h('div', { style: props.locked ? C.titlebarLocked : C.titlebar, onMouseDown: start },
+      return h('div', { style: C.titlebar, onMouseDown: start },
         h('span', { style: C.title }, '扫榜面板'),
         h('span', { style: { flex: 1 } }),
-        h('button', {
-          style: C.btn,
-          title: props.maxed ? '还原窗口大小' : '最大化（铺满可用区域）',
-          'aria-pressed': props.maxed ? 'true' : 'false',
-          onClick: props.onToggleMax,
-        }, props.maxed ? '还原' : '最大化'),
         h('button', { style: C.btn, onClick: props.onCollapse, title: '收起面板（Esc 也可以）' }, '收起'))
     }
 
@@ -2007,7 +2000,13 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
      */
     function BoardTab(props) {
       const ov = props.ov
-      const narrow = !!props.narrow
+      /**
+       * ★ 2026-10-23：可用宽度（面板宽减去正文左右 padding 与纵向滚动条）决定两件事 ——
+       *   ① 表格装几列（fitColumns，按宽装、超了从最不重要的列丢）；
+       *   ② 太窄（<560）就整体换成卡片行，别硬留两列把右半屏空着。
+       */
+      const avail = Math.max(320, Number(props.width) || (props.narrow ? 520 : 960))
+      const cards = avail < 560
       const sites = (ov && ov.sites) || []
       // 收起面板会卸载 BoardTab ⇒ 站/榜选择要持久化；日期/排序按榜各记各的
       const [stSite, setStSite] = React.useState(function () { return sel.get().site })
@@ -2182,7 +2181,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         return bits.join(' · ')
       })()
       const enrichMissing = data && data.enrich && data.enrich.missing > 0 ? data.enrich.missing : 0
-      const cols = narrowColumns(data && data.columns, narrow)
+      // 减掉正文左右 padding（20）、纵向滚动条与一点余量 ⇒ 表格不会溢出成横向滚动
+      const cols = fitColumns(data && data.columns, avail - 48)
       const viewDate = (data && (data._queryDate || sd)) || ''
       const menuItems = [
         { label: '扫描本榜（联网）', disabled: busy, onClick: scanBoard, title: '只抓当前这一榜，不动其它榜' },
@@ -2287,7 +2287,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('button', { style: C.btn, onClick: function () { reloadBoard(false) } }, '重试')) : null,
         note ? h('div', { style: C.muted }, note) : null,
         data && data.rows && data.rows.length
-          ? (narrow
+          ? (cards
               ? h('div', null, data.rows.map(narrowRow))
               : h('table', { style: C.table },
               h('thead', null, h('tr', null, cols.map(function (c) { return h('th', { key: c.key, style: C.th, title: c.note || '' }, c.label) }))),
@@ -2324,7 +2324,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                   : null),
                 h('span', { style: C.muted }, '（数据口径以来源页为准）'))
             : null) : null,
-        h('div', { style: { ...C.muted, marginTop: '6px' } }, '列随榜变化：该站没有的字段整列不出现；有字段但这条没抓到显示「—」。窄面板下作者/分类等次级列会收起，点行看详情。'))
+        h('div', { style: { ...C.muted, marginTop: '6px' } }, '列随榜变化：该站没有的字段整列不出现；有字段但这条没抓到显示「—」。面板变窄时列会按宽度自动收起（先收作者/分类/字数这类次级列，名次/变化/书名与该榜主指标一直在），再窄就换成卡片行；点行看详情。'))
     }
 
     /**
@@ -2438,14 +2438,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const [busy, setBusy] = React.useState(false)
       const [msg, setMsg] = React.useState(null)
       const [rect, setRect] = useRect()
-      /**
-       * ★ 2026-10-23（最大化收不回来）：以前 maxed 只是组件内 state、savedRect 只存内存 ——
-       *   收起面板（组件卸载）再打开，窗口还是铺满的，但 already「最大化」状态丢了 ⇒ 记下的原尺寸也没了，
-       *   之后再点「最大化」会把铺满的尺寸当成原尺寸，永远回不到可拖动的大小。
-       *   现在最大化状态 + 还原尺寸一起进 localStorage，并且最大化**不写** LS_POS（不污染用户拖出来的位置）。
-       */
-      const [maxed, setMaxed] = React.useState(function () { const m = readMaxState(); return !!(m && m.maxed) })
-      const savedRect = React.useRef((function () { const m = readMaxState(); return m && m.saved ? m.saved : null })())
+
       /** 有未保存草稿时切页/收起先问一句（草稿留在 DRAFTS，回来还在） */
       const [leaveAsk, setLeaveAsk] = React.useState(null)
       const [, bumpDirty] = React.useState(0)
@@ -2490,31 +2483,6 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           .catch(function (e) { setMsg(String(e)) })
           .then(function () { setBusy(false) })
       }
-      /**
-       * 最大化 =「铺满可用区域」，**不是**铺满整个视口：
-       *   顶部让开应用顶栏（桌面版的窗口按钮在页面之上，压住就点不到「还原/收起」）。
-       *   每次都按当前视口重算 ⇒ 最大化状态下改窗口大小也始终贴合、不会溢出。
-       */
-      const maxRect = function () {
-        const vw = Math.max(360, Number(window.innerWidth) || 1200)
-        const vh = Math.max(260, Number(window.innerHeight) || 800)
-        const top = topChromeInset() + 8
-        return { x: 8, y: top, w: Math.max(320, vw - 16), h: Math.max(200, vh - top - 8) }
-      }
-      /** 最大化/还原：记住原尺寸，还原时回到原位（不改用户的拖动结果） */
-      const toggleMax = function () {
-        if (!maxed) {
-          savedRect.current = { x: rect.x, y: rect.y, w: rect.w, h: rect.h }
-          setMaxed(true)
-          writeMaxState({ maxed: true, saved: savedRect.current })
-          return
-        }
-        setMaxed(false)
-        const back = savedRect.current
-        savedRect.current = null
-        writeMaxState(null)
-        if (back) setRect(back)
-      }
       // Esc：没有菜单/详情打开时收起面板；编辑中不收起（全局处理器已挡）
       // Esc 的最后一层：没有菜单/详情打开时收起面板（编辑中由全局处理器挡住）
       const closePanelLayer = React.useCallback(function () {
@@ -2525,13 +2493,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       useEscLayer(open ? closePanelLayer : null)
       // 收起后：按钮同样可拖动、同样记住位置（用同一份 rect，不再回右上角）
       if (!open) return null
-      // 实际渲染用的矩形：最大化时按视口现算，其余时候用用户拖出来的位置/尺寸
-      const shown = maxed ? maxRect() : rect
-      const narrow = shown.w < 720
+      const narrow = rect.w < 720
       const rev = revOf(ov)
-      return h('div', { 'data-rank-scan-win': '1', style: { ...C.win, left: shown.x + 'px', top: shown.y + 'px', width: shown.w + 'px', height: shown.h + 'px', fontSize: '13px' } },
+      return h('div', { 'data-rank-scan-win': '1', style: { ...C.win, left: rect.x + 'px', top: rect.y + 'px', width: rect.w + 'px', height: rect.h + 'px', fontSize: '13px' } },
         h(DragBar, {
-          rect: shown, setRect: setRect, maxed: maxed, locked: maxed, onToggleMax: toggleMax,
+          rect: rect, setRect: setRect,
           onCollapse: function () {
             if (dirtyGuard.any()) { setLeaveAsk({ tab: null, keys: dirtyGuard.list() }); return }
             setOpen(false)
@@ -2555,11 +2521,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               onOpenBoard: openBoard,
               onRescanBoard: function (boardId) { act('/scan', { boards: String(boardId) }) },
             })
-              : tab === 'board' ? h(BoardTab, { ov: ov, openLink: props.openLink, narrow: narrow, rev: rev })
+              : tab === 'board' ? h(BoardTab, { ov: ov, openLink: props.openLink, narrow: narrow, width: rect.w, rev: rev })
               : tab === 'bm' ? h(BookmarksTab, { openLink: props.openLink })
               : h(SettingsTab, { ov: ov, onSaved: reload }))),
-        // 最大化时不显示缩放手柄（尺寸由视口决定，拖了也没用）
-        maxed ? null : h(ResizeHandle, { rect: rect, setRect: setRect }))
+        h(ResizeHandle, { rect: rect, setRect: setRect }))
     }
 
     /** 打开作品页：
@@ -2675,7 +2640,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
   // 测试缝：宿主只消费 name/inject/apply；多挂纯函数与组件给离线测试用（对运行无影响）
   return { name: 'dsh-rank-scan', inject: inject, apply: apply, __test: {
     metricChipText: metricChipText,
-    helpers: { revOf: revOf, statusText: statusText, scanLabel: scanLabel, canDayQuery: canDayQuery, narrowColumns: narrowColumns, mdOf: mdOf, boardLabel: boardLabel, rememberBoardNames: rememberBoardNames },
+    helpers: { revOf: revOf, statusText: statusText, scanLabel: scanLabel, canDayQuery: canDayQuery, fitColumns: fitColumns, colPrio: colPrio, mdOf: mdOf, boardLabel: boardLabel, rememberBoardNames: rememberBoardNames },
     components: { Overview: Overview, BoardTab: BoardTab, BookmarksTab: BookmarksTab, SettingsTab: SettingsTab, PopMenu: PopMenu, Panel: Panel },
   } }
   },

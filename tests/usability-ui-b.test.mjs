@@ -170,13 +170,21 @@ test('★ 能力驱动：只有能核对内容日期的榜才有「按日回看�
   assert.equal(canDayQuery(undefined), false)
 })
 
-test('窄面板收起次级列，但不收主指标/变化/书名', () => {
-  const { narrowColumns } = load().mod.__test.helpers
-  const cols = [{ key: 'rank' }, { key: 'delta' }, { key: 'title' }, { key: 'author' }, { key: 'cat' }, { key: 'words' }, { key: 'days' }]
-  assert.equal(narrowColumns(cols, false).length, 7, '宽面板一列都不许少')
-  const narrow = narrowColumns(cols, true).map((c) => c.key)
-  assert.deepEqual(narrow, ['rank', 'delta', 'title'])
-  assert.deepEqual(narrowColumns([], true), [])
+test('列按可用宽度装：宽面板一列不少，变窄从最不重要的列开始收，核心列永远在', () => {
+  const { fitColumns } = load().mod.__test.helpers
+  const cols = [
+    { key: 'rank', label: '名次' }, { key: 'delta', label: '变化' }, { key: 'title', label: '书名' },
+    { key: 'author', label: '作者' }, { key: 'cat', label: '分类' }, { key: 'words', label: '字数' },
+    { key: 'value', label: '首订' }, { key: 'collect', label: '收藏' }, { key: 'ratio', label: '收订比' },
+    { key: 'fans', label: '粉丝' },
+  ]
+  const keys = cols.map((c) => c.key)
+  assert.deepEqual(fitColumns(cols, 1600).map((c) => c.key), keys, '宽面板一列都不许少')
+  // 560px：先收 粉丝(4)/分类(5)，作者与收藏这类还留着 —— 不再「一刀切只剩三列、右边一片空白」
+  assert.deepEqual(fitColumns(cols, 560).map((c) => c.key), ['rank', 'delta', 'title', 'words', 'value', 'collect', 'ratio'])
+  // 320px：只保核心列（名次/变化/书名/该榜主指标）
+  assert.deepEqual(fitColumns(cols, 320).map((c) => c.key), ['rank', 'delta', 'title', 'value'])
+  assert.deepEqual(fitColumns([], 700), [])
 })
 
 test('★ 概览：问题在前、变化在后；没问题时不渲染空异常块', () => {
@@ -261,10 +269,11 @@ test('★ 榜单：条数「保存」与「保存并扫描本榜」分开；历�
   assert.match(SRC, /新期：变化不可比/)
 })
 
-test('面板：四页签短名 + 最大化 + Esc 分层关闭', () => {
+test('面板：四页签短名 + 无最大化按钮 + Esc 分层关闭', () => {
   for (const label of ["'概览'", "'榜单'", "'书签'", "'设置'"]) assert.ok(SRC.indexOf(label) >= 0, '缺页签：' + label)
-  assert.match(SRC, /最大化/)
-  assert.match(SRC, /还原/)
+  // ★ 2026-10-23：最大化整块去掉（跟宿主的顶栏/窗口按钮必然打架），只留拖动与缩放
+  assert.ok(SRC.indexOf("'最大化'") < 0, '不许再有「最大化」按钮（注释里说明为什么去掉可以）')
+  assert.ok(SRC.indexOf('toggleMax') < 0, '最大化切换逻辑要一并删掉，别留死代码')
   assert.match(SRC, /useEscLayer/, 'Esc 要按层关：菜单 → 详情 → 面板')
   assert.match(SRC, /isEditableTarget/, '编辑中不许被 Esc 关掉面板')
   assert.match(SRC, /narrow: narrow/, '窄面板要能把宽度传下去')
