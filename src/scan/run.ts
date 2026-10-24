@@ -170,6 +170,17 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
   record.progress.attempts = 0
   record.batch = { site: deps.batchSite ?? null, partial: !!deps.partial, boards: jobs.map((j) => j.boardId) }
 
+  /**
+   * ★ Spec E（2026-10-24）：进度**从 0/N 就开始通知**。
+   *   旧实现只在每个榜跑完后调一次 onProgress ⇒ 宿主拿到第一份进度时已经完成 1 个榜，
+   *   面板在「扫描刚开始 / 定时扫描」这段看不到任何数字。
+   *   观察者是外部注入的（宿主内存记录），它抛错绝不能影响扫描本身。
+   */
+  const emitProgress = (r: ScanRecord) => {
+    try { deps.onProgress?.(r) } catch { /* 观察者异常不得中断扫描 */ }
+  }
+  emitProgress(record)
+
   const abort = new AbortController()
   const cancelled = () => abort.signal.aborted || (deps.signal ? deps.signal.aborted : false)
 
@@ -295,7 +306,7 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
       lastProgress = deps.clock.now().getTime()
       record.heartbeatAt = stamp(deps.clock.now())
       if (deps.store.heartbeatLock) await deps.store.heartbeatLock(record.heartbeatAt)
-      deps.onProgress?.(record)
+      emitProgress(record)
     }
     } finally { clearInterval(poller) }
   }
@@ -346,6 +357,8 @@ export async function runScan(deps: RunScanDeps): Promise<ScanRecord> {
   if (hasSiteUnhealthy) record.warnings.push('有站点连续失败已熔断，本站剩余榜本次未抓')
   record.finishedAt = stamp(deps.clock.now())
   record.heartbeatAt = record.finishedAt
+  // 先通知终态再落盘：overview 在落盘完成前就能看到 completed/cancelled，不会短暂回退成 running
+  emitProgress(record)
   await deps.store.writeScan(record)
   return record
 }

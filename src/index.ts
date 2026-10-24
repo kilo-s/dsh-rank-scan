@@ -9,6 +9,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { localDate, runScan } from './scan/run.js'
+import type { ScanRecord } from './scan/types.js'
 import { requestAllowed } from './scan/guard.js'
 import { FileStore } from './scan/store.js'
 import { makeQidianMobileSite } from './sites/qidian-mobile.js'
@@ -382,26 +383,47 @@ export function apply(ctx: PluginCtx, config: any): void {
     return done
   }
 
+  /**
+   * ★ Spec E（2026-10-24）：**运行中那一轮**的扫描记录（只放内存，不落盘）。
+   *   落盘 scan.json 只在整轮结束时写一次 ⇒ 旧实现里 overview 在扫描过程中永远读到「上一轮的 completed」，
+   *   面板看不到 0/N → 1/N 的真实进度，定时扫描期间连「正在跑」都不知道。
+   *   onProgress 每完成一个榜就把最新记录放进来；doScan 的 finally 立刻清空 ⇒ 不会残留假 running。
+   */
+  let activeScan: any = null
+
   async function doScan(trigger: 'manual' | 'timer', opts: any) {
     const st = readState()
     const store = new FileStore(root)
     const effectiveBoards = opts && opts.boards
       ? String(opts.boards).split(',').map((x: string) => x.trim()).filter(Boolean)
       : st.boards
-    const rec = await runScan({
-      sites: sitesFor(effectiveBoards, st.depths || {}),
-      clock,
-      store,
-      trigger,
-      boards: effectiveBoards,
-      enrich: !!(opts && opts.enrich),
-      retryNonOk: !!(opts && opts.retry),
-      /** ★ 工作包 A：记录本批的范围（scan.json 是批次记录；当天状态在 day-index） */
-      partial: !!(opts && (opts as any).partial),
-      batchSite: opts && (opts as any).site ? String((opts as any).site) : null,
-      betweenBoardsMs: 500,
-      budget: { maxRequests: st.maxRequests || 600 },
-    })
+    let rec: ScanRecord
+    try {
+      rec = await runScan({
+        /**
+         * ★ Spec E：走 serveSiteFor（与 /day、/repair 同一条测试 seam）。
+         *   生产没有 cfg.sitesFactory 时原样回退 sitesFor，行为不变；
+         *   有了它，单测才能用「可控延迟的隔离站点」验证 overview 在扫描中途读到真实进度。
+         */
+        sites: serveSiteFor(effectiveBoards, st.depths || {}),
+        clock,
+        store,
+        trigger,
+        boards: effectiveBoards,
+        enrich: !!(opts && opts.enrich),
+        retryNonOk: !!(opts && opts.retry),
+        /** ★ 工作包 A：记录本批的范围（scan.json 是批次记录；当天状态在 day-index） */
+        partial: !!(opts && (opts as any).partial),
+        batchSite: opts && (opts as any).site ? String((opts as any).site) : null,
+        betweenBoardsMs: 500,
+        budget: { maxRequests: st.maxRequests || 600 },
+        /** 只更新内存活跃记录；观察者抛错由 runScan 兜住，不会中断扫描 */
+        onProgress: (r) => { activeScan = r },
+      })
+    } finally {
+      // 成功/取消/抛错都必须清：残留会让面板一直显示「扫描中」并按运行态高频轮询
+      activeScan = null
+    }
     /**
      * ★ 2026-10-16（按站分时）：一次「部分扫描」（只跑一个站）**不能覆盖当天的全量产物**：
      * 精简索引/报告按 `<日期>-<站>` 落盘，全量扫的那份照旧叫 `<日期>`，两边都不丢。
@@ -1356,6 +1378,8 @@ export function apply(ctx: PluginCtx, config: any): void {
     const { st, dates, latest } = panelCtx()
     const store = new FileStore(root)
     const rec: any = latest ? await store.readScan(latest) : null
+    /** ★ Spec E：本轮正在跑时的内存记录（见 doScan 顶部注释）；结束/抛错即清空 */
+    const liveScan: any = activeScan || null
     const prevDate = latest ? previousDataDate(dates, latest) : null
     /**
      * ★ 工作包 A：**当天逐榜状态**以 day-index.json 为准（scan.json 只是一批）。
@@ -1485,8 +1509,22 @@ export function apply(ctx: PluginCtx, config: any): void {
     /** ★ 按站分时：现在会跑哪个站、每站上次跑过的数据日（面板「抓什么」页展示） */
     schedule: timerPlanNow(),
       },
-      scan: rec
-        ? { outcome: rec.outcome, attempt: rec.attempt, trigger: rec.trigger, progress: rec.progress, warnings: rec.warnings }
+      /**
+       * ★ Spec E（2026-10-24）：运行中优先用**内存活跃记录**（onProgress 每榜更新），
+       *   落盘 scan.json 只在整轮结束才写 ⇒ 旧实现在扫描过程中永远回上一轮的 completed。
+       *   inFlight 让面板能区分「真的在跑」与「上次进程崩了留下的 running」：
+       *   后者不该显示进度、也不该高频轮询。
+       */
+      scan: (liveScan || rec)
+        ? {
+            outcome: (liveScan || rec).outcome,
+            attempt: (liveScan || rec).attempt,
+            trigger: (liveScan || rec).trigger,
+            progress: (liveScan || rec).progress,
+            warnings: (liveScan || rec).warnings,
+            startedAt: (liveScan || rec).startedAt,
+            inFlight: !!liveScan,
+          }
         : null,
       defaults: {
         scanTime: st.scanTime,

@@ -321,7 +321,16 @@ function makeHarness() {
       c.effs[i] = { fn, deps }
     },
     useLayoutEffect: () => { H.cur.idx++ },
-    useCallback: (fn) => fn,
+    // ★ 与 React 一致：useCallback 按依赖记忆。否则 effect 的依赖永远「变了」⇒ 每轮渲染都重发请求，
+    //   测试就会对着一个真实 React 里不存在的循环下结论（2026-10-24 修）。
+    useCallback: (fn, deps) => {
+      const c = H.cur
+      const i = c.idx++
+      const prev = c.memos[i]
+      if (prev && deps && sameDeps(prev.deps, deps)) return prev.fn
+      c.memos[i] = { fn, deps }
+      return fn
+    },
     useMemo: (fn) => fn(),
     Component: Cmp,
     Fragment: 'Fragment',
@@ -331,7 +340,7 @@ function makeHarness() {
     return a.every((x, i) => x === b[i])
   }
   function mount(Comp, props) {
-    const c = { state: {}, refs: {}, effs: {}, ran: {}, idx: 0, dirty: false }
+    const c = { state: {}, refs: {}, memos: {}, effs: {}, ran: {}, idx: 0, dirty: false }
     const api = {
       render() {
         H.cur = c
@@ -396,7 +405,11 @@ function loadInteractive(opts = {}) {
     const raw = String(url)
     calls.push({ url: raw, body: init && init.body ? JSON.parse(String(init.body)) : null })
     const key = raw.replace('/api/rank-scan', '')
-    const body = Object.prototype.hasOwnProperty.call(routes, key) ? routes[key] : {}
+    // 带查询串的读取（/board?boardId=…）也认不带查询的键：夹具按路由注册，不必逐个拼 query
+    const keyNoQuery = key.split('?')[0]
+    const hit = Object.prototype.hasOwnProperty.call(routes, key) ? key
+      : Object.prototype.hasOwnProperty.call(routes, keyNoQuery) ? keyNoQuery : null
+    const body = hit === null ? {} : routes[hit]
     if (body && body.__reject) return Promise.reject(new Error(body.__reject))
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) })
   }
@@ -554,4 +567,369 @@ test('★ 离开保护：有未保存草稿时切页/收起先拦，草稿保留
   assert.ok(!/有未保存的改动/.test(textOf(pt)), '离开后提示条消失')
   assert.ok(textOf(pt).indexOf('更多 ▾') >= 0, '已经切到榜单页（榜单工具栏在）')
   assert.ok(textOf(pt).indexOf('今天的变化') < 0, '概览的内容不该还留着')
+})
+
+/* ────────────────────────────────────────────────────────────────
+ * Spec 审查 A–E（2026-10-24）：历史直查返回最新/独立元数据、窄窗详情字段、
+ * 书签跨本切换草稿、概览扫描进度、设置吸底保存条。
+ * 全部用真实 hooks + 受控网络（fetch 记录/可挂起），不只看源码字符串。
+ * ──────────────────────────────────────────────────────────────── */
+function boardFixture(over) {
+  return {
+    boardId: 'qidiantu.shouding',
+    columns: [{ key: 'rank', label: '名次' }, { key: 'delta', label: '变化' }, { key: 'title', label: '书名' }, { key: 'value', label: '首订' }],
+    rows: [{ key: '1001', rank: 1, title: '最新书', value: 9000, url: 'https://example.invalid/1001', delta: 2, extra: {} }],
+    dates: ['2026-10-20', '2026-10-21'],
+    dataDate: '2026-10-21',
+    baselineDate: '2026-10-20',
+    sortOptions: [{ value: '', label: '默认' }],
+    ...over,
+  }
+}
+const OV_QD = ovFixture({
+  sites: [{ site: 'qidiantu', siteName: '起点图', boards: [{ boardId: 'qidiantu.shouding', name: '首订榜', status: 'ok', up: 1, newCount: 0, out: 0, lastCapture: '2026-10-21T05:30:00Z', note: null, derived: false, displayed: true }] }],
+})
+async function openDayView(app, dateText) {
+  let tree = await app.flush()
+  click(tree, '更多 ▾')
+  tree = app.render()
+  const input = nodesOf(tree, (n) => n.type === 'input' && n.props.type === 'date')[0]
+  assert.ok(input, '首订榜必须有按上架日回看入口')
+  tree = app.act(() => input.props.onChange({ target: { value: dateText } }))
+  click(tree, '查看')
+  return app.flush()
+}
+
+test('★ Spec A：直查历史后「回到最新」必须真的重新 GET 最新，不卡加载中', async () => {
+  const board = boardFixture()
+  const { mod, mount, calls } = loadInteractive({
+    routes: {
+      '/catalog': CATALOG,
+      '/board': board,
+      '/day': { ok: true, date: '2026-10-21', contentDate: '2026-10-20', rowsAll: [{ key: 'x', rank: 9, title: '直查书', value: 123, url: 'https://example.invalid/x' }], note: '直查站点 2026-10-21' },
+    },
+  })
+  const app = mount(mod.__test.components.BoardTab, { ov: OV_QD, openLink() {}, narrow: false, width: 900, rev: 'r1' })
+  let tree = await app.flush()
+  assert.match(textOf(tree), /最新书/)
+  tree = await openDayView(app, '2026-10-20')
+  assert.match(textOf(tree), /正在查看历史：2026-10-21/)
+  assert.match(textOf(tree), /直查书/)
+  // 站点最新一版换了内容：回到最新必须真的取到它
+  board.rows = [{ key: '1002', rank: 1, title: '回到最新后的书', value: 8000, url: 'https://example.invalid/1002', delta: 3, extra: {} }]
+  const before = calls.filter((c) => c.url.indexOf('/board') >= 0).length
+  click(tree, '回到最新')
+  tree = await app.flush()
+  tree = await app.flush()
+  const boardCalls = calls.filter((c) => c.url.indexOf('/board') >= 0)
+  assert.equal(boardCalls.length, before + 1, '「回到最新」必须真的发一次 /board（旧实现 sd/ss 未变 ⇒ 不发请求）')
+  assert.ok(boardCalls[boardCalls.length - 1].url.indexOf('date=') < 0, '回到最新不许再带历史日期：' + boardCalls[boardCalls.length - 1].url)
+  assert.match(textOf(tree), /回到最新后的书/)
+  assert.ok(!/正在查看历史/.test(textOf(tree)), '回到最新后历史横幅要消失')
+  assert.ok(!/加载中…/.test(textOf(tree)), '不许停在加载中')
+})
+
+test('★ Spec A：本地已选历史日期时「回到最新」同样回到无日期的最新视图', async () => {
+  const board = boardFixture()
+  const { mod, mount, calls } = loadInteractive({ routes: { '/catalog': CATALOG, '/board': board } })
+  const app = mount(mod.__test.components.BoardTab, { ov: OV_QD, openLink() {}, narrow: false, width: 900, rev: 'r1' })
+  let tree = await app.flush()
+  const dateSel = nodesOf(tree, (n) => n.type === 'select')[2]
+  assert.ok(dateSel, '工具栏要有日期选择')
+  tree = app.act(() => dateSel.props.onChange({ target: { value: '2026-10-20' } }))
+  tree = await app.flush()
+  const withDate = calls.filter((c) => c.url.indexOf('/board') >= 0).pop()
+  assert.ok(withDate.url.indexOf('date=2026-10-20') >= 0, '选历史日期要按该日取：' + withDate.url)
+  board.rows = [{ key: '1003', rank: 1, title: '无日期最新书', value: 7000, url: 'https://example.invalid/1003', delta: 1, extra: {} }]
+  const before = calls.filter((c) => c.url.indexOf('/board') >= 0).length
+  click(tree, '回到最新')
+  tree = await app.flush()
+  tree = await app.flush()
+  const after = calls.filter((c) => c.url.indexOf('/board') >= 0)
+  assert.equal(after.length, before + 1, '必须重新取一次')
+  assert.ok(after[after.length - 1].url.indexOf('date=') < 0, '回到最新必须去掉 date 参数：' + after[after.length - 1].url)
+  assert.match(textOf(tree), /无日期最新书/)
+})
+
+test('★ Spec A：旧请求晚到不许覆盖新选择（直查/回到最新期间的乱序防护）', async () => {
+  const oldBoard = boardFixture()
+  const routes = { '/catalog': CATALOG, '/board': oldBoard }
+  const { mod, mount, sandbox } = loadInteractive({ routes })
+  const held = []
+  const baseFetch = sandbox.fetch
+  let holdNext = false
+  sandbox.fetch = function (url, init) {
+    const p = baseFetch(url, init)
+    if (holdNext && String(url).indexOf('/board') >= 0) {
+      holdNext = false
+      return new Promise(function (resolve) { held.push(function () { resolve(p) }) })
+    }
+    return p
+  }
+  const app = mount(mod.__test.components.BoardTab, { ov: OV_QD, openLink() {}, narrow: false, width: 900, rev: 'r1' })
+  let tree = await app.flush()
+  assert.match(textOf(tree), /最新书/)
+  // 选历史日期：这次请求先挂住（模拟慢响应）
+  holdNext = true
+  const dateSel = nodesOf(tree, (n) => n.type === 'select')[2]
+  tree = app.act(() => dateSel.props.onChange({ target: { value: '2026-10-20' } }))
+  assert.equal(held.length, 1, '慢请求应当被挂住')
+  // 站点数据换了，点「回到最新」发第二个请求（正常返回）
+  routes['/board'] = boardFixture({ rows: [{ key: '1005', rank: 1, title: '新选择的书', value: 1, url: 'https://example.invalid/5', delta: 1, extra: {} }] })
+  click(tree, '回到最新')
+  tree = await app.flush()
+  tree = await app.flush()
+  assert.match(textOf(tree), /新选择的书/)
+  // 迟到的旧响应这时才放行：界面必须还是新选择
+  held.forEach(function (f) { f() })
+  tree = await app.flush()
+  tree = await app.flush()
+  assert.match(textOf(tree), /新选择的书/, '旧响应晚到不许覆盖新选择')
+  assert.ok(!/最新书/.test(textOf(tree)), '旧数据不许被写回界面')
+})
+
+test('★ Spec A：直查期间本地快照修订号变化，不许把站点历史悄悄换成最新视图', async () => {
+  const board = boardFixture()
+  const props = { ov: OV_QD, openLink() {}, narrow: false, width: 900, rev: 'r1' }
+  const { mod, mount, calls } = loadInteractive({
+    routes: {
+      '/catalog': CATALOG,
+      '/board': board,
+      '/day': { ok: true, date: '2026-10-21', contentDate: '2026-10-20', rowsAll: [{ key: 'x', rank: 9, title: '直查书', value: 123, url: 'https://example.invalid/x' }], note: '直查站点 2026-10-21' },
+    },
+  })
+  const app = mount(mod.__test.components.BoardTab, props)
+  let tree = await app.flush()
+  click(tree, '更多 ▾')
+  tree = app.render()
+  const input = nodesOf(tree, (n) => n.type === 'input' && n.props.type === 'date')[0]
+  tree = app.act(() => input.props.onChange({ target: { value: '2026-10-20' } }))
+  click(tree, '查看')
+  tree = await app.flush()
+  assert.match(textOf(tree), /正在查看历史：2026-10-21/)
+  const before = calls.filter((c) => c.url.indexOf('/board') >= 0).length
+  // 后台扫描完成 ⇒ 修订号变了
+  props.rev = 'r2'
+  tree = await app.flush()
+  tree = await app.flush()
+  assert.match(textOf(tree), /正在查看历史：2026-10-21/, '直查视图必须还在')
+  assert.match(textOf(tree), /直查书/, '内容不能被本地最新快照替换')
+  assert.equal(calls.filter((c) => c.url.indexOf('/board') >= 0).length, before, '直查期间不许静默重读本地榜覆盖视图')
+})
+
+test('★ Spec B：直查视图用独立元数据 —— 不沿用旧基准/补全统计/回落信息', async () => {
+  const board = boardFixture({ baselineDate: '2026-10-20', enrich: { missing: 5 }, fallbackFrom: '2026-10-19', requestedDate: '2026-10-18' })
+  const { mod, mount } = loadInteractive({
+    routes: {
+      '/catalog': CATALOG,
+      '/board': board,
+      '/day': { ok: true, date: '2026-10-21', contentDate: '2026-10-20', rowsAll: [{ key: 'x', rank: 9, title: '直查书', value: 123, url: 'https://example.invalid/x' }], note: '直查站点 2026-10-21' },
+    },
+  })
+  const app = mount(mod.__test.components.BoardTab, { ov: OV_QD, openLink() {}, narrow: false, width: 900, rev: 'r1' })
+  let tree = await app.flush()
+  assert.match(textOf(tree), /对比 2026-10-20/, '本地视图本来有基准')
+  tree = await openDayView(app, '2026-10-20')
+  const txt = textOf(tree)
+  assert.match(txt, /数据日期 2026-10-21/, '直查视图的数据日期要写实际返回日')
+  assert.match(txt, /内容日期 2026-10-20/, '首订 n-1：内容日期（上架日）与数据日期不是一回事')
+  assert.match(txt, /无可比基准/, '直查没有本地基准 ⇒ 必须明说无可比基准')
+  assert.ok(!/对比 2026-10-20/.test(txt), '不许沿用上一视图的比较基准（会显示基准晚于数据日）')
+  assert.ok(!/补全未完成：还缺 5 条/.test(txt), '直查行没有补全统计，不许沿用')
+  assert.ok(!/没有快照 ⇒ 回落到/.test(txt), '直查不是回落视图')
+  const dashCells = nodesOf(tree, (n) => n.type === 'td' && textOf(n).trim() === '—')
+  assert.ok(dashCells.length >= 1, '直查行的变化列一律「—」（不报 0）')
+})
+
+test('★ Spec C：窄窗/装列丢掉的字段能在行详情里完整展开（分类/子分类/在榜天数/超出 chip 的指标）', async () => {
+  const cols = [
+    { key: 'rank', label: '名次' }, { key: 'title', label: '书名' }, { key: 'author', label: '作者' },
+    { key: 'cat', label: '分类' }, { key: 'subCat', label: '子分类' }, { key: 'days', label: '在榜天数' },
+    { key: 'value', label: '首订' }, { key: 'collect', label: '收藏' }, { key: 'words', label: '字数' },
+    { key: 'updated', label: '更新' },
+  ].concat([0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({ key: 'daily' + i, label: 'D' + (i + 1) })))
+  // 与 host 的真实结构一致：逐日增量在 extra.daily 数组里（daily0..dailyN 只是列键）
+  const extra = { cat: '玄幻', subCat: '东方玄幻', collect: 12345, wordsCnt: 300000, lastChapterUpdateTime: '2026-10-21T10:00:00Z', daily: [1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ delta: n })) }
+  const board = boardFixture({
+    columns: cols,
+    rows: [{ key: '2001', rank: 2, title: '详情书', author: '作者甲', days: 12, value: 5000, url: 'https://example.invalid/2001', delta: 1, extra }],
+  })
+  const { mod, mount } = loadInteractive({ routes: { '/catalog': CATALOG, '/board': board } })
+  // 500px ⇒ 卡片行；chip 只放得下 6 个指标，其余必须能从详情看到
+  const app = mount(mod.__test.components.BoardTab, { ov: OV_QD, openLink() {}, narrow: true, width: 500, rev: 'r1' })
+  let tree = await app.flush()
+  assert.ok(!/分类：/.test(textOf(tree)), '默认视图收起次级列（还没展开详情）')
+  const card = nodesOf(tree, (n) => n.type === 'div' && typeof n.props.onClick === 'function' && textOf(n).indexOf('详情书') >= 0)[0]
+  assert.ok(card, '窄面板要渲染卡片行')
+  tree = app.act(() => card.props.onClick({}))
+  const txt = textOf(tree)
+  assert.match(txt, /分类：\s*玄幻/, '被收起的分类必须能在详情里看到')
+  assert.match(txt, /子分类：\s*东方玄幻/, '子分类同理')
+  assert.match(txt, /在榜天数：\s*12/, '在榜天数必须能显式查看')
+  assert.match(txt, /D4：\s*\+4/, '超出 6 个 chip 的指标也要能在详情里看到（不截断真实字段）')
+  assert.match(txt, /D8：\s*\+8/, '最后一列同样不许截断')
+})
+
+function bmShared(items) {
+  return {
+    bookmarks: {
+      list: { bookmarks: items, folders: [] },
+      filters: { q: '', site: '', folder: '', tag: '' },
+      subs: new Set(), map: {}, total: items.length,
+    },
+  }
+}
+const BM_TWO = [
+  { bookKey: 'qidian:1', label: '书A', author: '某人', site: 'qidian', note: '', folders: [], tags: [], url: 'https://example.invalid/a', source: 'rank', collect: 100 },
+  { bookKey: 'qidian:2', label: '书B', author: '另一人', site: 'qidian', note: 'B原备注', folders: [], tags: [], url: 'https://example.invalid/b', source: 'rank', collect: 200 },
+]
+
+test('★ Spec D：编辑 A 未保存就切 B 必须先问；继续编辑保 A；同本重复点不清草稿', async () => {
+  const shared = bmShared(BM_TWO)
+  const { mod, mount } = loadInteractive({ shared, routes: { '/bookmarks': shared.bookmarks.list, '/bookmark': { ok: true } } })
+  const app = mount(mod.__test.components.BookmarksTab, { openLink() {} })
+  let tree = await app.flush()
+  click(tree, '＋ 备注') // A：无备注
+  tree = app.render()
+  const ta0 = nodesOf(tree, (n) => n.type === 'textarea')[0]
+  tree = app.act(() => ta0.props.onChange({ target: { value: 'A 的草稿' } }))
+  // 同一条再点一次（按钮上的文字是**已保存**的备注，草稿不进去）：不许把草稿清回原值
+  click(tree, '＋ 备注')
+  tree = app.render()
+  assert.equal(nodesOf(tree, (n) => n.type === 'textarea')[0].props.value, 'A 的草稿', '同一条书签重复点编辑不许清掉草稿')
+  // 切到 B：必须先问，且问的时候 A 的草稿不动
+  click(tree, 'B原备注')
+  tree = app.render()
+  assert.match(textOf(tree), /继续编辑/, '切到另一条书签要先给「继续编辑」')
+  assert.match(textOf(tree), /放弃并切换/, '并给出「放弃并切换」')
+  assert.equal(nodesOf(tree, (n) => n.type === 'textarea')[0].props.value, 'A 的草稿', '询问期间不许把 A 的草稿换掉')
+  click(tree, '继续编辑')
+  tree = app.render()
+  assert.equal(nodesOf(tree, (n) => n.type === 'textarea')[0].props.value, 'A 的草稿', '选继续编辑后 A 的草稿还在')
+  assert.ok(!/放弃并切换/.test(textOf(tree)), '选继续编辑后提示要收掉')
+  // 再来一次，这回确认放弃并切换
+  click(tree, 'B原备注')
+  tree = app.render()
+  click(tree, '放弃并切换')
+  tree = app.render()
+  assert.equal(nodesOf(tree, (n) => n.type === 'textarea')[0].props.value, 'B原备注', '确认切换后才允许换成 B 的备注')
+})
+
+test('★ Spec D：A 保存进行中切到 B，异步完成不许清掉 B 的编辑态与草稿', async () => {
+  const shared = bmShared(BM_TWO)
+  const { mod, mount } = loadInteractive({ shared, routes: { '/bookmarks': shared.bookmarks.list, '/bookmark': { ok: true } } })
+  const app = mount(mod.__test.components.BookmarksTab, { openLink() {} })
+  let tree = await app.flush()
+  click(tree, '＋ 备注')
+  tree = app.render()
+  const ta0 = nodesOf(tree, (n) => n.type === 'textarea')[0]
+  tree = app.act(() => ta0.props.onChange({ target: { value: 'A 要保存的' } }))
+  click(tree, '保存') // 发起保存（异步）
+  click(tree, 'B原备注') // 保存还没回来就切 B
+  tree = app.render()
+  click(tree, '放弃并切换')
+  tree = app.render()
+  tree = await app.flush() // 保存的 then 这时才跑完
+  const ta = nodesOf(tree, (n) => n.type === 'textarea')[0]
+  assert.ok(ta, 'B 的编辑框必须还在（旧实现保存完成会连 B 一起 closeEdit）')
+  assert.equal(ta.props.value, 'B原备注', 'B 的备注不许被 A 的保存回调清掉')
+})
+
+test('★ Spec E：概览运行中显示扫描进度（done/total）与取消，不重复成多块进度', () => {
+  const { mod } = load()
+  const Overview = mod.__test.components.Overview
+  const running = ovFixture({ scan: { outcome: 'running', attempt: 1, trigger: 'manual', progress: { done: 3, total: 10 }, warnings: [] } })
+  const txt = textOf(expand(Overview({ ov: running, busy: true, act() {}, reload() {}, narrow: false, rev: 'r1' })))
+  assert.match(txt, /扫描中 3\/10/, '运行中主按钮要显示已完成/总数')
+  assert.match(txt, /停止本次/, '运行中必须能取消')
+  assert.equal((txt.match(/扫描中/g) || []).length, 1, '扫描进度只占一个主要位置')
+  const idle = textOf(expand(Overview({ ov: ovFixture(), busy: false, act() {}, reload() {}, narrow: false, rev: 'r1' })))
+  assert.match(idle, /扫描已选榜/)
+  assert.ok(!/扫描中/.test(idle), '没在跑时不许显示扫描进度')
+})
+
+test('★ Spec E：默认摘要说人话（不出现「接线」）；吸底保存条在设置层，折叠抓取范围也能保存', async () => {
+  const timerPlan = { now: '15:00', today: '2026-10-22', enabled: true, installedToday: false, siteTimes: { qidian: '01:30' }, fallbackTime: '22:30', siteLastScan: {}, staleSites: [], due: [], fallback: [], done: [], waiting: [] }
+  const { mod, mount, calls } = loadInteractive({ routes: { '/catalog': CATALOG, '/timer-plan': timerPlan, '/select': { ok: true, note: '已保存' } } })
+  const app = mount(mod.__test.components.SettingsTab, { ov: ovFixture(), onSaved() {} })
+  let tree = await app.flush()
+  assert.ok(!/接线/.test(textOf(tree)), '默认摘要不许出现「接线」这类实现词')
+  assert.match(textOf(tree), /自动扫描/, '要能让用户读懂自动扫描是否生效')
+  // 收起「抓取范围」——旧实现里保存条就在这个分组内，一折叠就看不到
+  click(tree, '▾ 抓取范围（1 个榜）')
+  tree = app.render()
+  click(tree, '▸ 数据与性能')
+  tree = app.render()
+  const lab = nodesOf(tree, (n) => n.type === 'label' && /自动补全/.test(textOf(n)))[0]
+  assert.ok(lab, '设置里要有自动补全开关')
+  const box = nodesOf(lab, (n) => n.type === 'input')[0]
+  assert.equal(box.props.checked, true)
+  tree = app.act(() => box.props.onChange({ target: { checked: false } }))
+  assert.match(textOf(tree), /有未保存的改动/, '折叠抓取范围后改别的设置，也要看得到未保存状态')
+  const saveBtn = nodesOf(tree, (n) => n.type === 'button' && /保存设置/.test(textOf(n)))[0]
+  assert.ok(saveBtn, '保存条必须留在设置层，不随「抓取范围」折叠消失')
+  saveBtn.props.onClick({})
+  tree = await app.flush()
+  const sel = calls.filter((c) => c.url.indexOf('/select') >= 0).pop()
+  assert.ok(sel, '点保存要真的发 /select')
+  assert.equal(sel.body.autoEnrich, false, '折叠状态下改的开关也要被保存')
+})
+
+function directRoutes(board) {
+  return { '/catalog': CATALOG, '/board': board, '/day': { ok: true, date: '2026-10-21', contentDate: '2026-10-20', rowsAll: [{ key: 'direct', rank: 1, title: '直查边界书', value: 123 }], note: '站点直查夹具' } }
+}
+
+test('Spec A：非默认排序直查保留历史；主动改排序后退出直查', async () => {
+  const board = boardFixture({ sortOptions: [{ value: '', label: '默认' }, { value: 'rank', label: '名次' }] })
+  const { mod, mount, calls } = loadInteractive({ routes: directRoutes(board) })
+  const app = mount(mod.__test.components.BoardTab, { ov: OV_QD, width: 900, rev: 'r1' })
+  let tree = await app.flush()
+  const sort = () => nodesOf(tree, n => n.type === 'select')[3]
+  tree = app.act(() => sort().props.onChange({ target: { value: 'rank' } }))
+  tree = await app.flush(); tree = await app.flush()
+  assert.match(calls.filter(c => c.url.includes('/board')).at(-1).url, /sort=rank/)
+  const before = calls.filter(c => c.url.includes('/board')).length
+  tree = await openDayView(app, '2026-10-20'); tree = await app.flush()
+  assert.match(textOf(tree), /直查边界书/)
+  assert.match(textOf(tree), /正在查看历史：2026-10-21/)
+  assert.equal(calls.filter(c => c.url.includes('/board')).length, before, '内部清排序不应启动本地读取')
+  tree = app.act(() => sort().props.onChange({ target: { value: 'rank' } }))
+  tree = await app.flush(); tree = await app.flush()
+  assert.match(textOf(tree), /最新书/)
+  assert.doesNotMatch(textOf(tree), /直查边界书/)
+})
+
+test('Spec A：同日重复存入本地也重读，并保持上架日 n-1 换算', async () => {
+  const { mod, mount, calls } = loadInteractive({ routes: directRoutes(boardFixture()) })
+  const app = mount(mod.__test.components.BoardTab, { ov: OV_QD, width: 900, rev: 'r1' })
+  let tree = await app.flush()
+  click(tree, '更多 ▾'); tree = app.render()
+  const input = nodesOf(tree, n => n.type === 'input' && n.props.type === 'date')[0]
+  tree = app.act(() => input.props.onChange({ target: { value: '2026-10-20' } }))
+  click(tree, '存入本地'); tree = await app.flush(); tree = await app.flush()
+  const before = calls.filter(c => c.url.includes('/board')).length
+  click(tree, '存入本地'); tree = await app.flush(); tree = await app.flush()
+  const reads = calls.filter(c => c.url.includes('/board'))
+  assert.equal(reads.length, before + 1)
+  assert.match(reads.at(-1).url, /date=2026-10-21/)
+  assert.deepEqual(calls.filter(c => c.url.endsWith('/day')).map(c => c.body), [
+    { boardId: 'qidiantu.shouding', date: '2026-10-21', save: true },
+    { boardId: 'qidiantu.shouding', date: '2026-10-21', save: true },
+  ])
+})
+
+test('Spec A：返回最新读取失败保留历史内容，重试可恢复最新', async () => {
+  const routes = directRoutes(boardFixture())
+  const { mod, mount } = loadInteractive({ routes })
+  const app = mount(mod.__test.components.BoardTab, { ov: OV_QD, width: 900, rev: 'r1' })
+  let tree = await app.flush()
+  tree = await openDayView(app, '2026-10-20'); tree = await app.flush()
+  routes['/board'] = { __reject: '模拟最新读取失败' }
+  click(tree, '回到最新'); tree = await app.flush(); tree = await app.flush()
+  assert.match(textOf(tree), /直查边界书/)
+  assert.match(textOf(tree), /读取失败/)
+  routes['/board'] = boardFixture()
+  click(tree, '重试'); tree = await app.flush(); tree = await app.flush()
+  assert.match(textOf(tree), /最新书/)
+  assert.doesNotMatch(textOf(tree), /直查边界书/)
 })

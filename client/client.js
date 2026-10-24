@@ -313,9 +313,33 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
     /** 内部五态 → 人话（内部口径不变；界面不直接暴露 ok/missing/truncated） */
     const STATUS_TEXT = { ok: '已采集', missing: '没抓到', stale: '数据待核对', login_required: '需要登录', truncated: '没抓完' }
     const statusText = function (s) { return STATUS_TEXT[s] || (s ? String(s) : '—') }
+    /**
+     * 扫描结果 → 人话（Spec E / Standards 2026-10-24）。
+     *   以前只映射 completed/cancelled/failed，而域类型里真正会出现的是
+     *   running / over_budget / aborted_stalled ⇒ 概览会直接显示英文枚举。
+     *   inFlight=false 的 running 是「上一轮进程没走完」留下的落盘记录，不能冒充「正在跑」。
+     */
+    const SCAN_OUTCOME_TEXT = {
+      running: '扫描中',
+      completed: '已完成',
+      cancelled: '已取消',
+      over_budget: '超出本次预算，已停',
+      aborted_stalled: '长时间没有进展，已中止',
+      failed: '失败',
+    }
+    /**
+     * 轮询节奏（纯函数，便于单测）：运行中 2s，空闲 20s。
+     * scanActBusy = 刚点完扫描/重试/停止、POST 还没回来的那段时间 ——
+     * 那时 overview 里仍是上一轮的 completed，若只看 scanLive 会退回 20s，
+     * 用户点完「扫描已选榜」要等很久才看到 0/N。
+     */
+    const pollDelay = function (scanLive, scanActBusy) {
+      return (scanLive || scanActBusy) ? 2000 : 20000
+    }
     const scanLabel = function (scan) {
       if (!scan) return '还没扫描过'
-      const out = scan.outcome === 'completed' ? '已完成' : scan.outcome === 'cancelled' ? '已取消' : scan.outcome === 'failed' ? '失败' : String(scan.outcome || '')
+      let out = SCAN_OUTCOME_TEXT[scan.outcome] || String(scan.outcome || '')
+      if (scan.outcome === 'running' && scan.inFlight === false) out = '未完成（进程已退出）'
       const by = scan.trigger === 'timer' ? '定时' : scan.trigger === 'manual' ? '手动' : String(scan.trigger || '')
       return by ? by + ' · ' + out : out
     }
@@ -977,6 +1001,26 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           })
         })
       }
+      /**
+       * ★ Spec E（2026-10-24 审查）：运行中主按钮要变成「进度 + 取消」。
+       *   done/total 只在宿主确实写了 running 记录时才有；没数字就老实说「扫描中…」，
+       *   不编百分比。扫描进度只在这一处出现，补全进度仍走它自己那条横幅，两块不混。
+       */
+      const scanProg = (scan && scan.progress) || {}
+      const scanTotal = typeof scanProg.total === 'number' ? scanProg.total : 0
+      const scanDoneN = typeof scanProg.done === 'number' ? scanProg.done : 0
+      /**
+       * Spec E：运行态以**宿主记录**为准 —— 定时扫描不是本面板发起的，props.busy 永远是 false，
+       *   旧实现因此在定时跑的时候仍显示「扫描已选榜」且没有取消入口。
+       *   inFlight === false 的 running 是上次进程退出留下的落盘记录，不算在跑。
+       *   props.busy 仍单独表示「本面板的请求还在路上」（保存/补全/取消），两者不互相冒充。
+       */
+      const scanRunning = !!(scan && scan.outcome === 'running' && scan.inFlight !== false)
+      const scanHasProg = scanRunning && scanTotal > 0
+      const scanBusy = scanRunning || !!props.busy
+      const scanBtnText = scanHasProg
+        ? '扫描中 ' + Math.min(scanDoneN, scanTotal) + '/' + scanTotal
+        : scanRunning || props.scanStarting ? '扫描中…' : props.busy ? '处理中…' : '扫描已选榜'
       const groupNames = []
       chgEntries.forEach(function (e) { if (groupNames.indexOf(e.group) < 0) groupNames.push(e.group) })
       const groupCount = function (g) { return chgTotals[g] || 0 }
@@ -1008,15 +1052,16 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         /* ② 主动作：扫描（联网）与重新载入（只读本地）分开写清 */
         h('div', { style: C.row },
           h('button', {
-            style: props.busy ? C.btnOn : C.btn,
-            disabled: props.busy,
+            style: scanBusy ? C.btnOn : C.btn,
+            disabled: scanBusy,
             title: '按「设置 → 抓取范围」里勾选的榜逐个扫描（会联网）',
             onClick: function () { props.act('/scan') },
-          }, props.busy ? '扫描中…' : '扫描已选榜'),
-          props.busy ? h('button', { style: C.btn, onClick: function () { props.act('/cancel') } }, '停止本次（保留已完成）') : null,
-          badRows.length ? h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.act('/retry') } }, '重试失败 ' + badRows.length + ' 个榜') : null,
+          }, scanBtnText),
+          scanBusy ? h('button', { style: C.btn, onClick: function () { props.act('/cancel') } }, '停止本次（保留已完成）') : null,
+          badRows.length ? h('button', { style: C.btn, disabled: scanBusy, onClick: function () { props.act('/retry') } }, '重试失败 ' + badRows.length + ' 个榜') : null,
           h('button', { style: C.btn, onClick: props.reload, title: '只重新读取本地数据：不联网、不采集' }, '重新载入'),
-          h('span', { style: C.muted }, '上次 ' + scanLabel(scan))),
+          // 运行中不显示「上次 …」：那一轮还没结束，进度只放在主按钮一处（否则会同时出现两条「扫描中」）
+          scanRunning ? null : h('span', { style: C.muted }, '上次 ' + scanLabel(scan))),
         /* 补全进度：面板顶部只有这一条（三态：跑着 / 还能续跑 / 当日已试满） */
         (function () {
           if (!enrichStatus) return null
@@ -1358,6 +1403,24 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         lines.push('上次扫描: ' + scanLabel(ov && ov.scan))
         return lines.join('\n')
       }
+      /**
+       * ★ Spec E（2026-10-24 审查）：保存/未保存条属于**整个设置层**，不是「抓取范围」分组的附属。
+       *   旧实现把它放在抓取范围里 ⇒ 这个分组一折叠，改「自动补全 / 起点收藏补全」时就看不到
+       *   「有未保存的改动」和保存按钮（改了半天以为已经生效）。
+       *   保持原语义：保存只落抓取集 + 两个补全开关，计划时刻仍由「保存计划」单独保存。
+       */
+      const saveBar = h('div', { style: { position: 'sticky', bottom: '0', zIndex: 4, marginTop: '6px', padding: '5px 7px',
+        border: '1px solid ' + (dirty ? 'rgba(217,164,65,.6)' : 'rgba(128,128,128,.28)') + '', borderRadius: '6px',
+        background: 'var(--dsh-surface, #fff)',
+        backgroundImage: dirty ? 'linear-gradient(rgba(217,164,65,.16), rgba(217,164,65,.16))' : 'linear-gradient(rgba(128,128,128,.06), rgba(128,128,128,.06))',
+        boxShadow: '0 -8px 12px -8px rgba(0,0,0,.28)' } },
+        h('div', { style: C.row },
+          h('button', { style: dirty ? C.btnOn : C.btn, disabled: busy || !dirty, onClick: save }, dirty ? '保存设置（' + picked.length + ' 个榜）' : '已保存（' + picked.length + ' 个榜）'),
+          // 放弃改动 = 真的丢掉草稿（否则 load 会按草稿再恢复一遍，等于没放弃）
+          dirty ? h('button', { style: C.btn, disabled: busy, onClick: function () { DRAFTS.settings = null; dirtyGuard.set('settings', false); setNote('已放弃改动'); load() } }, '放弃改动') : null,
+          dirty ? h('span', { style: { color: '#d9a441' } }, '有未保存的改动') : null,
+          h('button', { style: C.btn, disabled: busy, onClick: restoreDefaults, title: '把勾选恢复成插件默认抓取集（只改草稿，保存后生效）' }, '恢复默认'),
+          note ? h('span', { style: C.muted }, String(note).slice(0, 100)) : null))
       return h('div', null,
         h(Section, { title: '抓取范围（' + picked.length + ' 个榜）', defaultOpen: true },
           h('div', { style: C.muted }, '勾选 = 抓什么；改动进草稿，点下面的「保存设置」才落盘（下次扫描生效）。抓到的榜就会显示。'),
@@ -1386,25 +1449,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                     h('td', { style: C.td }, b.label))
                 }))))
           }),
-          /**
-           * ★ 2026-10-23（设置页 UI 重叠）：这条「保存设置」是 sticky 吸底，但背景只有 6%~12% 的灰/黄
-           *   ⇒ 下面滚上来的勾选行直接透出来，和按钮文字叠在一起。改成**不透明底 + 高 z**，
-           *   并加一道向上的投影，让「内容从下面滚过去」这件事看得出来。
-           */
-          h('div', { style: { position: 'sticky', bottom: '0', zIndex: 4, marginTop: '6px', padding: '5px 7px',
-            border: '1px solid ' + (dirty ? 'rgba(217,164,65,.6)' : 'rgba(128,128,128,.28)') + '', borderRadius: '6px',
-            background: 'var(--dsh-surface, #fff)',
-            backgroundImage: dirty ? 'linear-gradient(rgba(217,164,65,.16), rgba(217,164,65,.16))' : 'linear-gradient(rgba(128,128,128,.06), rgba(128,128,128,.06))',
-            boxShadow: '0 -8px 12px -8px rgba(0,0,0,.28)' } },
-            h('div', { style: C.row },
-              h('button', { style: dirty ? C.btnOn : C.btn, disabled: busy || !dirty, onClick: save }, dirty ? '保存设置（' + picked.length + ' 个榜）' : '已保存（' + picked.length + ' 个榜）'),
-              // 放弃改动 = 真的丢掉草稿（否则 load 会按草稿再恢复一遍，等于没放弃）
-              dirty ? h('button', { style: C.btn, disabled: busy, onClick: function () { DRAFTS.settings = null; dirtyGuard.set('settings', false); setNote('已放弃改动'); load() } }, '放弃改动') : null,
-              dirty ? h('span', { style: { color: '#d9a441' } }, '有未保存的改动') : null,
-              h('button', { style: C.btn, disabled: busy, onClick: restoreDefaults, title: '把勾选恢复成插件默认抓取集（只改草稿，保存后生效）' }, '恢复默认'),
-              note ? h('span', { style: C.muted }, String(note).slice(0, 100)) : null)),
         ),
-        h(Section, { title: '扫描计划', defaultOpen: false, summary: (tOn ? '已开启' : '已关闭') + ' · 兜底 ' + (tFall || '') + ' · ' + (tLast && tLast.wired ? '定时器已接线' : '定时器未接线') },
+        h(Section, { title: '扫描计划', defaultOpen: false, summary: (tOn ? '已开启' : '已关闭') + ' · 兜底 ' + (tFall || '') + ' · ' + (tLast && tLast.wired ? '自动扫描已生效' : '自动扫描未生效') },
           h('label', { style: C.row },
             h('input', { type: 'checkbox', checked: tOn, onChange: function (e) { toggleTimer(e.target.checked) } }),
             h('span', null, tOn ? '已开启（立即生效）' : '已关闭（立即生效）'),
@@ -1479,12 +1525,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                 h('option', { key: 0, value: '0' }, '不限速（仅本地测试）')),
               h('button', { style: C.btn, disabled: busy, onClick: function () { setBusy(true); jpost('/select', { requestIntervalMs: intervalMs }).then(function () { setNote('请求间隔已改为 ' + (intervalMs === 0 ? '不限速' : intervalMs + 'ms')); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '应用'),
               h('span', { style: C.muted }, '1s 是本项目自定的保守值（不是站点要求）；调小更快，也更容易被站点注意到')))),
-        h(Section, { title: '关于与诊断', defaultOpen: false, summary: (sv.webServer ? '服务正常' : 'webServer 未注册') + ' · 定时' + (sv.timerArmed ? '已接线' : '未接线') },
+        h(Section, { title: '关于与诊断', defaultOpen: false, summary: (sv.webServer ? '服务正常' : 'webServer 未注册') + ' · 自动扫描' + (sv.timerArmed ? '已生效' : '未生效') },
           h(VersionRow, { setNote: setNote }),
-          h('div', { style: C.muted }, '服务：webServer ' + (sv.webServer ? '✓' : '✗') + ' · timer ' + (sv.timerService ? '✓' : '✗') + ' · 定时器' + (sv.timerArmed ? '已接线' : '未接线')),
+          h('div', { style: C.muted }, '服务：webServer ' + (sv.webServer ? '✓' : '✗') + ' · timer ' + (sv.timerService ? '✓' : '✗') + ' · 定时任务' + (sv.timerArmed ? '已启用' : '未启用')),
           note ? h('div', { style: C.muted }, '最近提示：' + String(note).slice(0, 160)) : null,
           h('div', { style: C.row },
-            h('button', { style: C.btn, onClick: function () { try { navigator.clipboard.writeText(diag()); setNote('诊断信息已复制（不含凭证）') } catch (e) { setNote('复制失败：' + e) } } }, '复制诊断信息'))))
+            h('button', { style: C.btn, onClick: function () { try { navigator.clipboard.writeText(diag()); setNote('诊断信息已复制（不含凭证）') } catch (e) { setNote('复制失败：' + e) } } }, '复制诊断信息'))), saveBar)
     }
     /**
      * ★ 版本区（2026-10-16）：显示当前版本 + 「一键更新」。
@@ -1751,6 +1797,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const [editErr, setEditErr] = React.useState(null)
       const [editBusy, setEditBusy] = React.useState(false)
       const [discardAsk, setDiscardAsk] = React.useState(false)
+      /**
+       * ★ Spec D（2026-10-24 审查）：A 还有未保存草稿时点 B 的备注，
+       *   旧实现直接覆盖 A 的草稿（连 sessionStorage 一起换掉）。
+       *   现在先问：「继续编辑」保 A，「放弃并切换」才换 B。
+       */
+      const [switchAsk, setSwitchAsk] = React.useState(null)
       const [detailKey, setDetailKey] = React.useState(null)
       const [selectMode, setSelectMode] = React.useState(false)
       const [sel, setSel] = React.useState([])
@@ -1802,13 +1854,25 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         DRAFTS.bm = { bookKey: editKey, note: draft.note, folders: draft.folders, dirty: dirty }
         dirtyGuard.set('bm', dirty)
       }, [editKey, draft.note, draft.folders, store.total])
-      const startEdit = function (b) {
+      /** 保存回调要知道「现在还在编辑哪一本」，否则会连另一本的草稿一起清掉 */
+      const editKeyRef = React.useRef(editKey)
+      React.useEffect(function () { editKeyRef.current = editKey }, [editKey])
+      const editingBook = function () { return editKey ? list.filter(function (x) { return x.bookKey === editKey })[0] : null }
+      const applyEdit = function (b) {
         setEditKey(b.bookKey)
         setDraft({ note: String(b.note || ''), folders: (b.folders || []).join(' ') })
         setEditErr(null)
         setDiscardAsk(false)
+        setSwitchAsk(null)
       }
-      const closeEdit = function () { setEditKey(null); setDraft({ note: '', folders: '' }); setEditErr(null); setDiscardAsk(false) }
+      const startEdit = function (b) {
+        // 同一条重复点：保留正在写的草稿（不要用库里旧值把它清回去）
+        if (editKey === b.bookKey) return
+        const cur = editingBook()
+        if (cur && dirtyOf(cur)) { setSwitchAsk(b); return }
+        applyEdit(b)
+      }
+      const closeEdit = function () { setEditKey(null); setDraft({ note: '', folders: '' }); setEditErr(null); setDiscardAsk(false); setSwitchAsk(null) }
       const cancelEdit = function (b) {
         if (dirtyOf(b)) { setDiscardAsk(true); return }
         closeEdit()
@@ -1820,8 +1884,20 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         setEditErr(null)
         store.act({ action: 'update', bookKey: b.bookKey, note: note, folders: folders })
           .then(function () { return store.refreshList() })
-          .then(function () { setEditBusy(false); closeEdit(); bump() })
-          .catch(function (e) { setEditBusy(false); setEditErr('保存失败：' + e + '　（草稿还在，可再试一次）') })
+          .then(function () {
+            setEditBusy(false)
+            /**
+             * ★ Spec D：保存期间用户可能已经切到另一本书签 —— 这时只能收掉**这一本**的编辑态；
+             *   旧实现无条件 closeEdit()，会把刚打开的 B 连同它的草稿一起清掉。
+             */
+            if (editKeyRef.current === b.bookKey) closeEdit()
+            bump()
+          })
+          .catch(function (e) {
+            setEditBusy(false)
+            if (editKeyRef.current === b.bookKey) setEditErr('保存失败：' + e + '　（草稿还在，可再试一次）')
+            else { store.msg = '「' + (b.label || b.bookKey) + '」保存失败：' + e; bump() }
+          })
       }
       const doRemove = function (b) {
         setSlide(0)
@@ -1907,6 +1983,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               h('option', { value: 'qidian' }, '起点'), h('option', { value: 'qidiantu' }, '起点图'), h('option', { value: 'ciweimao' }, '刺猬猫'), h('option', { value: 'sfacg' }, '菠萝包'), h('option', { value: 'fanqie' }, '番茄')),
             h('button', { style: C.btn, disabled: !String(manual || '').trim(), onClick: addManual }, '加入书签'),
             h('button', { style: C.btn, onClick: function () { setAddOpen(false) } }, '收起'))) : null,
+        switchAsk ? h('div', { style: { ...C.card, marginTop: '4px', borderColor: 'rgba(217,164,65,.55)', background: 'rgba(217,164,65,.10)' } },
+          h('div', { style: { fontWeight: 600 } }, '「' + (switchAsk.label || switchAsk.bookKey) + '」还开着没保存的备注/夹'),
+          h('div', { style: C.row },
+            h('button', { style: C.btnOn, onClick: function () { setSwitchAsk(null) } }, '继续编辑'),
+            h('button', { style: C.btn, onClick: function () { applyEdit(switchAsk) } }, '放弃并切换')),
+          h('div', { style: C.muted }, '继续编辑：刚才写的内容还在。放弃并切换：只丢当前这条的未保存改动。')) : null,
         h('div', { style: C.muted }, (store.list === null ? '加载中…' : '共 ' + list.length + ' 条' + (store.total && store.total !== list.length ? '（全部 ' + store.total + ' 条，已按筛选）' : '') + '　·　不含回收站')),
         store.health && store.health.error ? h('div', { style: { ...C.muted, color: '#d9534f' } }, '⚠ ' + store.health.error) : null,
         selectMode ? h('div', { style: { ...C.row, padding: '4px 6px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '6px', background: 'rgba(128,128,128,.05)' } },
@@ -2059,6 +2141,15 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const [busy, setBusy] = React.useState(false)
       const [note, setNote] = React.useState(null)
       const [qDate, setQDate] = React.useState('')
+      /**
+       * ★ Spec A/B（2026-10-24 审查）：
+       *   · loadNonce —— 即使 sd/ss 本来就是空的，「回到最新」也必须真的重发一次 GET；
+       *   · directQ   —— 直查视图是**站点历史**，不是本地快照：它有自己的元数据，
+       *                  也不能被本地快照的修订号静默替换掉。
+       */
+      const [loadNonce, setLoadNonce] = React.useState(0)
+      const [directQ, setDirectQ] = React.useState(null)
+      const skipAutoKey = React.useRef('')
       // 读取序号：只有最后一次发起的请求允许写界面（防旧响应覆盖）
       const loadSeqRef = React.useRef(0)
       const catSeqRef = React.useRef(0)
@@ -2093,19 +2184,28 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         const q = '/board?boardId=' + encodeURIComponent(curBoard) + (sd ? '&date=' + sd : '') + (ss ? '&sort=' + ss : '')
         jget(q).then(function (d) {
           if (my !== loadSeqRef.current) return
-          setData(d); setErr(null); if (!silent) setPick(null)
+          setData(d); setDirectQ(null); setErr(null); if (!silent) setPick(null)
         })
           // 读失败**保留现有列表**，只在上方报错（不能清空界面伪装成「没有条目」）
           .catch(function (e) { if (my !== loadSeqRef.current) return; setErr(String(e)) })
-      }, [curBoard, sd, ss])
-      React.useEffect(function () { reloadBoard(false) }, [reloadBoard])
+      }, [curBoard, sd, ss, loadNonce])
+      React.useEffect(function () {
+        const key = [curBoard, sd, ss].join('|')
+        const skip = skipAutoKey.current === key
+        skipAutoKey.current = ''
+        if (!skip) reloadBoard(false)
+      }, [reloadBoard])
       // 同日重扫：修订号变了就静默重读一次（不动站/榜/日期/排序/详情）
       const revRef = React.useRef(null)
       React.useEffect(function () {
         const rev = props.rev || ''
         if (revRef.current === null) { revRef.current = rev; return }
-        if (rev !== revRef.current) { revRef.current = rev; reloadBoard(true) }
-      }, [props.rev, reloadBoard])
+        if (rev !== revRef.current) {
+          revRef.current = rev
+          // 正在看站点历史时，本地快照变了不能把它悄悄换成「最新」（否则横幅没了、行也换了）
+          if (!directQ) reloadBoard(true)
+        }
+      }, [props.rev, reloadBoard, directQ])
       const selXS = function (label, value, options, onChange) {
         return h('label', { style: C.row }, h('span', { style: C.muted }, label),
           h('select', { value: value, onChange: function (e) { onChange(e.target.value) }, style: C.btn },
@@ -2178,23 +2278,40 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           }
           const shown = (r && r.date) || dDate
           setNote(r && r.note ? r.note : (save ? '已抓取：上架日 ' + qDate + ' 存为数据日期 ' + dDate + ' 的快照' : '已查看（未落盘）'))
-          if (save) { setSd(shown); sel.setPref(curBoard, 'date', shown); return null }
+          if (save) { setDirectQ(null); setSd(shown); sel.setPref(curBoard, 'date', shown); setLoadNonce(function (n) { return n + 1 }); return null }
+          /**
+           * ★ Spec B（2026-10-24）：直查视图是一份**独立**数据。
+           *   旧实现用 { ...prev } 合并 ⇒ 沿用上一视图的 baselineDate / counts / enrich / fallbackFrom，
+           *   于是出现「数据日期 10-19 · 对比 10-21」（基准晚于数据日）却变化列全「—」。
+           *   现在显式给全自己的元数据，没基准就明说「无可比基准」。
+           */
+          const prev = data || {}
+          const ds = (prev.dates || []).slice()
+          if (ds.indexOf(shown) < 0) ds.push(shown)
+          ds.sort()
+          // Skip only the local read caused by clearing this query's sort.
+          if (ss) skipAutoKey.current = [curBoard, sd, ''].join('|')
           setSs('')
-          setData(function (prev) {
-            return {
-              ...(prev || {}),
-              boardId: curBoard,
-              rows: (r.rowsAll || []).map(function (x) { return { ...x, delta: null, days: null } }),
-              dataDate: shown,
-              dates: (function () {
-                const ds = ((prev && prev.dates) || []).slice()
-                if (ds.indexOf(shown) < 0) ds.push(shown)
-                return ds
-              })(),
-              note: '直查站点 ' + shown + (r.contentDate && r.contentDate !== shown ? '（站点内容日期 ' + r.contentDate + '）' : ''),
-              _queryDate: shown,
-            }
+          setPick(null)
+          setData({
+            boardId: curBoard,
+            columns: prev.columns || [],
+            sortOptions: prev.sortOptions || [],
+            rows: (r.rowsAll || []).map(function (x) { return { ...x, delta: null, days: null } }),
+            dates: ds,
+            dataDate: shown,
+            baselineDate: null,
+            counts: null,
+            crossPeriod: false,
+            enrich: null,
+            fallbackFrom: null,
+            requestedDate: null,
+            source: '站点直查（未落盘）',
+            note: '直查站点 ' + shown + (r.contentDate && r.contentDate !== shown ? '（站点内容日期 ' + r.contentDate + '）' : ''),
+            _queryDate: shown,
+            _contentDate: (r && r.contentDate) || null,
           })
+          setDirectQ({ date: shown })
         }).catch(function (e) { setNote('直查失败：' + e) }).then(function () { setBusy(false) })
       }
       // Esc：先关详情卡（面板本身由 Panel 那层关）
@@ -2203,9 +2320,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const band = (function () {
         if (!data) return null
         const bits = []
-        const src = (data.rows && data.rows[0] && data.rows[0].extra && data.rows[0].extra.showDate) || null
+        const src = data._contentDate || (data.rows && data.rows[0] && data.rows[0].extra && data.rows[0].extra.showDate) || null
         bits.push('数据日期 ' + (data.dataDate || '—'))
-        if (src && src !== data.dataDate) bits.push('源数据 ' + src)
+        // 首订是 n-1 口径：直查时「内容日期（上架日）」与「数据日期」必须分开写清楚
+        if (src && src !== data.dataDate) bits.push((data._queryDate ? '内容日期 ' : '源数据 ') + src)
         /** Spec S7：首订榜整批换的是「本期上架作品」，不标清会被读成榜单竞争意义的新入榜 */
         if (String(curBoard || '').indexOf('qidiantu.shouding') === 0) {
           bits.push('本期上架作品' + (src ? '（上架日 ' + src + '）' : '') + ' · 首订 = 上架后首订')
@@ -2269,6 +2387,26 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const CHIP_SKIP = { title: 1, rank: 1, author: 1, cat: 1, subCat: 1, updated: 1, days: 1 }
       const chipCols = ((data && data.columns) || []).filter(function (c) { return !CHIP_SKIP[c.key] }).slice(0, 6)
       /** 该行是否正展开详情 */
+      /**
+       * ★ Spec C（2026-10-24 审查）：窄窗/装列时被收起的列必须**显式可展开**。
+       *   旧实现把列从表格里丢掉就没有任何入口（起点的分类/子分类、在榜天数、三江第 7 列起的逐日
+       *   增量只能靠拉宽面板看）。这里算出「当前视图没显示的列」，在行详情里用**同一套 cell 渲染器**
+       *   补全 —— 不截断真实字段，也不改现有列宽/收起策略。
+       */
+      const SUMMARY_COLS = { title: 1, rank: 1, author: 1, words: 1, updated: 1 }
+      const shownColKeys = (function () {
+        const m = {}
+        if (cards) {
+          m.title = 1; m.rank = 1; m.author = 1
+          chipCols.forEach(function (c) { m[c.key] = 1 })
+        } else {
+          cols.forEach(function (c) { m[c.key] = 1 })
+        }
+        return m
+      })()
+      const detailCols = ((data && data.columns) || []).filter(function (c) {
+        return !shownColKeys[c.key] && !SUMMARY_COLS[c.key]
+      })
       const isOpen = function (r) { return !!(pick && pick.key === r.key) }
       /**
        * ★ 2026-10-23（点了没反应）：详情卡原来挂在**整张列表之后** ⇒ 列表一长就在视口外
@@ -2281,6 +2419,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('div', { style: { fontWeight: 600 } }, dash(r.title)),
           h('div', { style: C.muted }, '作者 ' + dash(r.author) + ' · 名次 ' + dash(r.rank) + ' · 字数 ' + fmtWords(ex.wordsText || ex.wordsCnt || ex.wordNumber || ex.words)),
           h('div', { style: C.muted }, '更新 ' + fmtTime(ex.lastChapterUpdateTime)),
+          // 被当前宽度收起的列：在这里逐条列出（label + 与表格完全相同的渲染）
+          detailCols.length ? h('div', { style: { marginTop: '3px' } }, detailCols.map(function (c) {
+            return h('div', { key: 'dx-' + c.key, style: C.muted }, c.label + '：', cell(rowCellProps(r, c), r))
+          })) : null,
           h('div', { style: C.row },
             h(BookmarkStar, { bookKey: bookKeyOf(curBoard, r.key), row: r, boardId: curBoard, dataDate: data && data.dataDate }),
             h(DetailBookmarkEditor, { bookKey: bookKeyOf(curBoard, r.key) }),
@@ -2344,7 +2486,23 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         viewDate ? h('div', { style: { ...C.row, alignItems: 'center', gap: '6px', padding: '4px 6px', marginTop: '2px', background: 'rgba(255,193,7,0.12)', border: '1px solid rgba(255,193,7,0.45)', borderRadius: '4px' } },
           h('span', { style: { fontWeight: 600 } }, '正在查看历史：' + viewDate),
           h('span', { style: C.muted }, data && data._queryDate ? '（直查站点，未落盘）' : '（本地快照）'),
-          h('button', { style: C.btn, onClick: function () { setSs(''); setData(null); pickDate(''); } }, '回到最新')) : null,
+          /**
+           * ★ Spec A（2026-10-24）：旧实现只清 sd/ss 并 setData(null)。
+           *   sd/ss 本来就是空的时候依赖没变化 ⇒ 一次 GET 都不发，列表永久停在「加载中…」。
+           *   现在显式清直查视图 + 清本地日期偏好 + 递增 nonce ⇒ **一定**重发一次无 date 的 GET。
+           */
+          h('button', {
+            style: C.btn,
+            onClick: function () {
+              setSs('')
+              setSd('')
+              sel.setPref(curBoard, 'date', '')
+              sel.setPref(curBoard, 'sort', '')
+              setDirectQ(null)
+              setPick(null)
+              setLoadNonce(function (n) { return n + 1 })
+            },
+          }, '回到最新')) : null,
         data && data.fallbackFrom ? h('div', { style: C.muted }, '当天（' + data.requestedDate + '）没有快照 ⇒ 回落到 ' + data.fallbackFrom) : null,
         data && data.source ? h('div', { style: C.muted }, '来源：' + data.source) : null,
         err ? h('div', { style: { ...C.row, color: '#d9534f' } },
@@ -2487,6 +2645,15 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       }
       const [ov, setOv] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
+      /**
+       * ★ Spec E：扫描类操作（扫描 / 重试 / 停止）自己的忙态。
+       *   不能只靠 busy：POST /scan 还在路上时 overview 里仍是**上一轮的 completed**，
+       *   面板若只看 ov.scan 就会退回 20s 慢轮询，用户点完扫描要等很久才看到 0/N。
+       *   这个标记让「刚点完扫描」也立刻走 2s 快轮询，并在取消期间保持按钮禁用，
+       *   直到 overview 真的不再显示在跑为止。
+       */
+      const [scanActBusy, setScanActBusy] = React.useState(false)
+      const postInFlightRef = React.useRef(0)
       const [msg, setMsg] = React.useState(null)
       const [rect, setRect] = useRect()
 
@@ -2499,24 +2666,47 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         window.addEventListener('rank-scan:dirty', onDirty)
         return function () { window.removeEventListener('rank-scan:dirty', onDirty) }
       }, [])
-      const reload = React.useCallback(function () { jget('/overview').then(setOv).catch(function (e) { setMsg(String(e)) }) }, [])
+      /** 轮询防重入：运行中每 2s 一次，慢请求不能叠成一堆（旧实现没有这道闸） */
+      const reloadBusyRef = React.useRef(false)
+      const reload = React.useCallback(function () {
+        if (reloadBusyRef.current) return Promise.resolve()
+        reloadBusyRef.current = true
+        return jget('/overview')
+          .then(setOv)
+          .catch(function (e) { setMsg(String(e)) })
+          .then(function () { reloadBusyRef.current = false })
+      }, [])
       React.useEffect(function () { reload() }, [reload])
       // 轻量轮询：每 20s 静默刷新（不改变面板尺寸/位置，避免闪烁）
       // ★ 2026-10-16（票 27）：收起后必须彻底停 —— 旧写法把 `if (!open) return null` 放在 hooks 之后，
       //   面板收起时这个 interval 仍在跑（每 20s 打一次 /overview）。现在：收起即清，重新展开立即拉一次；
       //   页面隐藏（切到别的标签页）时跳过，恢复可见时补一次。
       const polledOnce = React.useRef(false)
+      /**
+       * ★ Spec E（2026-10-24）：轮询节奏跟着**真实扫描状态**走。
+       *   ① running（含定时扫描，inFlight=true）⇒ 2s，面板上 0/N → N/N 才动得起来；
+       *   ② 空闲 ⇒ 20s，维持原来「静默刷新」的成本；
+       *   ③ 收起面板 / 页面隐藏 ⇒ 彻底停（展开或回到可见时补一次）；
+       *   ④ 不再拿 busy 当闸门：busy 只表示「本面板有个请求在路上」，
+       *      定时扫描期间恒为 false，旧写法整轮都刷不到进度。
+       */
+      const scanLive = !!(ov && ov.scan && ov.scan.outcome === 'running' && ov.scan.inFlight !== false)
+      /** act 的 then 里要读「此刻是否还在跑」，用 ref 拿最新值（闭包里的 scanLive 是旧渲染的） */
+      const scanLiveRef = React.useRef(false)
+      scanLiveRef.current = scanLive
       React.useEffect(function () {
         if (!open) return undefined
         if (polledOnce.current) reload()
         else polledOnce.current = true
+        // 刚点完扫描（POST 还没回）也要快轮询：那时 overview 仍是上一轮的 completed
+        const every = pollDelay(scanLive, scanActBusy)
         const t = setInterval(function () {
-          if (!busy && document.visibilityState !== 'hidden') reload()
-        }, 20000)
+          if (document.visibilityState !== 'hidden') reload()
+        }, every)
         const onVis = function () { if (document.visibilityState === 'visible') reload() }
         document.addEventListener('visibilitychange', onVis)
         return function () { clearInterval(t); document.removeEventListener('visibilitychange', onVis) }
-      }, [reload, busy, open])
+      }, [reload, open, scanLive, scanActBusy])
       /**
        * 跳到某个榜（概览的「查看本榜」与变化行都走这里）：写进 sel 再切页，
        * BoardTab 挂载时按 sel 初始化 ⇒ 站/榜/日期/排序/详情都保留（Spec S6「保上下文」）。
@@ -2527,13 +2717,30 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         sel.set({ site: id.split('.')[0], board: id })
         switchTab('board')
       }
-      /** path + 可选 JSON body（概览「重扫本榜」要传 {boards}，以前 act 吞掉了 body） */
+      /**
+       * path + 可选 JSON body（概览「重扫本榜」要传 {boards}，以前 act 吞掉了 body）。
+       * ★ Spec E：扫描/重试/停止走 scanActBusy —— 响应回来时如果 overview 还在 running，
+       *   保持禁用（否则「停止本次」刚返回就能再点一次扫描，等于并发两轮）；
+       *   真正解锁交给下面的 scanLive 变化，避免抢先 setBusy(false)。
+       */
+      const isScanAct = function (path) { return path === '/scan' || path === '/retry' || path === '/cancel' }
       const act = function (path, body) {
-        setBusy(true)
+        const scanAct = isScanAct(path)
+        if (scanAct) setScanActBusy(true)
+        else setBusy(true)
+        postInFlightRef.current += 1
         jpost(path, body).then(function (r) { setMsg(r && r.note ? r.note : '完成：' + (r.outcome || 'ok')); return reload() })
           .catch(function (e) { setMsg(String(e)) })
-          .then(function () { setBusy(false) })
+          .then(function () {
+            postInFlightRef.current -= 1
+            if (!scanAct) return setBusy(false)
+            if (!scanLiveRef.current && postInFlightRef.current === 0) setScanActBusy(false)
+          })
       }
+      // 扫描真的停了（overview 不再 running）且没有扫描类请求在路上 ⇒ 解锁
+      React.useEffect(function () {
+        if (!scanLive && postInFlightRef.current === 0) setScanActBusy(false)
+      }, [scanLive])
       // Esc：没有菜单/详情打开时收起面板；编辑中不收起（全局处理器已挡）
       // Esc 的最后一层：没有菜单/详情打开时收起面板（编辑中由全局处理器挡住）
       const closePanelLayer = React.useCallback(function () {
@@ -2568,7 +2775,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('button', { style: C.btn, onClick: function () { setLeaveAsk(null) } }, '继续编辑')) : null,
           h(TabBoundary, { name: tab },
             tab === 'ov' ? h(Overview, {
-              ov: ov, busy: busy, act: act, reload: reload, narrow: narrow, width: rect.w, rev: rev,
+              ov: ov, busy: busy || scanActBusy, act: act, reload: reload, narrow: narrow, width: rect.w, rev: rev,
+              /** 刚点完扫描、overview 还没反映 running 时，按钮也要说「扫描中…」而不是「处理中…」 */
+              scanStarting: scanActBusy && !scanLive,
               onOpenBoard: openBoard,
               onRescanBoard: function (boardId) { act('/scan', { boards: String(boardId) }) },
             })
@@ -2691,7 +2900,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
   // 测试缝：宿主只消费 name/inject/apply；多挂纯函数与组件给离线测试用（对运行无影响）
   return { name: 'dsh-rank-scan', inject: inject, apply: apply, __test: {
     metricChipText: metricChipText,
-    helpers: { revOf: revOf, statusText: statusText, scanLabel: scanLabel, canDayQuery: canDayQuery, fitColumns: fitColumns, colPrio: colPrio, mdOf: mdOf, boardLabel: boardLabel, rememberBoardNames: rememberBoardNames },
+    helpers: { revOf: revOf, statusText: statusText, scanLabel: scanLabel, pollDelay: pollDelay, canDayQuery: canDayQuery, fitColumns: fitColumns, colPrio: colPrio, mdOf: mdOf, boardLabel: boardLabel, rememberBoardNames: rememberBoardNames },
     components: { Overview: Overview, BoardTab: BoardTab, BookmarksTab: BookmarksTab, SettingsTab: SettingsTab, PopMenu: PopMenu, Panel: Panel },
   } }
   },
