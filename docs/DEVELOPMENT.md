@@ -112,14 +112,16 @@ pwsh -File scripts/acceptance.ps1             # 加上在线探针（需要插�
 
 **公开面闸**（本仓库是给别人看的）在提交前必须全绿：编译产物不进索引 · 无个人绝对路径 · 无内部人称与所有权称呼 · 公开面引用的 `docs/*.png` 与 `docs/*.md` 必须存在（防死链）。
 
+提交文案检查的固定遗留边界为已公开提交 `b838c30b59ce0673f789c98c9246c4c3bb0877c9`：该提交及其祖先保留历史，不改写；严格检查此边界之后到 HEAD 的所有提交。边界必须存在且为 HEAD 的祖先，缺失或无关历史应明确失败，不能退化成跳过检查。当前文件的全部公开面检查不受此历史边界影响。
+
 ## 发布
 
 **当前形态（0.2.3 起）**：推 tag 即发布 —— 不需要任何长期 token、不需要 OTP。
 
-1. 改 `package.json` 的版本位，并在 `CHANGELOG.md` 顶部加一节 `## [x.y.z] - YYYY-MM-DD` —— **Release 说明就是这一节**（workflow 按版本号从 CHANGELOG 取，不再有固定模板）。
+1. 同步 `package.json`、`package-lock.json` 根包版本与 README 安装示例，在 `CHANGELOG.md` 加一节 `## [x.y.z] - YYYY-MM-DD` —— **Release 说明就是这一节**。生成说明时要求 tag、包版本与变更记录一致；缺段或空段立即失败。
 2. 双闸门全绿：`scripts/test-local.ps1` + `scripts/acceptance.ps1 -SkipLive`。
 3. 提交并推 `main`，然后打 tag 推送：`git tag -a v<x.y.z> -m "…"` + `git push origin v<x.y.z>`。
-4. `.github/workflows/build.yml` 随后：构建 → 跑 `tests/*.test.mjs` → `npm pack` → 校验包内 `lib/index.js` / `lib/client.js` / `cordis.patch.yml` → 挂 Release 附件（说明取自 CHANGELOG 该版本段；已存在的 Release 会覆盖附件并重写说明）→ **用 OIDC（Trusted Publishing）发布到 npm**，带 `--provenance`。
+4. `.github/workflows/build.yml` 随后执行构建、类型检查与 `scripts/acceptance.ps1 -SkipLive`（包含全部离线测试及公开面检查），再打包、校验包内入口并生成本版 Release 说明。通过这些检查后才允许挂 Release 附件与 **OIDC（Trusted Publishing）发布到 npm**，带 `--provenance`。手动预演 `dry_run=true` 只产生构建产物，不创建或修改公开 Release，也不发布 npm；已有 Release 的附件覆盖仅发生在明确执行发布时。
 5. npm 侧一次性配置：包设置页 → Trusted Publisher → GitHub 仓库 `kilo-s/dsh-rank-scan` + workflow `build.yml`（环境留空）。**改了仓库地址或 workflow 文件名必须同步改这里**，否则发布步骤会红（有意不静默跳过）。
 6. 手工兜底（CI 不可用 / 想立刻发一版）：本地 `npm publish`，凭据二选一 —— ① 一枚 `bypass_2fa = true` 的 granular token 放进被 gitignore 的 `.npmrc`（用 `scripts/set-npm-token.ps1` 写，带写后自检）；② 当场输 6 位 OTP（`--otp`）。
    - 坑 1：`npm token list` 会把 granular token 渲染成「Publish token」，**别看那行判断类型**；直接查 `GET https://registry.npmjs.org/-/npm/v1/tokens` 看 `bypass_2fa` / `permissions` / `expiry`。

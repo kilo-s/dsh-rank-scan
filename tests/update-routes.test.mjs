@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { apply } from '../lib/index.js'
 
@@ -12,6 +12,8 @@ import { apply } from '../lib/index.js'
  *   ⇒ 所有请求都拿不到响应。正确做法：把返回值当 disposer 存起来，只在收尾时调用。
  */
 const ROOT = process.cwd()
+const currentVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+const futureVersion = (Number(currentVersion.split('.')[0]) + 1) + '.0.0'
 
 function harness() {
   const dir = mkdtempSync(join(ROOT, '.tmp-upd-'))
@@ -93,7 +95,7 @@ test('★ 市场可用：用市场版本 ⇒ 可更新；/update 转发并回 op
         restart: { supported: false }, features: { update: true },
       })
     }
-    if (u.includes('/dsh-market/api/v1/updates?name=')) return jsonRes({ installedVersion: '0.1.0', latestVersion: '0.3.0' })
+    if (u.includes('/dsh-market/api/v1/updates?name=')) return jsonRes({ installedVersion: '0.1.0', latestVersion: futureVersion })
     if (u.includes('/dsh-market/api/v1/updates')) return jsonRes({ operationId: 'op-123' })
     if (u.includes('registry.npmjs.org')) return jsonRes({ version: '9.9.9' })
     return { ok: false, status: 404, json: async () => ({}) }
@@ -102,7 +104,7 @@ test('★ 市场可用：用市场版本 ⇒ 可更新；/update 转发并回 op
     const r = await h.call('/api/rank-scan/update-check')
     assert.equal(r.code, 200)
     assert.equal(r.body.latestSource, 'market', '有市场就以市场为准（不是 npm 的 9.9.9）')
-    assert.equal(r.body.latest, '0.3.0')
+    assert.equal(r.body.latest, futureVersion)
     assert.equal(r.body.canUpdateInPlace, true, '市场可用 + 有新版 ⇒ 可点')
     assert.equal(r.body.state, 'update-available')
     const u = await h.call('/api/rank-scan/update', { method: 'POST' })

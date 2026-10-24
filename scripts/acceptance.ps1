@@ -13,15 +13,15 @@ function Check($name, $ok, $evidence) {
   else { $script:fail++; Write-Host ("FAIL  " + $name) -ForegroundColor Red }
   Write-Host ("      " + $evidence) -ForegroundColor DarkGray
 }
-$src        = Join-Path $root "src\index.ts"
-$client     = Join-Path $root "lib\client.js"
-$bookmark   = Join-Path $root "src\scan\bookmark.ts"
+$src        = Join-Path $root "src/index.ts"
+$client     = Join-Path $root "lib/client.js"
+$bookmark   = Join-Path $root "src/scan/bookmark.ts"
 $host_src   = Get-Content -Raw -Encoding UTF8 $src
 $client_src = Get-Content -Raw -Encoding UTF8 $client
 $bm_src     = Get-Content -Raw -Encoding UTF8 $bookmark
 # 周期榜换期三件套（2026-10-16 rank-scan-next-session）：三江空期回退 + 跨期不可比保护
-$diff_src   = Get-Content -Raw -Encoding UTF8 (Join-Path $root "src\scan\diff.ts")
-$qd_src     = Get-Content -Raw -Encoding UTF8 (Join-Path $root "src\sites\qidiantu.ts")
+$diff_src   = Get-Content -Raw -Encoding UTF8 (Join-Path $root "src/scan/diff.ts")
+$qd_src     = Get-Content -Raw -Encoding UTF8 (Join-Path $root "src/sites/qidiantu.ts")
 
 Write-Host "== 不连累本体 ==" -ForegroundColor Cyan
 Check "P0-1 定时回调有兜底（未捕获拒绝会让宿主 exit(1)）" ($host_src -match "checkTimer\(\)\.catch") "setInterval 回调挂了 .catch"
@@ -35,7 +35,7 @@ $readBodyTimeout = [regex]::Match($host_src, 'const timer = setTimeout\(\(\) => 
 Check "票 30 readBody 有超时" ($readBodyTimeout -match '^[0-9][0-9_]*$' -and [int]($readBodyTimeout -replace '_','') -ge 1000 -and [int]($readBodyTimeout -replace '_','') -le 60000) ("readBody 超时 = " + $readBodyTimeout + " ms（有界：1s–60s）")
 #   ★ 2026-10-16（审计-2/46）：旧断言只查 bounded-fetch.ts **文件存在** ⇒ 五站全都没接线也 PASS。
 $bfSites = ([regex]::Matches($host_src, "await boundedFetch\(")).Count
-$bfAdapters = @(@("fanqie","ciweimao","sfacg","qidian-mobile","qidiantu") | Where-Object { (Get-Content -Raw -Encoding UTF8 (Join-Path $root ("src\sites\" + $_ + ".ts"))) -match "await boundedFetch\(" }).Count
+$bfAdapters = @(@("fanqie","ciweimao","sfacg","qidian-mobile","qidiantu") | Where-Object { (Get-Content -Raw -Encoding UTF8 (Join-Path $root ("src/sites/" + $_ + ".ts"))) -match "await boundedFetch\(" }).Count
 Check "票 29 站点请求有超时" (($host_src -match "import \{[^}]*boundedFetch[^}]*\} from '\./scan/bounded-fetch\.js'") -and ($bfSites -ge 5) -and ($bfAdapters -eq 5)) ("host 补全链 await boundedFetch=" + $bfSites + " 处（>=5）；五个站适配器接线=" + $bfAdapters + "/5")
 
 Write-Host "== 轻量 ==" -ForegroundColor Cyan
@@ -143,10 +143,16 @@ foreach ($f in ($trackedFiles | Where-Object { $_ -match '\.md$' })) {
 }
 Check "公开面闸：公开面引用的仓库内图片/文档都存在（无死链）" ($deadLinks.Count -eq 0) ("死链：" + ($deadLinks -join '; '))
 #   ⑤ 提交信息也是公开面：GitHub 的文件列表 / 提交列表会把每条信息直接显示给读者。
-$logText = (& git -C $root log --format='%B' HEAD 2>$null | Out-String)
-$logHits = @()
-foreach ($w in $bannedWords) { if ($logText.Contains($w)) { $logHits += $w } }
-Check "公开面闸：提交信息里没有内部称呼（Git 元数据同样是公开面）" ($logHits.Count -eq 0) ("命中：" + (($logHits | Select-Object -Unique) -join ', '))
+#      ★ 2026-10-25（0.3.0 发布准备）：口径改成**只查已公开基线之后的新增提交**。
+#      旧实现扫整段 git log ⇒ 已公开历史里的一条旧文案会把发布链永久拖红：既拦不住新问题，
+#      又让人习惯性忽略红灯；而重写历史会改掉已发布 tag 的 sha，不能做。
+#      基线必须存在且是 HEAD 的祖先，否则 CLI 直接非零（宁红不放行，不许静默放行）。
+#      文件层面的禁词检查（上面 ③）仍覆盖全部当前文件，那部分没有历史包袱。
+$commitBaseline = 'b838c30b59ce0673f789c98c9246c4c3bb0877c9'
+$commitGate = Join-Path $root 'scripts/check-commit-messages.mjs'
+$commitGateOut = (& node $commitGate --repo $root --baseline $commitBaseline 2>&1 | Out-String)
+$commitGateCode = $LASTEXITCODE
+Check "公开面闸：提交信息里没有内部称呼（Git 元数据同样是公开面）" ($commitGateCode -eq 0) ("baseline " + $commitBaseline.Substring(0, 7) + "..HEAD；" + ($commitGateOut.Trim() -replace "`r?`n", ' | '))
 $pkgJson = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'package.json') | ConvertFrom-Json
 $hasPeer = $null -ne $pkgJson.peerDependencies
 $hasDeps = ($null -ne $pkgJson.dependencies) -and (($pkgJson.dependencies.PSObject.Properties | Measure-Object).Count -gt 0)
@@ -157,11 +163,11 @@ Check "装配闸：cordis.patch.yml 存在且是 dsh.bundle.patch 指向的文�
 Check "分发闸：package.json 有 prepare（仓库链接直装才会现场构建出 lib/）" ($null -ne $pkgJson.scripts.prepare) ("prepare=" + $pkgJson.scripts.prepare)
 Check "装配闸：dsh.client.platform=web 且 exports 有 ./client" (($pkgJson.dsh.client.platform -eq 'web') -and ($null -ne $pkgJson.exports.'./client')) "面板注入路径"
 Check "装配闸：inject 声明的服务都在宿主已知集合（timer/webServer）" ((($pkgJson.dsh.client.inject | Measure-Object).Count -eq 0) -or (& { $ok=$true; foreach ($s in $pkgJson.dsh.client.inject) { if (@('timer','webServer','tools') -notcontains $s) { $ok=$false } }; $ok })) ("client.inject=" + ($pkgJson.dsh.client.inject -join ','))
-Check "轻量闸：面板产物不会再被构建覆盖（无 src/client、无 tsdown 配置）" ((-not (Test-Path (Join-Path $root 'src\client'))) -and (-not (Test-Path (Join-Path $root 'tsdown.config.ts')))) "手写 client/client.js + 构建复制"
+Check "轻量闸：面板产物不会再被构建覆盖（无 src/client、无 tsdown 配置）" ((-not (Test-Path (Join-Path $root 'src/client'))) -and (-not (Test-Path (Join-Path $root 'tsdown.config.ts')))) "手写 client/client.js + 构建复制"
 #   ★ 面板源必须在仓库里：此前它只存在于开发机的 lib/client.js 里（lib/ 不入库），
 #     于是 CI 从源码构建出的 tgz 没有面板，build.yml 的产物校验必然失败。
-$clientSrcPath = Join-Path $root 'client\client.js'
-$clientOutPath = Join-Path $root 'lib\client.js'
+$clientSrcPath = Join-Path $root 'client/client.js'
+$clientOutPath = Join-Path $root 'lib/client.js'
 #   ★ 2026-10-16（审计-2/46）：旧实现产物缺失时 $clientSame = $true（恒真）⇒ 从没构建过也 PASS。
 #     改成三段真断言：源在 + 产物在 + 哈希一致（缺产物 = FAIL，如实报「没构建」）。
 $clientSrcExists = Test-Path $clientSrcPath
@@ -204,13 +210,13 @@ Check "开关-2 默认 = 开（defaultState 里就是 true）" ($host_src -match
 Check "开关-3 抓取集落盘保留（readState 合并 + /select 写盘）" (($host_src -match 'readState = \(\) =>') -and ($host_src -match 'st3\.boards = Array\.from')) "用户改过的「抓什么」不因重载回到默认"
 
 Write-Host "== 版本 / 一键更新（2026-10-16）==" -ForegroundColor Cyan
-$upd_src   = Get-Content -Raw -Encoding UTF8 (Join-Path $root "src\scan\update.ts")
-$check_src = Get-Content -Raw -Encoding UTF8 (Join-Path $root "src\scan\update-check.ts")
+$upd_src   = Get-Content -Raw -Encoding UTF8 (Join-Path $root "src/scan/update.ts")
+$check_src = Get-Content -Raw -Encoding UTF8 (Join-Path $root "src/scan/update-check.ts")
 #    ★ 注意：`$host_src -match '/api/rank-scan/version'` 会**恒假**（含 / 的模式串在 match 里被当正则，
 #      实测踩过一次）⇒ 改用 IndexOf 做纯文本查找。
 Check "更新-1 面板能读到自家版本（读包根 package.json）" (($host_src.IndexOf('rank-scan/version') -ge 0) -and ($host_src.IndexOf('readOwnVersion(import.meta.url)') -ge 0)) "路由 + import.meta.url（宿主是 ESM，__dirname 会 500）"
 Check "更新-2 不装市场 ⇒ 只读降级，不报错" ($check_src -match "no-provider") "updateAvailability 三态"
-Check "更新-3 每次外部调用都有超时（不许挂死面板）" ((Select-String -Path (Join-Path $root "src\scan\update.ts") -Pattern 'AbortSignal\.timeout' -AllMatches).Matches.Count -ge 2) "probeMarket / fetchNpmLatest 各有超时"
+Check "更新-3 每次外部调用都有超时（不许挂死面板）" ((Select-String -Path (Join-Path $root "src/scan/update.ts") -Pattern 'AbortSignal\.timeout' -AllMatches).Matches.Count -ge 2) "probeMarket / fetchNpmLatest 各有超时"
 Check "更新-4 重启只走市场的 /restart（不发明进程控制）" (($host_src.IndexOf('rank-scan/update-restart') -ge 0) -and ($host_src -match 'restartSupported !== true')) "桌面版会被明确拒绝并让用户自己重启"
 Check "更新-5 面板版本区在「抓什么」页且带一键更新按钮" (($client_src -match 'function VersionRow') -and ($client_src -match "jpost\('/update'")) "lib/client.js#VersionRow"
 

@@ -43,6 +43,10 @@ jobs:
       - name: 构建（src → lib，并把面板 bundle 复制进 lib）
         run: npm run build
 
+      # ★ 2026-10-25：发布链原来不跑 typecheck —— 测试全绿但类型有错也能发出去。
+      - name: 类型检查（tsc --noEmit）
+        run: npm run typecheck
+
       - name: 离线自测（tests/*.test.mjs）
         run: |
           fail=0
@@ -53,6 +57,14 @@ jobs:
 
       - name: 打包
         run: npm pack
+
+      # ★ 2026-10-25：发布前必须过与 checks 同一套离线验收闸门。
+      #   旧实现只跑 tests/*.test.mjs ⇒ 公开面闸（禁词 / 个人绝对路径 / 死链）、提交信息闸门、
+      #   装配闸（面板源与产物一致）在发布链上**完全没有把关**：红灯只出现在 checks 里，
+      #   而 build 链并不依赖 checks ⇒ 带病也能 tag 发布。
+      #   放在 npm pack 之后，顺带让 acceptance 的 tgz 体积闸也真正生效（没有 tgz 时它只是 SKIP）。
+      - name: 验收闸门（离线，与 checks 同一判据）
+        run: pwsh -NoProfile -File scripts/acceptance.ps1 -SkipLive
 
       - name: 校验产物
         run: |
@@ -70,27 +82,22 @@ jobs:
           name: dsh-rank-scan-package
           path: "*.tgz"
 
-      # Release 说明 = 该版本在 CHANGELOG.md 里的那一段。
-      # 以前用固定模板 ⇒ 两个版本的说明长得一模一样、与版本内容无关；现在按版本号从 CHANGELOG 取。
-      - name: 生成 Release 说明（本版 CHANGELOG 段）
+      # Release 说明 = 该版本在 CHANGELOG.md 里的那一段 + 安装指引。
+      # ★ 2026-10-25：改由 Node CLI 生成。旧实现在 bash 双引号里写反引号 ⇒ 先做命令替换，
+      #   附件名与安装命令被整段吃掉（公开的 v0.2.4 Release 正文已实证）。
+      #   同一个 CLI 还会校验 tag 与 package.json 版本一致、版本段存在且非空 ——
+      #   因此「版本对不上」会在创建任何 Release **之前**就红，而不是发出去再发现。
+      - name: 生成 Release 说明（本版 CHANGELOG 段，并校验 tag 与包版本）
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          ver="${GITHUB_REF_NAME#v}"
-          {
-            awk -v h="## [$ver]" 'index($0,h)==1 {f=1; next} f && index($0,"## [")==1 {exit} f' CHANGELOG.md
-            echo
-            echo "### 安装"
-            echo
-            echo '```sh'
-            echo "dsh plugin --profile desktop add github:kilo-s/dsh-rank-scan#${GITHUB_REF_NAME}"
-            echo '```'
-            echo
-            echo "或从本页 Assets 下载 `dsh-rank-scan-${ver}.tgz`，完全退出 DSH 后执行 `dsh plugin --profile desktop add <tgz 路径>`。详见 README「安装 / 更新」。"
-          } > /tmp/release-notes.md
+          node scripts/release-notes.mjs --tag "$GITHUB_REF_NAME" --package package.json --changelog CHANGELOG.md --out /tmp/release-notes.md
           cat /tmp/release-notes.md
 
+      # ★ 2026-10-25：dry_run 守卫。workflow_dispatch 的 dry_run 默认 true，
+      #   旧实现这里没有守卫 ⇒ 手动跑一次「只构建」也会真的创建/覆盖公开 Release。
+      #   （push 触发时 github.event.inputs 为 null，表达式为真，照常发布。）
       - name: 发布到 Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && github.event.inputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
