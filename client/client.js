@@ -22,6 +22,18 @@ window.__ModuleLoader__.load({
       return data
     }
     const jget = (p) => fetch(API + p, { headers: { Accept: 'application/json' } }).then(readResponse)
+    const readOverview = async function () {
+      const controller = new AbortController()
+      let timer
+      try {
+        return await Promise.race([
+          fetch(API + '/overview', { headers: { Accept: 'application/json' }, signal: controller.signal }).then(readResponse),
+          new Promise(function (_, reject) {
+            timer = setTimeout(function () { controller.abort(); reject(new Error('概览读取超时，请重试')) }, 10000)
+          }),
+        ])
+      } finally { clearTimeout(timer) }
+    }
     // ⚠️ 之前这里**丢掉了 body**（调用方写的 {captures:…} 全被忽略）⇒ 面板里所有「保存」实际都没带参数：
     //    抓取集保存不动、每榜深度存不进去。现在统一带 JSON body。
     const jpost = (p, body) => fetch(API + p, {
@@ -1794,6 +1806,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       // ★ 草稿从组件外恢复：切页/收起把本组件卸了，回来还在（不丢用户写了一半的备注）
       const [editKey, setEditKey] = React.useState(function () { return DRAFTS.bm ? DRAFTS.bm.bookKey : null })
       const [draft, setDraft] = React.useState(function () { return DRAFTS.bm ? { note: DRAFTS.bm.note || '', folders: DRAFTS.bm.folders || '' } : { note: '', folders: '' } })
+      const editBaseRef = React.useRef(DRAFTS.bm && DRAFTS.bm.base ? DRAFTS.bm.base : null)
       const [editErr, setEditErr] = React.useState(null)
       const [editBusy, setEditBusy] = React.useState(false)
       const [discardAsk, setDiscardAsk] = React.useState(false)
@@ -1846,19 +1859,28 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         const fold0 = (b.folders || []).join(' ')
         return String(draft.note || '') !== note0 || String(draft.folders || '').replace(/\s+/g, ' ').trim() !== fold0.replace(/\s+/g, ' ').trim()
       }
+      // Keep the edit baseline independent of filtered search results.
+      const editingBook = function () {
+        return editKey ? editBaseRef.current || list.filter(function (x) { return x.bookKey === editKey })[0] : null
+      }
+      const editDirty = function () {
+        const b = editingBook()
+        return b ? dirtyOf(b) : !!(editKey && DRAFTS.bm && DRAFTS.bm.dirty)
+      }
       /** 草稿写回组件外 + 登记脏状态（面板切页/收起前据此拦一下） */
       React.useEffect(function () {
         if (!editKey) { DRAFTS.bm = null; dirtyGuard.set('bm', false); return }
-        const b = list.filter(function (x) { return x.bookKey === editKey })[0]
-        const dirty = !!(b && dirtyOf(b))
-        DRAFTS.bm = { bookKey: editKey, note: draft.note, folders: draft.folders, dirty: dirty }
+        const b = editingBook()
+        if (b && !editBaseRef.current) editBaseRef.current = b
+        const dirty = editDirty()
+        DRAFTS.bm = { bookKey: editKey, note: draft.note, folders: draft.folders, dirty: dirty, base: b || null }
         dirtyGuard.set('bm', dirty)
       }, [editKey, draft.note, draft.folders, store.total])
       /** 保存回调要知道「现在还在编辑哪一本」，否则会连另一本的草稿一起清掉 */
       const editKeyRef = React.useRef(editKey)
       React.useEffect(function () { editKeyRef.current = editKey }, [editKey])
-      const editingBook = function () { return editKey ? list.filter(function (x) { return x.bookKey === editKey })[0] : null }
       const applyEdit = function (b) {
+        editBaseRef.current = { bookKey: b.bookKey, note: b.note, folders: (b.folders || []).slice() }
         setEditKey(b.bookKey)
         setDraft({ note: String(b.note || ''), folders: (b.folders || []).join(' ') })
         setEditErr(null)
@@ -1868,8 +1890,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const startEdit = function (b) {
         // 同一条重复点：保留正在写的草稿（不要用库里旧值把它清回去）
         if (editKey === b.bookKey) return
-        const cur = editingBook()
-        if (cur && dirtyOf(cur)) { setSwitchAsk(b); return }
+        if (editDirty()) { setDiscardAsk(false); setSwitchAsk(b); return }
         applyEdit(b)
       }
       const closeEdit = function () { setEditKey(null); setDraft({ note: '', folders: '' }); setEditErr(null); setDiscardAsk(false); setSwitchAsk(null) }
@@ -2497,7 +2518,6 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               setSs('')
               setSd('')
               sel.setPref(curBoard, 'date', '')
-              sel.setPref(curBoard, 'sort', '')
               setDirectQ(null)
               setPick(null)
               setLoadNonce(function (n) { return n + 1 })
@@ -2671,7 +2691,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const reload = React.useCallback(function () {
         if (reloadBusyRef.current) return Promise.resolve()
         reloadBusyRef.current = true
-        return jget('/overview')
+        return readOverview()
           .then(setOv)
           .catch(function (e) { setMsg(String(e)) })
           .then(function () { reloadBusyRef.current = false })

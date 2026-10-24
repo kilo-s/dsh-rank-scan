@@ -46,7 +46,7 @@ function load(opts = {}) {
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) })
   }
   const sandbox = {
-    console, Promise, JSON, Math, Number, String, Object, Array, Date, RegExp, Error,
+    console, Promise, JSON, Math, Number, String, Object, Array, Date, RegExp, Error, AbortController,
     fetch: fetchImpl,
     setInterval: () => 0,
     clearInterval: () => {},
@@ -414,7 +414,7 @@ function loadInteractive(opts = {}) {
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) })
   }
   const sandbox = {
-    console, Promise, JSON, Math, Number, String, Object, Array, Date, RegExp, Error,
+    console, Promise, JSON, Math, Number, String, Object, Array, Date, RegExp, Error, AbortController,
     fetch: fetchImpl,
     setInterval: () => 0, clearInterval: () => {}, setTimeout: () => 0, clearTimeout: () => {},
     navigator: { clipboard: { writeText: () => Promise.resolve() } },
@@ -770,6 +770,36 @@ test('★ Spec C：窄窗/装列丢掉的字段能在行详情里完整展开（
   assert.match(txt, /D8：\s*\+8/, '最后一列同样不许截断')
 })
 
+test('Spec D：筛选隐藏正在编辑的书签后切本仍保护草稿，跨页恢复亦然', async () => {
+  const shared = bmShared(BM_TWO)
+  const routes = { '/bookmarks': shared.bookmarks.list }
+  const { mod, mount, sandbox } = loadInteractive({ shared, routes })
+  const storage = {}
+  sandbox.sessionStorage = { getItem: k => storage[k] || null, setItem: (k, v) => { storage[k] = v } }
+  const app = mount(mod.__test.components.BookmarksTab, {})
+  let tree = await app.flush()
+  click(tree, '＋ 备注'); tree = app.render()
+  const textarea = nodesOf(tree, n => n.type === 'textarea')[0]
+  tree = app.act(() => textarea.props.onChange({ target: { value: '筛选前A草稿' } }))
+  shared.bookmarks.list = { bookmarks: [BM_TWO[1]], folders: [] }
+  routes['/bookmarks'] = shared.bookmarks.list
+  shared.bookmarks.total = 1
+  shared.bookmarks.filters.q = '书B'
+  tree = await app.flush(); tree = await app.flush()
+  click(tree, 'B原备注'); tree = app.render()
+  assert.match(textOf(tree), /放弃并切换/)
+  click(tree, '继续编辑'); tree = app.render()
+  const drafts = JSON.parse(sandbox.sessionStorage.getItem('rank-scan-panel:drafts:v1'))
+  assert.equal(drafts.bm.note, '筛选前A草稿')
+  assert.equal(drafts.bm.dirty, true)
+  const returned = mount(mod.__test.components.BookmarksTab, {})
+  tree = await returned.flush()
+  click(tree, 'B原备注'); tree = returned.render()
+  assert.match(textOf(tree), /放弃并切换/)
+  click(tree, '放弃并切换'); tree = returned.render()
+  assert.equal(nodesOf(tree, n => n.type === 'textarea')[0].props.value, 'B原备注')
+})
+
 function bmShared(items) {
   return {
     bookmarks: {
@@ -797,11 +827,14 @@ test('★ Spec D：编辑 A 未保存就切 B 必须先问；继续编辑保 A�
   click(tree, '＋ 备注')
   tree = app.render()
   assert.equal(nodesOf(tree, (n) => n.type === 'textarea')[0].props.value, 'A 的草稿', '同一条书签重复点编辑不许清掉草稿')
+  // 已有放弃确认时切本，必须只保留一种确认条。
+  click(tree, '取消'); tree = app.render()
   // 切到 B：必须先问，且问的时候 A 的草稿不动
   click(tree, 'B原备注')
   tree = app.render()
   assert.match(textOf(tree), /继续编辑/, '切到另一条书签要先给「继续编辑」')
   assert.match(textOf(tree), /放弃并切换/, '并给出「放弃并切换」')
+  assert.equal(nodesOf(tree, n => n.type === 'button' && textOf(n).trim() === '继续编辑').length, 1)
   assert.equal(nodesOf(tree, (n) => n.type === 'textarea')[0].props.value, 'A 的草稿', '询问期间不许把 A 的草稿换掉')
   click(tree, '继续编辑')
   tree = app.render()
@@ -875,13 +908,29 @@ test('★ Spec E：默认摘要说人话（不出现「接线」）；吸底保�
   assert.equal(sel.body.autoEnrich, false, '折叠状态下改的开关也要被保存')
 })
 
+test('Spec E：概览请求挂起会超时中止，后续读取可恢复', async () => {
+  let expire, signal, count = 0
+  const source = SRC.slice(SRC.indexOf('    const readOverview ='), SRC.indexOf('    // ⚠️ 之前这里'))
+  const read = vm.runInNewContext(source + '\nreadOverview', {
+    API: '/api/rank-scan', AbortController, Promise, Error,
+    readResponse: response => response.json(),
+    fetch: (_, init) => { signal = init.signal; return ++count === 1 ? new Promise(() => {}) : Promise.resolve({ json: async () => ({ recovered: true }) }) },
+    setTimeout: fn => { expire = fn; return 1 }, clearTimeout() {},
+  })
+  const hung = read()
+  expire()
+  await assert.rejects(hung, /概览读取超时/)
+  assert.equal(signal.aborted, true)
+  assert.equal((await read()).recovered, true)
+})
+
 function directRoutes(board) {
   return { '/catalog': CATALOG, '/board': board, '/day': { ok: true, date: '2026-10-21', contentDate: '2026-10-20', rowsAll: [{ key: 'direct', rank: 1, title: '直查边界书', value: 123 }], note: '站点直查夹具' } }
 }
 
 test('Spec A：非默认排序直查保留历史；主动改排序后退出直查', async () => {
   const board = boardFixture({ sortOptions: [{ value: '', label: '默认' }, { value: 'rank', label: '名次' }] })
-  const { mod, mount, calls } = loadInteractive({ routes: directRoutes(board) })
+  const { mod, mount, calls, sandbox } = loadInteractive({ routes: directRoutes(board) })
   const app = mount(mod.__test.components.BoardTab, { ov: OV_QD, width: 900, rev: 'r1' })
   let tree = await app.flush()
   const sort = () => nodesOf(tree, n => n.type === 'select')[3]
@@ -897,6 +946,11 @@ test('Spec A：非默认排序直查保留历史；主动改排序后退出直�
   tree = await app.flush(); tree = await app.flush()
   assert.match(textOf(tree), /最新书/)
   assert.doesNotMatch(textOf(tree), /直查边界书/)
+  // The query menu is still open after changing sort.
+  click(tree, '查看'); tree = await app.flush(); tree = await app.flush()
+  click(tree, '回到最新'); tree = await app.flush(); tree = await app.flush()
+  const saved = JSON.parse(sandbox.localStorage.getItem('rank-scan-panel:sel:v1'))
+  assert.equal(saved.sorts['qidiantu.shouding'], 'rank', '回到最新保留按榜排序记忆')
 })
 
 test('Spec A：同日重复存入本地也重读，并保持上架日 n-1 换算', async () => {
