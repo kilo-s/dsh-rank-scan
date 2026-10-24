@@ -150,8 +150,15 @@ Check "公开面闸：公开面引用的仓库内图片/文档都存在（无死
 #      文件层面的禁词检查（上面 ③）仍覆盖全部当前文件，那部分没有历史包袱。
 $commitBaseline = 'b838c30b59ce0673f789c98c9246c4c3bb0877c9'
 $commitGate = Join-Path $root 'scripts/check-commit-messages.mjs'
-$commitGateOut = (& node $commitGate --repo $root --baseline $commitBaseline 2>&1 | Out-String)
-$commitGateCode = $LASTEXITCODE
+$commitGateCode = 1
+$commitGateOut = ""
+try {
+  $LASTEXITCODE = 1
+  $commitGateOut = (& node $commitGate --repo $root --baseline $commitBaseline 2>&1 | Out-String)
+  $commitGateCode = $LASTEXITCODE
+} catch {
+  $commitGateOut = $_.Exception.Message
+}
 Check "公开面闸：提交信息里没有内部称呼（Git 元数据同样是公开面）" ($commitGateCode -eq 0) ("baseline " + $commitBaseline.Substring(0, 7) + "..HEAD；" + ($commitGateOut.Trim() -replace "`r?`n", ' | '))
 $pkgJson = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'package.json') | ConvertFrom-Json
 $hasPeer = $null -ne $pkgJson.peerDependencies

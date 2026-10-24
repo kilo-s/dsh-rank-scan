@@ -274,6 +274,30 @@ test('提交信息闸门：不是 Git 仓库 ⇒ 非零（git 失败不许静默
 
 /* ---------- ③ 接线：验收闸门与发布链 ---------- */
 
+test('文件与提交信息闸门使用完全一致的禁词表', () => {
+  const acceptance = readFileSync(join(ROOT, 'scripts', 'acceptance.ps1'), 'utf8')
+  const cli = readFileSync(COMMIT_CLI, 'utf8')
+  const psTable = acceptance.slice(acceptance.indexOf('$bannedWords = @('), acceptance.indexOf('\n)', acceptance.indexOf('$bannedWords = @(')))
+  const jsTable = cli.slice(cli.indexOf('const BANNED = ['), cli.indexOf('].map', cli.indexOf('const BANNED = [')))
+  const rows = text => text.split(/\r?\n/).map(line => (line.match(/0x[0-9a-f]+/gi) || []).map(Number)).filter(row => row.length).map(row => String.fromCharCode(...row))
+  assert.deepEqual(rows(psTable), rows(jsTable))
+  assert.deepEqual(rows(jsTable), BANNED)
+})
+
+test('提交信息检查无法启动 Node 时不沿用此前的成功退出码', () => {
+  const src = readFileSync(join(ROOT, 'scripts', 'acceptance.ps1'), 'utf8')
+  const start = src.indexOf('$commitBaseline =')
+  const end = src.indexOf('Check "公开面闸：提交信息', start)
+  const block = src.slice(start, end)
+  const dir = scratch()
+  try {
+    const script = join(dir, 'missing-node.ps1')
+    writeFileSync(script, '$root = ' + JSON.stringify(ROOT).replace(/\\/g, '/') + '\n$LASTEXITCODE = 0\nfunction node { throw "unavailable" }\n' + block + '\nif ($commitGateCode -eq 0) { exit 99 }; exit 0\n')
+    const result = run('pwsh', ['-NoProfile', '-File', script], ROOT)
+    assert.equal(result.code, 0, result.text)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('acceptance 接线：提交信息闸门改查 baseline..HEAD，且保留原有公开面检查', () => {
   const src = readFileSync(join(ROOT, 'scripts', 'acceptance.ps1'), 'utf8')
   assert.ok(src.includes('check-commit-messages.mjs'), '必须调用新增的 CLI 闸门')
