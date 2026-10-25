@@ -93,7 +93,8 @@ test('rejected cross-origin edit leaves bookmark content unchanged',async()=>{
 test('untrusted raw snapshot never contributes overview change counts', async()=>{
  const h=harness()
  try {
-  const b='qidiantu.shouding', store=new FileStore(h.root)
+  // ★ 2026-10-25：换用日更名次榜（批次榜本来就不参与变化，测不出「隔离」这一层）
+  const b='qidian.sign.cat12', store=new FileStore(h.root)
   const row={key:'1',rank:1,value:10,title:'Fixture',author:null,url:null}
   await store.writeSnapshot({boardId:b,dataDate:'2026-10-21',metric:'value',rows:[row]})
   await store.writeSnapshot({boardId:b,dataDate:'2026-10-22',metric:'value',rows:[{...row,value:50}]})
@@ -144,7 +145,8 @@ test('period rollover excludes entire board from changes and overview counts',as
 })
 
 test('change totals include every entry beyond twenty and expose default capture set',async()=>{
- const h=harness(), b='qidiantu.shouding', store=new FileStore(h.root)
+ // ★ 2026-10-25：起点图首订改成「批次榜」（不参与变化）⇒ 这条计数口径改用日更名次榜验证
+ const h=harness(), b='qidian.sign.cat12', store=new FileStore(h.root)
  try{
   const row=key=>({key,rank:1,value:12,title:key,author:null,url:null})
   await store.writeSnapshot({boardId:b,dataDate:'2026-10-21',metric:'value',rows:[row('old')]})
@@ -182,5 +184,56 @@ test('reported fallback does not repeat a site already retried today',async()=>{
   writeFileSync(join(h.root,'state/config.json'),JSON.stringify({boards:[b],display:[b],timerEnabled:false,timerSchemaV:3,installedAt:'2000-01-01',siteTimes:{qidiantu:'00:00'},fallbackTime:'00:00',siteLastRun:{qidiantu:today},siteRetry:{qidiantu:today},boardLastScan:{[b]:{date:today,at:now.toISOString(),outcome:'missing'}},staleFlag:{[b]:{date:today}}}))
   const r=await h.call('/api/rank-scan/timer-plan')
   assert.ok(!r.body.plan.fallback.includes('qidiantu'))
+ }finally{h.cleanup()}
+})
+
+test('批次榜：/board 按期给 periods/batch，不出变化列与计数；/changes 明确排除', async()=>{
+ const h=harness(), b='ciweimao.buy.latest', store=new FileStore(h.root)
+ try{
+  const row=(key,issue,value)=>({key,rank:Number(key),value,title:'T'+key,author:null,url:null,extra:{issue,firstBuyableAt:'2026-10-23T10:00:00'}})
+  await store.writeSnapshot({boardId:b,dataDate:'2026-10-22',metric:'value',rows:[row('1',478,100),row('2',478,90)]})
+  await store.writeSnapshot({boardId:b,dataDate:'2026-10-23',metric:'value',rows:[row('1',478,100),row('2',478,90)]})
+  await store.writeSnapshot({boardId:b,dataDate:'2026-10-24',metric:'value',rows:[row('9',479,300),row('8',479,200)]})
+  writeFileSync(join(h.root,'state/config.json'),JSON.stringify({boards:[b],display:[b],timerEnabled:false,timerSchemaV:3}))
+  const detail=await h.call('/api/rank-scan/board?boardId='+encodeURIComponent(b))
+  assert.equal(detail.code,200)
+  assert.equal(detail.body.batch.key,'479')
+  assert.equal(detail.body.batch.label,'第 479 期')
+  assert.equal(detail.body.batch.count,2)
+  assert.equal(detail.body.batch.saleStart,'2026-10-23')
+  assert.equal(detail.body.changesEligible,false)
+  assert.equal(detail.body.counts,null,'批次榜不给涨/新/退计数')
+  assert.deepEqual(detail.body.dates,['2026-10-23','2026-10-24'],'同期的两个数据日折成一批（只留代表日）')
+  assert.equal(detail.body.periods.length,2)
+  assert.ok(!detail.body.columns.some(c=>c.key==='delta'),'批次榜不出变化列')
+  assert.ok(!detail.body.sortOptions.some(o=>o.value==='delta'),'排序里不出现「变化（本地环比）」')
+  const changes=await h.call('/api/rank-scan/changes')
+  assert.equal(changes.body.count,0)
+  assert.ok(changes.body.batchExcluded.includes(b),'变化页要明确列为「批次榜不参与变化」')
+  const overview=await h.call('/api/rank-scan/overview')
+  const ovRow=overview.body.sites.flatMap(s=>s.boards).find(x=>x.boardId===b)
+  assert.equal(ovRow.batch.label,'第 479 期')
+  assert.equal(ovRow.up,null)
+  assert.equal(ovRow.changesEligible,false)
+ }finally{h.cleanup()}
+})
+
+test('批次榜：起点图首订按上架日成批（一天一批），标签写「上架日」', async()=>{
+ const h=harness(), b='qidiantu.shouding', store=new FileStore(h.root)
+ try{
+  const row=(key,showDate)=>({key,rank:1,value:1000,title:'T'+key,author:null,url:null,extra:{showDate}})
+  await store.writeSnapshot({boardId:b,dataDate:'2026-10-23',metric:'value',rows:[row('1','2026-10-22')]})
+  await store.writeSnapshot({boardId:b,dataDate:'2026-10-24',metric:'value',rows:[row('2','2026-10-23')]})
+  writeFileSync(join(h.root,'state/config.json'),JSON.stringify({boards:[b],display:[b],timerEnabled:false,timerSchemaV:3}))
+  const detail=await h.call('/api/rank-scan/board?boardId='+encodeURIComponent(b))
+  assert.equal(detail.code,200)
+  assert.equal(detail.body.batch.kind,'date')
+  assert.equal(detail.body.batch.label,'上架日 2026-10-23')
+  assert.equal(detail.body.periods.length,2,'每个上架日各成一批')
+  assert.equal(detail.body.batch.snapshotDate,'2026-10-24')
+  assert.equal(detail.body.counts,null)
+  const changes=await h.call('/api/rank-scan/changes')
+  assert.ok(changes.body.batchExcluded.includes(b))
+  assert.equal(changes.body.count,0)
  }finally{h.cleanup()}
 })

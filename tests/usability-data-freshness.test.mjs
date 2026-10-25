@@ -119,3 +119,47 @@ test('周键按本地自然日算（周日为一周起点）', () => {
   assert.equal(fresh.weekKeyOf('2026-10-18'), '2026-10-18')
   assert.equal(fresh.weekKeyOf('2026-10-25'), '2026-10-25')
 })
+test('★ 2026-10-25 换期 ≠ 换榜：同期整批换光才判换榜，跨期一律不判', () => {
+  const rowsWith = (extra, keys) => keys.map((k, i) => ({ key: k, rank: i + 1, value: null, title: 'T' + k, author: null, url: null, extra }))
+  // 同一期（issue 相同）里整批换光 ⇒ 仍是换榜/降级（站点降级页的特征）
+  const same = fresh.judgeSwap({
+    boardId: 'ciweimao.buy.latest', date: '2026-10-25', prevDate: '2026-10-24',
+    currentRows: rowsWith({ issue: 479 }, ['1', '2', '3']),
+    previousRows: rowsWith({ issue: 479 }, ['9', '8', '7']),
+  })
+  assert.equal(same.swapped, true, '同一期整批换光 ⇒ 判换榜')
+  assert.equal(same.samePeriod, true)
+  // 换期（479 → 480）整批换新 ⇒ 正常批次更替，**不许**判换榜（这正是 10-24 锁死的根因）
+  const cross = fresh.judgeSwap({
+    boardId: 'ciweimao.buy.latest', date: '2026-10-24', prevDate: '2026-10-23',
+    currentRows: rowsWith({ issue: 479 }, ['1', '2', '3']),
+    previousRows: rowsWith({ issue: 478 }, ['4', '5', '6']),
+  })
+  assert.equal(cross.swapped, false, '跨期换批不得判换榜')
+  assert.equal(cross.samePeriod, false)
+  assert.match(String(cross.reason), /跨期换批/)
+  // 周榜没有行内期键 ⇒ 退回本地周键：同周可判、跨周不判
+  const sameWeek = fresh.judgeSwap({
+    boardId: 'ciweimao.no-vip-click.week', date: '2026-10-21', prevDate: '2026-10-20',
+    currentRows: rowsWith({}, ['1', '2', '3']), previousRows: rowsWith({}, ['9', '8', '7']),
+  })
+  assert.equal(sameWeek.swapped, true, '同一周整榜换光 ⇒ 判换榜')
+  const nextWeek = fresh.judgeSwap({
+    boardId: 'ciweimao.no-vip-click.week', date: '2026-10-18', prevDate: '2026-10-17',
+    currentRows: rowsWith({}, ['1', '2', '3']), previousRows: rowsWith({}, ['9', '8', '7']),
+  })
+  assert.equal(nextWeek.swapped, false, '跨周换榜是正常形态（周榜整期更替）')
+  // 日更榜没有「期」的概念 ⇒ 保持原判据
+  const daily = fresh.judgeSwap({
+    boardId: 'qidian.sign.cat12', date: '2026-10-22', prevDate: '2026-10-21',
+    currentRows: rowsWith({}, ['1', '2', '3']), previousRows: rowsWith({}, ['9', '8', '7']),
+  })
+  assert.equal(daily.swapped, true)
+  // 期榜但两边都推不出期号 ⇒ 不下结论（宁可漏报，也不许再造成永久锁）
+  const unknown = fresh.judgeSwap({
+    boardId: 'ciweimao.buy.latest', date: '2026-10-25', prevDate: '2026-10-24',
+    currentRows: rowsWith({}, ['1', '2', '3']), previousRows: rowsWith({}, ['9', '8', '7']),
+  })
+  assert.equal(unknown.swapped, false)
+  assert.equal(unknown.samePeriod, null)
+})

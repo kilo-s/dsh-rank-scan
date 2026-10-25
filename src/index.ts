@@ -23,14 +23,13 @@ import { CATEGORIES as QIDIAN_CATEGORIES } from './sites/qidian-mobile.js'
 import { QIDIANTU_BOARDS, periodStartOf } from './sites/qidiantu.js'
 import { deriveFanqieViews } from './scan/derive.js'
 import { decodePua, hasPua, learnPair, loadFontMap, saveFontMap } from './scan/fontmap.js'
-import { applyColumnPolicy, boardMeta, columnsFor, compareDesc, defaultSortFor, enrichAttemptPolicy, enrichMissingCount, groupBySite, groupChanges, isEnrichableBoard, shouldShowDays, usesRankDelta, withFanqieCat } from './scan/view.js'
-import { looksSwapped } from './scan/judges.js'
+import { applyColumnPolicy, batchKeyOf, batchKindOf, batchLabelOf, boardMeta, columnsFor, compareDesc, defaultSortFor, enrichAttemptPolicy, enrichMissingCount, groupBySite, groupChanges, isBatchBoard, isEnrichableBoard, saleRangeOf, shouldShowDays, usesRankDelta, withFanqieCat } from './scan/view.js'
 import { BookmarkService, BookmarkStore } from './scan/bookmark.js'
 import { displayLabel, extractTags, parseBookInput, urlFor, type SiteId } from './scan/bookmark-parse.js'
 import { decodeIfPua } from './scan/fontmap.js'
-import { computeBoardDiff, daysOnBoard, guardCrossPeriod, jitterForBoard } from './scan/diff.js'
+import { addDays, computeBoardDiff, daysOnBoard, guardCrossPeriod, jitterForBoard } from './scan/diff.js'
 import { boardDayState, mergeDayIndex, mergeSlimBoards, previousTrustedDate, revisionDigest, type DayIndex, type DayUpdate, type SnapshotStat } from './scan/daily.js'
-import { judgeFreshness, periodKeyFromRows } from './scan/freshness.js'
+import { judgeFreshness, judgeSwap, periodKeyFromRows } from './scan/freshness.js'
 import { boundedFetch } from './scan/bounded-fetch.js'
 import { minRequestIntervalMs, setMinRequestIntervalMs as applyRequestInterval } from './scan/rate-limit.js'
 /**
@@ -460,16 +459,39 @@ export function apply(ctx: PluginCtx, config: any): void {
           currentPeriodKey: periodKeyFromRows(nx.rows || []),
           previousPeriodKey: pd ? periodKeyFromRows(pd.rows || []) : null,
         })
-        const swapped = b.boardId.startsWith('ciweimao.') && !!pd && looksSwapped(b.rows, pd.rows)
-        if (swapped || verdict.verdict === 'suspected') {
-          const reason = swapped ? '疑似换榜/降级（与上次有效快照交集 ≤2）' : String(verdict.reason || '疑似未刷新')
-          try { store.markUntrusted(rec.dataDate, b.boardId, { reason, at: new Date().toISOString(), by: trigger }) } catch { /* 标记失败仍按记录处理 */ }
-          b.status = 'stale'
-          b.untrusted = true
-          b.reason = reason
-          b.rows = []
-          delete flags[b.boardId]
-          if (!swapped) flagged[b.boardId] = { date: rec.dataDate, prevDate: prevD, suspected: true }
+        /**
+         * ★ 2026-10-25（换期 ≠ 换榜/降级）：换榜判据必须先问「是不是同一期」。
+         *   刺猬猫首订每周整批换新（交集 0），旧判据把它当换榜/降级隔离 ⇒ 整榜长期不可见。
+         *   现在跨期一律不判换榜（见 freshness.ts#judgeSwap）。
+         */
+        const swap = b.boardId.startsWith('ciweimao.')
+          ? judgeSwap({ boardId: b.boardId, date: rec.dataDate, prevDate: prevD, currentRows: nx.rows || [], previousRows: pd ? (pd.rows || []) : null })
+          : { swapped: false, samePeriod: null as boolean | null, reason: null as string | null }
+        if (swap.swapped || verdict.verdict === 'suspected') {
+          /**
+           * ★ 2026-10-25（防永久锁安全阀）：基准只取「上次可信」⇒ 一旦某天判错，之后每天
+           *   都拿同一份旧内容重判，永远不自愈（实测 10-24 起两天）。连续 3 个数据日都判
+           *   不可信时，接受本次内容但**写明请人工核对**——宁可带警告显示，也不让整榜消失。
+           */
+          const priorDays = consecutiveUntrustedDays(b.boardId, rec.dataDate)
+          if (priorDays >= 3) {
+            try { store.clearUntrusted(rec.dataDate, b.boardId) } catch { /* 清标记失败不影响结果 */ }
+            b.acceptedAfterRepeat = true
+            b.reason = '连续 ' + priorDays + ' 天判不可信，已接受本次内容（请人工核对）'
+            rec.warnings.push(b.boardId + '：' + b.reason)
+            delete flags[b.boardId]
+          } else {
+            const reason = swap.swapped
+              ? '疑似换榜/降级（同一期内与上次有效快照交集 ≤2）'
+              : String(verdict.reason || '疑似未刷新')
+            try { store.markUntrusted(rec.dataDate, b.boardId, { reason, at: new Date().toISOString(), by: trigger }) } catch { /* 标记失败仍按记录处理 */ }
+            b.status = 'stale'
+            b.untrusted = true
+            b.reason = reason
+            b.rows = []
+            delete flags[b.boardId]
+            if (!swap.swapped) flagged[b.boardId] = { date: rec.dataDate, prevDate: prevD, suspected: true }
+          }
         } else {
           try { store.clearUntrusted(rec.dataDate, b.boardId) } catch { /* 清标记失败不影响结果 */ }
           delete flags[b.boardId]
@@ -1133,6 +1155,23 @@ export function apply(ctx: PluginCtx, config: any): void {
     return previousTrustedDate(dates || listDataDates(root), date, (d) => st.readSnapshot(d, boardId), (d) => st.isUntrusted(d, boardId))
   }
   /**
+   * ★ 2026-10-25（防永久锁）：从 date 往前数，**连续**多少个数据日被判不可信。
+   *   基准只取可信快照 ⇒ 判错一次就会一直拿同一份旧内容重判；连续 3 天时由扫描侧放行（见 doScan）。
+   */
+  function consecutiveUntrustedDays(boardId: string, date: string): number {
+    const st = new FileStore(root)
+    const ds = listDataDates(root)
+    let n = 0
+    for (let i = ds.length - 1; i >= 0; i--) {
+      const d = ds[i]
+      if (d >= date) continue
+      if (!st.readSnapshot(d, boardId)) break
+      if (!st.isUntrusted(d, boardId)) break
+      n += 1
+    }
+    return n
+  }
+  /**
    * ★ 工作包 A：手工补数（/day 落盘、/repair）之后把「这一榜这一天」恢复为可信，
    *   并同步当天逐榜索引 —— 否则隔离标记会一直挂着，展示端永远不给看。
    */
@@ -1396,8 +1435,17 @@ export function apply(ctx: PluginCtx, config: any): void {
       // ★ 逐榜基准：该榜自己的上一次可信成功（跨过缺日），不是「全局上一数据日」
       const bPrev = snap && latest ? previousBoardDate(boardId, latest, dates) : null
       const trusted = dstate ? dstate.trusted !== false : !(latest && isUntrusted(latest, boardId))
-      const diff = trusted && snap && latest && bPrev ? diffFor(boardId, latest, bPrev, undefined, slimAll) : null
+      /** ★ 2026-10-25：批次榜不比较变化（见 view.ts#isBatchBoard） */
+      const isBatch = isBatchBoard(boardId)
+      const diff = !isBatch && trusted && snap && latest && bPrev ? diffFor(boardId, latest, bPrev, undefined, slimAll) : null
       const c = diff && !diff.crossPeriod && (diff as any).counts ? (diff as any).counts : null
+      const batch = isBatch && snap && latest
+        ? (() => {
+            const kind = batchKindOf(boardId)
+            const key = batchKeyOf(kind, snap.rows) || (kind === 'date' ? addDays(latest, -1) : null)
+            return { key, label: batchLabelOf(kind, key), count: (snap.rows || []).length }
+          })()
+        : null
       /**
        * ★ 2026-10-17（发布前修）：**本地派生榜**（fanqie.derived.*）永远不会有 scan 记录、
        *   也不会落快照文件（数据是打开榜页时现算的）⇒ 旧口径「b ? … : snap ? 'ok' : 'missing'」
@@ -1432,6 +1480,9 @@ export function apply(ctx: PluginCtx, config: any): void {
         up: c ? c.up : null,
         newCount: c ? c.new + c.rebound : null,
         out: c ? c.out : null,
+        /** 批次榜：这一批是什么（不是「涨/新/退」，面板据此替换成「第 N 期 · M 本」） */
+        batch,
+        changesEligible: !isBatch,
         /**
          * ★ 2026-10-17（使用者反馈「为什么 20 个榜都显示 08:30」）：以前取的是**整轮扫描记录**的
          *   finishedAt ⇒ 所有榜共用同一时刻，看着像「按站抓取没生效」。改成三层：
@@ -1614,11 +1665,47 @@ export function apply(ctx: PluginCtx, config: any): void {
     return opts.filter((o) => !o.value || o.value === 'rank' || keys.has(o.value))
   }
 
+  /**
+   * ★ 2026-10-25（批次榜）：把「数据日期」折成「批」。
+   *   刺猬猫首订一期跨 7 个数据日、内容雷同（实测 issue 478 = 10-17..10-23），
+   *   日期下拉原来列 12 项、其中 7 项是同一期 ⇒ 按批只留一个代表快照日（优先最新**可信**日）。
+   *   起点图首订是「一天一批（按上架日）」，每批同样只有一个代表日。
+   */
+  function batchPeriodsFor(boardId: string, datesFor: string[]): { key: string; label: string | null; date: string; dates: string[]; count: number; untrusted: boolean }[] {
+    const kind = batchKindOf(boardId)
+    if (!kind) return []
+    const store = new FileStore(root)
+    const groups = new Map<string, { key: string; dates: string[]; rows: any[] }>()
+    for (const d of datesFor) {
+      const snap: any = store.readSnapshot(d, boardId)
+      if (!snap || !(snap.rows || []).length) continue
+      const key = batchKeyOf(kind, snap.rows) || (kind === 'date' ? addDays(d, -1) : null)
+      if (!key) continue
+      const g = groups.get(key) || { key, dates: [], rows: [] }
+      if (!g.dates.includes(d)) g.dates.push(d)
+      if (!g.rows.length) g.rows = snap.rows
+      groups.set(key, g)
+    }
+    const out: { key: string; label: string | null; date: string; dates: string[]; count: number; untrusted: boolean }[] = []
+    for (const g of groups.values()) {
+      const trusted = g.dates.filter((d) => !store.isUntrusted(d, boardId))
+      const rep = (trusted.length ? trusted : g.dates).slice(-1)[0]
+      /**
+       * 本数取**代表日**那份快照的行数：同一期会继续补书（实测 478 期首日 15 本、次日 17 本），
+       * 拿首日数会少报。
+       */
+      const repSnap: any = store.readSnapshot(rep, boardId)
+      const count = repSnap && Array.isArray(repSnap.rows) ? repSnap.rows.length : g.rows.length
+      out.push({ key: g.key, label: batchLabelOf(kind, g.key), date: rep, dates: g.dates.slice(), count, untrusted: trusted.length === 0 })
+    }
+    out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    return out
+  }
+
   async function panelBoard(boardId: string, dateArg?: string, sort?: string, limit = 0) {
     const { st, dates, latest } = panelCtx()
     const meta = boardMeta(boardId)
     const store = new FileStore(root)
-    const useDate = dateArg && dates.includes(dateArg) ? dateArg : latest
     /**
      * ★ 日期下拉按**该榜自己有快照的日期**过滤（2026-10-15 使用反馈）：
      *   之前面板用全局「所有数据日期」，于是给某个榜点一次历史查询，那个日期就会出现在**所有站点**的下拉里。
@@ -1626,6 +1713,20 @@ export function apply(ctx: PluginCtx, config: any): void {
      */
     // 派生榜没有自己的快照（它按区间动态算，且始终算最新一期）⇒ 日期下拉对它无意义，给空数组让前端隐藏
     const datesFor = boardId.startsWith('fanqie.derived.') ? [] : dates.filter((d) => !!store.readSnapshot(d, boardId))
+    /**
+     * ★ 2026-10-25（批次榜）：下拉控件是「批」不是「日期」。
+     *   没显式指定时，落到**最新一批**的代表日（优先最新可信日；整批都不可信才落到最新日并标 stale）。
+     */
+    const isBatch = isBatchBoard(boardId)
+    const periods = isBatch ? batchPeriodsFor(boardId, datesFor) : []
+    /**
+     * 批次榜对外只暴露「批的代表日」：客户端下拉直接用它当选项（协议不变，仍传 date）。
+     * 同一期的 7 个数据日不再重复出现。
+     */
+    const shownDates = isBatch ? periods.map((p) => p.date) : datesFor
+    const useDate = dateArg && dates.includes(dateArg)
+      ? dateArg
+      : (isBatch && periods.length ? periods[periods.length - 1].date : latest)
     // 「在榜天数」只在**该榜真有历史**时才占列：原判断是全站的（任何榜有历史 ⇒ 每站都挂一列空的），
     // 使用者 2026-10-15 点名起点图不要这一列 ⇒ 改成按榜查精简索引里有没有它更早的记录。
     if (!latest) {
@@ -1689,8 +1790,31 @@ export function apply(ctx: PluginCtx, config: any): void {
         fallbackFrom = older
       }
     }
-    if (!snap) return { boardId, meta, columns, dataDate: useDate, dates: datesFor, rows: [], note: '该榜在这天没有快照（也没找到更早的可用快照）' }
+    if (!snap) return { boardId, meta, columns, dataDate: useDate, dates: shownDates, rows: [], note: '该榜在这天没有快照（也没找到更早的可用快照）' }
     const effDate = fallbackFrom || date
+    /**
+     * ★ 2026-10-25（批次榜）：这一屏属于哪一批。面板据此把「数据日期 / 对比 YYYY-MM-DD」
+     *   换成「第 479 期 · 上架日 2026-10-23 · 共 17 本」，并且不再给变化计数。
+     */
+    const batch = isBatch
+      ? (() => {
+          const kind = batchKindOf(boardId)
+          const key = batchKeyOf(kind, snap.rows) || (kind === 'date' ? addDays(effDate, -1) : null)
+          const range = kind === 'issue' ? saleRangeOf(snap.rows) : null
+          const saleStart = range ? range.start : (kind === 'date' ? key : null)
+          const saleEnd = range ? range.end : (kind === 'date' ? key : null)
+          return {
+            kind,
+            key,
+            label: batchLabelOf(kind, key),
+            count: (snap.rows || []).length,
+            saleStart,
+            saleEnd,
+            snapshotDate: effDate,
+            unit: kind === 'issue' ? '期' : '上架日',
+          }
+        })()
+      : null
     /**
      * ★ 工作包 A：逐榜基准 = **该榜自己的上一次可信成功**（跨过缺日、跨过被拒快照）。
      *   旧口径只看全局上一数据日：该榜缺一天 → previousPer 为空 → 整列变化空、firstEver=true（体检 P1-B）。
@@ -1711,10 +1835,13 @@ export function apply(ctx: PluginCtx, config: any): void {
         dataDate: effDate,
         requestedDate: date,
         fallbackFrom,
-        dates: datesFor,
+        dates: shownDates,
         baselineDate: prevDate,
         firstEver: !prevDate,
         counts: null,
+        batch,
+        periods,
+        changesEligible: false,
         status: 'stale',
         trusted: false,
         rawRows: (snap.rows || []).length,
@@ -1726,7 +1853,11 @@ export function apply(ctx: PluginCtx, config: any): void {
         source: meta.source || null,
       }
     }
-    const diff: any = prevDate ? diffFor(boardId, effDate, prevDate) : null
+    /**
+     * ★ 2026-10-25：批次榜**不算变化**（批内不变、跨批不可比）⇒ 不跑 diff、不给计数。
+     *   留给客户端的只有「这一批是什么」，涨/新/退一律为 null（显示「—」，不是 0）。
+     */
+    const diff: any = !isBatch && prevDate ? diffFor(boardId, effDate, prevDate) : null
     const byKey = new Map<string, any>()
     if (diff) {
       // 五个组都要建索引（flat 也不许漏，否则持平行的名次 delta 取不到）
@@ -1939,11 +2070,16 @@ export function apply(ctx: PluginCtx, config: any): void {
       dataDate: effDate,
       requestedDate: date,
       fallbackFrom,
-      dates: datesFor,
+      dates: shownDates,
+      /** ★ 批次榜：可选「批」列表（每批一个代表快照日 + 标签） */
+      periods,
+      batch,
+      /** false = 该榜不参与「变化」（批次榜整批换新，比较没有意义） */
+      changesEligible: !isBatch,
       baselineDate: diff ? diff.baselineDate : null,
       firstEver: diff ? diff.firstEver : true,
       counts: diff && !crossPeriod ? diff.counts : null,
-      crossPeriod,
+      crossPeriod: isBatch ? false : crossPeriod,
       status: dstateB ? dstateB.status : brd ? brd.status : 'ok',
       trusted: dstateB ? dstateB.trusted !== false : !isUntrusted(effDate, boardId),
       samePeriod: dstateB ? dstateB.samePeriod === true : false,
@@ -1954,12 +2090,17 @@ export function apply(ctx: PluginCtx, config: any): void {
       enrich: enrichInfo,
       rows,
       // ★ 跨期当天必须写明「变化列为什么是空的」（口径说明跟着数据一起走，别只活在代码注释里）
-      note: crossPeriod
-        ? (guard.prevPeriod && guard.curPeriod && guard.prevPeriod !== guard.curPeriod
-            ? '⚠ 本期已换期（期号 ' + guard.prevPeriod + ' → ' + guard.curPeriod + '）：「变化」列跨期不可比，一律显示「新期」'
-            : '⚠ 本期已换期：「变化」列跨期不可比，一律显示「新期」')
-          + (meta.caliber ? '。' + meta.caliber : '')
-        : (meta.caliber || null),
+      note: isBatch
+        ? ([
+            batch && batch.label ? batch.label + ' · 共 ' + batch.count + ' 本' : '批次榜 · 共 ' + ((snap.rows || []).length) + ' 本',
+            '批次榜整批换新，不比较变化',
+          ].join('；') + (meta.caliber ? '。' + meta.caliber : ''))
+        : crossPeriod
+          ? (guard.prevPeriod && guard.curPeriod && guard.prevPeriod !== guard.curPeriod
+              ? '⚠ 本期已换期（期号 ' + guard.prevPeriod + ' → ' + guard.curPeriod + '）：「变化」列跨期不可比，一律显示「新期」'
+              : '⚠ 本期已换期：「变化」列跨期不可比，一律显示「新期」')
+            + (meta.caliber ? '。' + meta.caliber : '')
+          : (meta.caliber || null),
       source: meta.source || null,
     }
   }
@@ -1977,6 +2118,8 @@ export function apply(ctx: PluginCtx, config: any): void {
     const excluded: { boardId: string; reason: string }[] = []
     /** ★ 工作包 A：确实没有可比基准的榜（如实说明，而不是静默跳过） */
     const noBaseline: string[] = []
+    /** ★ 2026-10-25：批次榜不参与变化（见下方 isBatchBoard） */
+    const batchExcluded: string[] = []
     for (const boardId of st.boards as string[]) {
       if (!(st.display as string[]).includes(boardId)) continue
       if (boardId.startsWith('fanqie.derived.')) continue
@@ -1984,6 +2127,12 @@ export function apply(ctx: PluginCtx, config: any): void {
       if (!snap) continue
       const meta = boardMeta(boardId)
       if (isUntrusted(useDate, boardId)) { excluded.push({ boardId, reason: '内容不可信（已隔离）' }); continue }
+      /**
+       * ★ 2026-10-25：批次榜**整批换新**（刺猬猫首订每周一期、起点图首订每天一批），
+       *   批与批之间没有「榜内升降」；把整批新书算成「新入榜/退榜」只会制造假涨退。
+       *   它们的内容在「榜单」页按期看，这里明确列为「不参与变化」，而不是静默跳过。
+       */
+      if (isBatchBoard(boardId)) { batchExcluded.push(boardId); continue }
       /**
        * ★ 工作包 A：逐榜基准（跨过缺日）。缺基准的榜不再「静默跳过且被算成没变化」，
        *   而是进 noBaseline 列表，由 note 如实说明。
@@ -2025,9 +2174,11 @@ export function apply(ctx: PluginCtx, config: any): void {
       revision: dataRevision(useDate),
       excluded,
       noBaseline,
+      batchExcluded,
       note: [
         prevDate ? null : '还没有上一数据日：无基准，不报 0',
         excluded.length ? excluded.length + ' 个榜不参与变化（内容隔离或新期不可比）' : null,
+        batchExcluded.length ? batchExcluded.length + ' 个批次榜不参与变化（整批换新，比较无意义）' : null,
         noBaseline.length ? noBaseline.length + ' 个榜没有可比基准（缺更早的可信快照）' : null,
       ].filter(Boolean).join('；') || null,
     }

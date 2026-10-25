@@ -59,7 +59,8 @@ export function boardMeta(boardId: string): BoardMeta {
     }
   }
   if (boardId === 'qidiantu.shouding') {
-    return { ...base, site: 'qidiantu', siteName: '起点图', name: '首订榜', metric: 'value', caliber: '页面内容日期常为上一日' }
+    // ★ 2026-10-25：批次榜 —— 每天整批换新（按上架日），跨批不比较变化
+    return { ...base, site: 'qidiantu', siteName: '起点图', name: '首订榜', metric: 'value', caliber: '页面内容日期常为上一日；每天整批换新（按上架日）⇒ 不比较变化' }
   }
   if (boardId === 'qidiantu.sanjiang') {
     return { ...base, site: 'qidiantu', siteName: '起点图', name: '三江·推荐效果（周·收藏增量）', metric: 'value', caliber: '期首日=周日，7 天收藏增量窗口', extended: true }
@@ -102,9 +103,64 @@ export function boardMeta(boardId: string): BoardMeta {
       name: CW_NAMES[boardId],
       metric: boardId === 'ciweimao.buy.latest' ? 'value' : 'rank',
       source: boardId === 'ciweimao.buy.latest' ? '第三方（newmmapi.yukirus.com）· 约值' : undefined,
+      // ★ 2026-10-25：批次榜 —— 每周一期、整批换新，期与期之间不构成竞争变化
+      caliber: boardId === 'ciweimao.buy.latest' ? '第三方约值；每周一批（整批换新）⇒ 不比较变化' : undefined,
     }
   }
   return { ...base, site: 'other', siteName: '其他', name: boardId }
+}
+
+/**
+ * ★ 2026-10-25（批次榜 / batch board）：每次更新都是「一整批新作品」，批与批之间不存在
+ *   名次升降或数值涨跌的竞争关系 ⇒ 面板不比较变化，也不该按「数据日期」切分展示。
+ *   - 刺猬猫「首订（约）」：批 = 第三方 issue 号（每周一期；实测 477→478→479，期内数值冻结）
+ *   - 起点图「首订榜」：批 = 上架日（每天整批换新，首订 T+1 才结算）
+ */
+export function isBatchBoard(boardId: string): boolean {
+  return boardId === 'ciweimao.buy.latest' || boardId === 'qidiantu.shouding'
+}
+
+/** 批次的「键」从哪来：issue = 期号；date = 上架日 */
+export function batchKindOf(boardId: string): 'issue' | 'date' | null {
+  if (boardId === 'ciweimao.buy.latest') return 'issue'
+  if (boardId === 'qidiantu.shouding') return 'date'
+  return null
+}
+
+/** 从快照行取批次键（取不到 = null，不猜） */
+export function batchKeyOf(kind: 'issue' | 'date' | null, rows: Row[] | null | undefined): string | null {
+  if (!kind) return null
+  for (const r of rows || []) {
+    const ex: any = (r && (r as any).extra) || {}
+    if (kind === 'issue') {
+      const v = ex.issue
+      if (v != null && String(v)) return String(Number(v))
+    } else {
+      const v = ex.showDate
+      if (v != null && String(v)) return String(v)
+    }
+  }
+  return null
+}
+
+/** 批次标签：不给批号就返回 null（面板按「—」显示，不编造） */
+export function batchLabelOf(kind: 'issue' | 'date' | null, key: string | null): string | null {
+  if (!kind || !key) return null
+  return kind === 'issue' ? '第 ' + key + ' 期' : '上架日 ' + key
+}
+
+/** 同一批的上架日范围（刺猬猫首订行里的 firstBuyableAt；一期可能跨周五、周六两天） */
+export function saleRangeOf(rows: Row[] | null | undefined): { start: string; end: string } | null {
+  let start: string | null = null
+  let end: string | null = null
+  for (const r of rows || []) {
+    const v = (r && (r as any).extra && (r as any).extra.firstBuyableAt) || null
+    if (typeof v !== 'string' || v.length < 10) continue
+    const day = v.slice(0, 10)
+    if (!start || day < start) start = day
+    if (!end || day > end) end = day
+  }
+  return start && end ? { start, end } : null
 }
 
 /**
@@ -132,7 +188,8 @@ export function columnsFor(meta: BoardMeta, flags: ColumnFlags = { hasBaseline: 
   const dropRank = meta.boardId === 'qidiantu.sanjiang' || derivedBoard
   const cols: Column[] = []
   if (!dropRank) cols.push({ key: 'rank', label: '名次' })
-  if (!derivedBoard) cols.push({ key: 'delta', label: '变化' })
+  // ★ 2026-10-25：批次榜不出「变化」列 —— 整批换新，批内本来就不变、跨批更不可比（详见 isBatchBoard）
+  if (!derivedBoard && !isBatchBoard(meta.boardId)) cols.push({ key: 'delta', label: '变化' })
   const qidian = meta.site === 'qidian'
   const qidiantu = meta.site === 'qidiantu'
   const fanqie = meta.site === 'fanqie'

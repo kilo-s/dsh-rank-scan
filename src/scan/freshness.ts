@@ -1,4 +1,5 @@
 import type { Row } from './types.js'
+import { looksSwapped } from './judges.js'
 
 /**
  * 新鲜度判据（工作包 A / 2026-10-22）。
@@ -100,4 +101,59 @@ export function judgeFreshness(i: FreshnessInput): FreshnessVerdict {
   }
   if (samePeriod) return { verdict: 'ok', reason: '同一期未变化（正常）', samePeriod: true, identical: true }
   return { verdict: 'suspected', reason: '与上次有效快照逐条相同，且本期应已刷新', samePeriod: false, identical: true }
+}
+
+/**
+ * ★ 2026-10-25（换期 ≠ 换榜/降级）：原先「与上次有效快照交集 ≤2 ⇒ 换榜」的判据**不认期**，
+ *   而刺猬猫「首订（约）」每周整批换新（17 换 17、交集 0）⇒ 每次换期都被判成换榜/降级，
+ *   快照被隔离（stale）。更糟的是基准只取「上次可信」，被隔离那天永远不进基准 ⇒
+ *   换期后每天仍拿新期跟旧期比、每天都判一次，**永不自愈**（2026-10-24 起实测锁死）。
+ *
+ * 新口径：只有「同一批次内」才存在换榜/降级这回事。
+ *   - 两边都有真实期键（刺猬猫 issue / 三江 periodStart）⇒ 期号相同才算同期；
+ *   - 周榜（无行内期键）⇒ 用本地周键 weekKeyOf 判期；
+ *   - 日更榜（无周期概念）⇒ 视为同期，保留原有判据；
+ *   - 期榜但两边都推不出期号 ⇒ 不下结论（null），宁可漏报也不误锁。
+ */
+export interface SwapInput {
+  boardId: string
+  /** 当前数据日期 */
+  date: string
+  /** 上一次**可信**快照的数据日期 */
+  prevDate: string | null
+  currentRows: Row[] | null | undefined
+  previousRows: Row[] | null | undefined
+  /** 交集阈值（默认 2，刺猬猫判据） */
+  threshold?: number
+}
+
+export interface SwapVerdict {
+  /** true = 同一期内与上次几乎无交集 ⇒ 判定换榜/降级 */
+  swapped: boolean
+  /** true = 同期；false = 跨期（正常批次更替）；null = 推不出期 */
+  samePeriod: boolean | null
+  /** 给记录/面板看的一句说明（不 swapped 时也可能有值：跨期换批） */
+  reason: string | null
+}
+
+export function judgeSwap(i: SwapInput): SwapVerdict {
+  const cur = i.currentRows || []
+  const prev = i.previousRows || []
+  if (!cur.length || !prev.length) return { swapped: false, samePeriod: null, reason: null }
+  const cadence = cadenceOfBoard(i.boardId)
+  const curKey = periodKeyFromRows(cur)
+  const prevKey = periodKeyFromRows(prev)
+  let samePeriod: boolean | null = null
+  if (curKey && prevKey) samePeriod = curKey === prevKey
+  else if (cadence === 'weekly' && i.date && i.prevDate) samePeriod = weekKeyOf(i.date) === weekKeyOf(i.prevDate)
+  else if (cadence === 'daily') samePeriod = true
+  if (samePeriod === false) {
+    return { swapped: false, samePeriod: false, reason: '跨期换批（正常形态，不判换榜）' }
+  }
+  if (samePeriod === null) {
+    // 期榜但推不出期号：不下结论。误锁的代价（整榜长期不可见）远大于漏报一次换榜。
+    return { swapped: false, samePeriod: null, reason: '推不出期号，跳过换榜判据（避免误锁）' }
+  }
+  const threshold = typeof i.threshold === 'number' ? i.threshold : 2
+  return { swapped: looksSwapped(cur, prev, threshold), samePeriod: true, reason: null }
 }

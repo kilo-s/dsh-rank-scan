@@ -1189,17 +1189,25 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                 ' ' + s.siteName,
                 h('span', { style: C.muted }, '  ' + s.boards.length + ' 个榜 · 已采集 ' + okN + (headTime ? ' · 抓取 ' + headTime : ''))))
             const rowsOut = s.boards.map(function (b) {
-              const noBase = b.up === null && b.newCount === null && b.out === null
+              /**
+               * ★ 2026-10-25（批次榜）：这一格不写「涨/新/退」——整批换新，涨新退没有意义，
+               *   改写成「第 479 期 · 17 本」；没有批次信息的老数据才退回「—」。
+               */
+              const batchCell = b.batch ? ((b.batch.label || ('批 ' + (b.batch.key || '—'))) + (b.batch.count != null ? ' · ' + b.batch.count + ' 本' : '')) : null
+              const noBase = !batchCell && b.up === null && b.newCount === null && b.out === null
               const label = b.name + (b.derived ? ' · 本地派生' : b.displayed ? '' : ' · 未显示')
               return h('tr', { key: b.boardId },
                 h('td', { style: { ...C.td, paddingLeft: '16px', maxWidth: Math.max(140, Math.round(avail * 0.5)) } },
                   h('span', { style: { ...C.ellip, maxWidth: Math.max(120, Math.round(avail * 0.46)) + 'px' }, title: label }, label),
                   // 窄面板不单开「备注」列（会被压成一字一行），备注改到榜名下面
                   hasNoteCol && chgNarrow && b.note ? h('div', { style: { ...C.muted, whiteSpace: 'normal' } }, dash(b.note)) : null),
-                h('td', { style: { ...C.td, ...C.num } }, noBase ? '—' : h('span', { style: { whiteSpace: 'nowrap' } },
-                  '涨 ', h('span', { style: b.up > 0 ? C.up : null }, dash(b.up)), ' / ',
-                  '新 ', h('span', { style: { fontWeight: 600 } }, dash(b.newCount)), ' / ',
-                  '退 ', h('span', { style: b.out > 0 ? C.down : null }, dash(b.out)))),
+                h('td', { style: { ...C.td, ...C.num } },
+                  batchCell
+                    ? h('span', { style: { whiteSpace: 'nowrap' }, title: '批次榜：整批换新，不比较变化（在「榜单」页按期看）' }, batchCell)
+                    : noBase ? '—' : h('span', { style: { whiteSpace: 'nowrap' } },
+                      '涨 ', h('span', { style: b.up > 0 ? C.up : null }, dash(b.up)), ' / ',
+                      '新 ', h('span', { style: { fontWeight: 600 } }, dash(b.newCount)), ' / ',
+                      '退 ', h('span', { style: b.out > 0 ? C.down : null }, dash(b.out)))),
                 h('td', { style: C.td }, b.status === 'ok'
                   ? (headTime ? h('span', { style: C.muted }, '—') : (b.lastCapture ? fmtLocalHM(b.lastCapture) : '—'))
                   : h('span', { style: { color: b.status === 'stale' ? '#d9a441' : '#d9534f' } }, statusText(b.status))),
@@ -2183,7 +2191,19 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         .filter(function (o) { return !o.value || o.value === 'rank' || colKeys.indexOf(o.value) >= 0 })
       // 日期下拉只用**这个榜自己**有快照的日期（/board 回的 data.dates）
       const allDates = (data && data.dates && data.dates.length ? data.dates : [])
-      const dateOpts = [{ value: '', label: '最新' }].concat(allDates.slice().reverse().map(function (d) { return { value: d, label: d } }))
+      /**
+       * ★ 2026-10-25（批次榜）：下拉换成「批」。
+       *   刺猬猫首订一期跨 7 个数据日、内容雷同 ⇒ 按日期列会重复 7 次；
+       *   起点图首订一天一批，标签写「上架日」比写数据日期准确。
+       *   选项 value 仍是**代表快照日**，宿主按它取快照（协议不变）。
+       */
+      const periods = (data && data.periods) || []
+      const batchShown = !!(data && data.batch)
+      const dateOpts = batchShown
+        ? [{ value: '', label: '最新一批' }].concat(periods.slice().reverse().map(function (p) {
+            return { value: p.date, label: (p.label || p.date) + (p.untrusted ? '（不可信）' : '') }
+          }))
+        : [{ value: '', label: '最新' }].concat(allDates.slice().reverse().map(function (d) { return { value: d, label: d } }))
       React.useEffect(function () {
         const my = ++catSeqRef.current
         jget('/catalog').then(function (c) {
@@ -2341,6 +2361,19 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const band = (function () {
         if (!data) return null
         const bits = []
+        /**
+         * ★ 2026-10-25（批次榜）：这一屏是「第 479 期 / 上架日 2026-10-24」，
+         *   不是「10-25 的榜 · 对比 10-23」——批次榜不比较变化，写日期只会误导。
+         */
+        if (data.batch) {
+          const bt = data.batch
+          bits.push(bt.label || (bt.key ? String(bt.key) : '批次未知'))
+          if (bt.kind === 'issue' && bt.saleStart) bits.push('上架 ' + bt.saleStart + (bt.saleEnd && bt.saleEnd !== bt.saleStart ? ' ~ ' + bt.saleEnd : ''))
+          bits.push('共 ' + (bt.count == null ? '—' : bt.count) + ' 本')
+          if (bt.snapshotDate) bits.push('快照 ' + bt.snapshotDate)
+          bits.push('批次榜：整批换新，不比较变化')
+          return bits.join(' · ')
+        }
         const src = data._contentDate || (data.rows && data.rows[0] && data.rows[0].extra && data.rows[0].extra.showDate) || null
         bits.push('数据日期 ' + (data.dataDate || '—'))
         // 首订是 n-1 口径：直查时「内容日期（上架日）」与「数据日期」必须分开写清楚
@@ -2553,7 +2586,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                   : [tr]
               }))))
           : h('div', { style: C.muted }, data ? dash(data.note || '没有条目') : '加载中…'),
-        h('div', { style: { ...C.muted, marginTop: '6px' } }, '列随榜变化：该站没有的字段整列不出现；有字段但这条没抓到显示「—」。面板变窄时列会按宽度自动收起（先收作者/分类/字数这类次级列，名次/变化/书名与该榜主指标一直在），再窄就换成卡片行；点行看详情。'))
+        h('div', { style: { ...C.muted, marginTop: '6px' } }, '列随榜变化：该站没有的字段整列不出现；有字段但这条没抓到显示「—」（批次榜不出「变化」列）。面板变窄时列会按宽度自动收起（先收作者/分类/字数这类次级列，名次/书名与该榜主指标一直在），再窄就换成卡片行；点行看详情。'))
     }
 
     /**

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyColumnPolicy, boardMeta, columnsFor, compareDesc, defaultSortFor, enrichAttemptPolicy, enrichMissingCount, fanqieCatName, hideColumnsFor, isEnrichableBoard, shouldShowDays, usesRankDelta, withFanqieCat, groupChanges, groupBySite } from '../lib/scan/view.js'
+import { applyColumnPolicy, batchKeyOf, batchKindOf, batchLabelOf, boardMeta, columnsFor, compareDesc, defaultSortFor, enrichAttemptPolicy, enrichMissingCount, fanqieCatName, hideColumnsFor, isBatchBoard, isEnrichableBoard, saleRangeOf, shouldShowDays, usesRankDelta, withFanqieCat, groupChanges, groupBySite } from '../lib/scan/view.js'
 
 test('列随榜：起点签约榜（已限定分类）不出现分类列，但有子分类与字数', () => {
   const m = boardMeta('qidian.sign.cat12')
@@ -86,11 +86,37 @@ test('★ 列序守卫：全站「字数」都排在「收藏」之前（统一�
 
 test('列随榜：刺猬猫「首订（约）」= 第三方约值 + 书页补的字数/收藏（2026-10-15 使用者）', () => {
   const keys = columnsFor(boardMeta('ciweimao.buy.latest')).map((c) => c.key)
-  assert.deepEqual(keys, ['rank', 'delta', 'title', 'author', 'buyNumRaw', 'words', 'collect'], '首订（原始）+ 字数/收藏')
+  /**
+   * ★ 2026-10-25（批次榜）：不再有「变化」列 —— 每周整批换新，批内数值冻结、跨批不可比。
+   */
+  assert.deepEqual(keys, ['rank', 'title', 'author', 'buyNumRaw', 'words', 'collect'], '首订（原始）+ 字数/收藏，且无「变化」列')
+  assert.ok(!keys.includes('delta'), '批次榜不出变化列')
   // 该榜是第三方约值榜：不出「在榜天数」
   const pol = applyColumnPolicy(columnsFor(boardMeta('ciweimao.buy.latest'), { hasBaseline: true, hasHistory: true }), 'ciweimao.buy.latest').map((c) => c.key)
   assert.ok(!pol.includes('days'), '第三方约值榜不显示在榜天数')
   assert.ok(pol.includes('words') && pol.includes('collect'), '补全后字数/收藏列要保留')
+})
+
+test('★ 2026-10-25 批次榜：榜单判定、批键与标签、上架日范围', () => {
+  assert.equal(isBatchBoard('ciweimao.buy.latest'), true)
+  assert.equal(isBatchBoard('qidiantu.shouding'), true, '起点图首订每天整批换新，同样是批次榜')
+  assert.equal(isBatchBoard('ciweimao.no-vip-click.week'), false, '周榜是名次榜，每天可比较')
+  assert.equal(isBatchBoard('qidiantu.sanjiang'), false, '三江是期内累加，不是整批换新')
+
+  assert.equal(batchKindOf('ciweimao.buy.latest'), 'issue')
+  assert.equal(batchKindOf('qidiantu.shouding'), 'date')
+  assert.equal(batchKindOf('qidian.sign.cat12'), null)
+
+  const buyRows = [{ key: '1', rank: 1, value: 3200, title: 'A', author: null, url: null, extra: { issue: 479, firstBuyableAt: '2026-10-23T10:41:41' } }]
+  assert.equal(batchKeyOf('issue', buyRows), '479')
+  assert.equal(batchLabelOf('issue', '479'), '第 479 期')
+  assert.deepEqual(saleRangeOf(buyRows), { start: '2026-10-23', end: '2026-10-23' })
+  const sdRows = [{ key: '2', rank: 1, value: 1953, title: 'B', author: null, url: null, extra: { showDate: '2026-10-24' } }]
+  assert.equal(batchKeyOf('date', sdRows), '2026-10-24')
+  assert.equal(batchLabelOf('date', '2026-10-24'), '上架日 2026-10-24')
+  // 缺字段 ⇒ null（不猜、不补 0）
+  assert.equal(batchKeyOf('issue', [{ key: '3', rank: 1, value: null, title: 'C', author: null, url: null, extra: {} }]), null)
+  assert.equal(batchLabelOf('issue', null), null)
 })
 
 test('列随榜：起点图首订榜带收订比列', () => {
