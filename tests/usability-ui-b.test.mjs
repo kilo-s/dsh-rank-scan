@@ -255,14 +255,15 @@ test('★ 设置：四组齐全 + 未保存提示 + 开关即时生效且失败�
   assert.match(SRC, /有未保存的改动/)
   assert.match(SRC, /已恢复原状态/, '即时开关失败必须回退并说明')
   assert.match(SRC, /保存计划/)
-  assert.match(SRC, /补齐该站缺失字段/, '全站补全挪到设置，但能力不许丢')
+  assert.match(SRC, /补齐缺失/, '全站补全挪到设置，但能力不许丢')
 })
 
 test('★ 榜单：条数「保存」与「保存并扫描本榜」分开；历史入口按能力出现', () => {
   assert.match(SRC, /'扫描本榜（联网）'/)
   assert.match(SRC, /'保存'/)
   assert.match(SRC, /'保存并扫描本榜'/)
-  assert.match(SRC, /if \(canDayQuery\(curBoard\)\)/, '历史块必须按榜能力分支')
+  assert.match(SRC, /const canDay = canDayQuery\(curBoard\)/, '历史入口必须按榜能力分支')
+  assert.ok(!SRC.includes('menuItems'), '榜单页的更多菜单（含输入框）必须移除')
   assert.match(SRC, /条数已保存，但扫描失败/, '保存成功/采集失败要分开回执')
   assert.match(SRC, /正在查看历史：/, '看历史必须显式标出')
   assert.match(SRC, /无可比基准/, '没有基准不许报 0')
@@ -469,10 +470,11 @@ test('★ 上架日 X ⇒ 请求数据日期 X+1（首订 n-1 锚），保存后
   const ovQd = ovFixture({ sites: [{ site: 'qidiantu', siteName: '起点图', boards: [{ boardId: 'qidiantu.shouding', name: '首订榜', status: 'ok', up: 1, newCount: 0, out: 0, lastCapture: '2026-10-22T05:30:00Z', note: null, derived: false, displayed: true }] }] })
   const app = mount(mod.__test.components.BoardTab, { ov: ovQd, openLink() {}, narrow: false, rev: 'r1' })
   let tree = await app.flush()
-  click(tree, '更多 ▾')
-  tree = app.render()
+  const daySel = nodesOf(tree, (n) => n.type === 'select' && (n.children || []).some((c) => c && c.type === 'option' && c.props && c.props.value === '__day'))[0]
+  assert.ok(daySel, '首订榜日期选择器里必须有「按上架日回看…」')
+  tree = app.act(() => daySel.props.onChange({ target: { value: '__day' } }))
   const dateInput = nodesOf(tree, (n) => n.type === 'input' && n.props.type === 'date')[0]
-  assert.ok(dateInput, '首订榜必须能按上架日回看（能力驱动入口在「更多」里）')
+  assert.ok(dateInput, '首订榜必须能按上架日回看（能力驱动入口在日期选择器里）')
   tree = app.act(() => dateInput.props.onChange({ target: { value: '2026-10-22' } }))
   click(tree, '存入本地')
   await app.flush()
@@ -596,7 +598,7 @@ test('★ 离开保护：有未保存草稿时切页/收起先拦，草稿保留
   click(pt, '仍然离开')
   pt = panel.render()
   assert.ok(!/有未保存的改动/.test(textOf(pt)), '离开后提示条消失')
-  assert.ok(textOf(pt).indexOf('更多 ▾') >= 0, '已经切到榜单页（榜单工具栏在）')
+  assert.ok(/扫描本榜|本榜设置/.test(textOf(pt)), '已经切到榜单页（榜单工具栏在）')
   assert.ok(textOf(pt).indexOf('今天的变化') < 0, '概览的内容不该还留着')
 })
 
@@ -620,14 +622,19 @@ function boardFixture(over) {
 const OV_QD = ovFixture({
   sites: [{ site: 'qidiantu', siteName: '起点图', boards: [{ boardId: 'qidiantu.shouding', name: '首订榜', status: 'ok', up: 1, newCount: 0, out: 0, lastCapture: '2026-10-21T05:30:00Z', note: null, derived: false, displayed: true }] }],
 })
-async function openDayView(app, dateText) {
+async function openDayInput(app) {
   let tree = await app.flush()
-  click(tree, '更多 ▾')
-  tree = app.render()
+  const sel = nodesOf(tree, (n) => n.type === 'select' && (n.children || []).some((c) => c && c.type === 'option' && c.props && c.props.value === '__day'))[0]
+  assert.ok(sel, '首订榜日期选择器里必须有「按上架日回看…」')
+  tree = app.act(() => sel.props.onChange({ target: { value: '__day' } }))
   const input = nodesOf(tree, (n) => n.type === 'input' && n.props.type === 'date')[0]
   assert.ok(input, '首订榜必须有按上架日回看入口')
-  tree = app.act(() => input.props.onChange({ target: { value: dateText } }))
-  click(tree, '查看')
+  return { tree, input }
+}
+async function openDayView(app, dateText) {
+  const { tree, input } = await openDayInput(app)
+  let next = app.act(() => input.props.onChange({ target: { value: dateText } }))
+  click(next, '查看')
   return app.flush()
 }
 
@@ -731,10 +738,8 @@ test('★ Spec A：直查期间本地快照修订号变化，不许把站点历�
   })
   const app = mount(mod.__test.components.BoardTab, props)
   let tree = await app.flush()
-  click(tree, '更多 ▾')
-  tree = app.render()
-  const input = nodesOf(tree, (n) => n.type === 'input' && n.props.type === 'date')[0]
-  tree = app.act(() => input.props.onChange({ target: { value: '2026-10-20' } }))
+  const opened = await openDayInput(app)
+  tree = app.act(() => opened.input.props.onChange({ target: { value: '2026-10-20' } }))
   click(tree, '查看')
   tree = await app.flush()
   assert.match(textOf(tree), /正在查看历史：2026-10-21/)
@@ -988,9 +993,8 @@ test('Spec A：同日重复存入本地也重读，并保持上架日 n-1 换算
   const { mod, mount, calls } = loadInteractive({ routes: directRoutes(boardFixture()) })
   const app = mount(mod.__test.components.BoardTab, { ov: OV_QD, width: 900, rev: 'r1' })
   let tree = await app.flush()
-  click(tree, '更多 ▾'); tree = app.render()
-  const input = nodesOf(tree, n => n.type === 'input' && n.props.type === 'date')[0]
-  tree = app.act(() => input.props.onChange({ target: { value: '2026-10-20' } }))
+  const opened = await openDayInput(app)
+  tree = app.act(() => opened.input.props.onChange({ target: { value: '2026-10-20' } }))
   click(tree, '存入本地'); tree = await app.flush(); tree = await app.flush()
   const before = calls.filter(c => c.url.includes('/board')).length
   click(tree, '存入本地'); tree = await app.flush(); tree = await app.flush()

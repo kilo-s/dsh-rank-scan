@@ -1232,11 +1232,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('button', {
             className: 'rs-btn is-primary',
             disabled: scanBusy,
-            title: '按「设置 → 抓取范围」里勾选的榜逐个扫描（会联网）',
+            title: '按「设置 → 抓取范围」里勾选的榜逐个扫描（联网）',
             onClick: function () { props.act('/scan') },
           }, scanBtnText),
           scanBusy ? h('button', { className: 'rs-btn is-danger', onClick: function () { props.act('/cancel') } }, '停止本次（保留已完成）') : null,
-          badRows.length ? h('button', { className: 'rs-btn', disabled: scanBusy, onClick: function () { props.act('/retry') } }, '重试失败 ' + badRows.length + ' 个榜') : null,
+          badRows.length ? h('button', { className: 'rs-btn', disabled: scanBusy, onClick: function () { props.act('/retry') }, title: '只重试失败的榜（联网）' }, '重试失败 ' + badRows.length + ' 个榜') : null,
           h('button', { className: 'rs-btn is-ghost', onClick: props.reload, title: '只重新读取本地数据：不联网、不采集' }, '重新载入'),
           // 运行中不显示「上次 …」：那一轮还没结束，进度只放在主按钮一处（否则会同时出现两条「扫描中」）
           scanRunning ? null : h('span', { style: C.muted }, '上次 ' + scanLabel(scan))),
@@ -1270,7 +1270,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               h('span', null, it.why),
               it.detail ? h('span', { style: C.muted }, '（' + String(it.detail).slice(0, 80) + '）') : null,
               it.boardId ? h('button', { className: 'rs-btn', disabled: props.busy, onClick: function () { props.onOpenBoard && props.onOpenBoard(it.boardId) }, title: '在「榜单」页打开这一榜（保上下文）' }, '查看本榜') : null,
-              it.boardId ? h('button', { className: 'rs-btn', disabled: props.busy, onClick: function () { props.onRescanBoard && props.onRescanBoard(it.boardId) }, title: '只重扫这一榜（会联网）' }, '重扫本榜') : null)
+              it.boardId ? h('button', { className: 'rs-btn', disabled: props.busy, onClick: function () { props.onRescanBoard && props.onRescanBoard(it.boardId) }, title: '只重扫这一榜（联网）' }, '重扫本榜') : null)
           }))) : null,
         /* ④ 今天的变化 */
         h('div', { style: C.siteBar }, '今天的变化' + (chgRealTotal ? '（' + chgRealTotal + ' 条）' : '')),
@@ -1448,7 +1448,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
      * 设置页保存语义（0.4.1）：
      *   · 即时生效：只有「定时扫描」开关（乐观置位 + 失败回滚，结果走 Toast）。
      *   · 草稿 + 底栏保存：抓取范围、自动补全、起点收藏补全、请求间隔、各站计划时刻、兜底时刻、保留天数。
-     *   · 动作按钮（不是设置，点了就做）：补全起点收藏、清空书页缓存、补齐该站缺失字段、复制诊断、检查更新；
+     *   · 动作按钮（不是设置，点了就做）：补全起点收藏、清空书页缓存、补齐缺失（按站批量）、复制诊断、检查更新；
      *     保持原行为，结果走 Toast。
      */
     function SettingsTab(props) {
@@ -1796,9 +1796,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               h('span', { style: C.muted }, siteNameOf(s) + ' ' + pickedOf(s) + '/' + siteTotal(s)),
               h('button', { className: 'rs-btn is-ghost', onClick: function () { setAll(s, true) } }, '全选'),
               h('button', { className: 'rs-btn is-ghost', onClick: function () { setAll(s, false) } }, '全不选'),
-              h(PopMenu, { label: '更多', width: 190, items: [
-                { label: '补齐该站缺失字段', onClick: function () { enrichSite(s) }, title: '把该站已勾选的榜逐个补全（逐本 1 请求，很慢）' },
-              ] }))
+              h('button', { className: 'rs-btn is-ghost', disabled: busy, onClick: function () { enrichSite(s) }, title: '把该站已勾选的榜逐个补全（联网：逐本 1 请求，很慢）' }, '补齐缺失'))
           })),
           groups.map(function (g) {
             const derived = g.items.length > 0 && String(g.items[0].boardId).indexOf('fanqie.derived.') === 0
@@ -1876,7 +1874,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('span', { style: C.muted }, '起点收藏补全'),
             h('input', { type: 'checkbox', checked: qdEnrich, onChange: function (e) { setQdEnrich(e.target.checked); setBarNote('') } }),
             h('span', { style: C.muted }, qdEnrich ? '已开启' : '已关闭（默认关）'),
-            h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/qidianEnrich').then(function (r) { toast('success', (r && r.note) || '起点补全完成'); return refreshQd() }).catch(function (e) { toast('error', String(e)) }).then(function () { setBusy(false) }) } }, '补全起点收藏'),
+            h('button', { className: 'rs-btn', disabled: busy, title: '补全起点收藏页缺失的字段（联网：逐本 1 请求）', onClick: function () { setBusy(true); jpost('/qidianEnrich').then(function (r) { toast('success', (r && r.note) || '起点补全完成'); return refreshQd() }).catch(function (e) { toast('error', String(e)) }).then(function () { setBusy(false) }) } }, '补全起点收藏'),
             h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/qidianCache', { clear: true }).then(function (r) { toast('success', (r && r.note) || '缓存已清'); return refreshQd() }).catch(function (e) { toast('error', String(e)) }).then(function () { setBusy(false) }) } }, '清空书页缓存')),
           h('div', { style: C.muted }, '起点书页缓存 ' + (qdCache && qdCache.cache ? qdCache.cache.books : 0) + ' 本 · 有效期 ' + ((qdCache && qdCache.ttlDays) || 7) + ' 天' +
             (cat.bookCache ? '　· 通用书页缓存 ' + ((cat.bookCache.stat && cat.bookCache.stat.entries) || 0) + ' 本 · 有效期 ' + (cat.bookCache.ttlDays || 7) + ' 天' : '')),
@@ -2510,8 +2508,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const [depth, setDepth] = React.useState('')
       const [info, setInfo] = React.useState({ max: 100, can: true, hint: '' })
       const [busy, setBusy] = React.useState(false)
+      const [scanning, setScanning] = React.useState(false)
       const [note, setNote] = React.useState(null)
       const [qDate, setQDate] = React.useState('')
+      const [dayOpen, setDayOpen] = React.useState(false)
       /**
        * ★ Spec A/B（2026-10-24 审查）：
        *   · loadNonce —— 即使 sd/ss 本来就是空的，「回到最新」也必须真的重发一次 GET；
@@ -2594,9 +2594,15 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('select', { value: value, onChange: function (e) { onChange(e.target.value) }, style: C.input },
             options.map(function (o) { return h('option', { key: o.value, value: o.value }, o.label) })))
       }
-      const pickBoard = function (v) { sel.set({ board: v }); setBt(v); setSd(sel.pref(v, 'date')); setSs(sel.pref(v, 'sort')); setPick(null) }
-      const pickSite = function (v) { sel.set({ site: v, board: null }); setStSite(v); setBt(null); setSd(''); setSs(''); setPick(null) }
+      const pickBoard = function (v) { sel.set({ board: v }); setBt(v); setSd(sel.pref(v, 'date')); setSs(sel.pref(v, 'sort')); setPick(null); setDayOpen(false) }
+      const pickSite = function (v) { sel.set({ site: v, board: null }); setStSite(v); setBt(null); setSd(''); setSs(''); setPick(null); setDayOpen(false) }
       const pickDate = function (v) { setSd(v); sel.setPref(curBoard, 'date', v) }
+      /** 「按上架日回看…」是动作项，不是日期值：不改当前选择，只在下面展开输入行 */
+      const pickDateSel = function (v) {
+        if (v === '__day') { setDayOpen(true); return }
+        setDayOpen(false)
+        pickDate(v)
+      }
       const pickSort = function (v) { setSs(v); sel.setPref(curBoard, 'sort', v) }
       /** 只保存条数（**不采集**）；另有一个明确的「保存并扫描本榜」 */
       const saveDepth = function (alsoScan) {
@@ -2605,40 +2611,50 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         setNote('正在保存每榜取数 ' + n + ' 条…')
         jpost('/depth', { boardId: curBoard, depth: n })
           .then(function (r) {
-            setNote((r && r.note) || ('已保存：每榜取 ' + n + ' 条'))
+            setNote(null)
+            toast('success', (r && r.note) || ('已保存：每榜取 ' + n + ' 条'))
             if (!alsoScan) return null
+            setScanning(true)
             setNote('已保存 ' + n + ' 条，正在扫描本榜…')
             return jpost('/scan', { boards: curBoard }).then(function (rr) {
               const got = ((rr && rr.boards) || []).map(function (x) { return x.boardId + ' ' + x.rows + ' 条' }).join('')
-              setNote('已保存并扫描：' + (got || '完成'))
-              return reloadBoard(true)
+              setNote(null)
+              toast('success', '已保存并扫描：' + (got || '完成'))
+              reloadBoard(true)
+              if (props.onScanned) props.onScanned()
             }).catch(function (e2) {
               // ★ 保存成功、采集失败要**分开说**，否则用户会以为设置没存住、反复点
-              setNote('条数已保存，但扫描失败：' + e2 + '（可稍后重试扫描）')
+              setNote(null)
+              toast('error', '条数已保存，但扫描失败：' + e2 + '（可稍后重试扫描）')
             })
           })
-          .catch(function (e) { setNote('保存失败：' + e) })
-          .then(function () { setBusy(false) })
+          .catch(function (e) { setNote(null); toast('error', '保存失败：' + e) })
+          .then(function () { setScanning(false); setBusy(false) })
       }
       const scanBoard = function () {
+        if (props.scanBusy || busy) return
         setBusy(true)
+        setScanning(true)
         setNote('正在扫描本榜…')
         jpost('/scan', { boards: curBoard })
           .then(function (rr) {
             const b0 = ((rr && rr.boards) || [])[0]
-            setNote(b0 ? '已扫描：' + b0.boardId + ' ' + b0.rows + ' 条' : '已扫描')
-            return reloadBoard(true)
+            setNote(null)
+            toast('success', b0 ? '已扫描：' + b0.boardId + ' ' + b0.rows + ' 条' : '已扫描')
+            reloadBoard(true)
+            if (props.onScanned) props.onScanned()
           })
-          .catch(function (e) { setNote('扫描失败：' + e) })
-          .then(function () { setBusy(false) })
+          .catch(function (e) { setNote(null); toast('error', '扫描失败：' + e) })
+          .then(function () { setScanning(false); setBusy(false) })
       }
       const doEnrich = function () {
         setBusy(true)
         setNote('补全中（逐本请求 + ' + fmtIntervalText() + '，可能要几十秒）…')
         jpost('/enrich?boardId=' + encodeURIComponent(curBoard)).then(function (r) {
-          setNote(r && r.note ? r.note : '补全完成')
+          setNote(null)
+          toast('success', r && r.note ? r.note : '补全完成')
           return reloadBoard(true)
-        }).catch(function (e) { setNote('补全失败：' + e) }).then(function () { setBusy(false) })
+        }).catch(function (e) { setNote(null); toast('error', '补全失败：' + e) }).then(function () { setBusy(false) })
       }
       /**
        * 按日期回看：只在**支持核对的榜**出现（能力驱动）。
@@ -2646,21 +2662,23 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
        * 这里把两者分开写，不让用户以为选的是同一个日子。
        */
       const queryDay = function (save) {
-        if (!qDate) { setNote('先选上架日'); return }
+        if (!qDate) { toast('warn', '先选上架日'); return }
         // ★ 上架日 X ⇒ 数据日期 X+1（首订按 n-1 锚；适配器 contentDateFor(数据日) = 数据日-1）
         const dDate = addDaysStr(qDate, 1)
-        if (!dDate) { setNote('日期格式不对：应为 YYYY-MM-DD'); return }
+        if (!dDate) { toast('warn', '日期格式不对：应为 YYYY-MM-DD'); return }
         const my = ++loadSeqRef.current
         setBusy(true)
         setNote((save ? '抓取' : '查看') + '上架日 ' + qDate + '（数据日期 ' + dDate + '）…')
         jpost('/day', { boardId: curBoard, date: dDate, save: !!save }).then(function (r) {
           if (my !== loadSeqRef.current) return null
           if (r && (r.ok === false || r.code)) {
-            setNote('已拒绝：' + (r.error || '站点给不出这一天可核对的数据'))
+            setNote(null)
+            toast('warn', '已拒绝：' + (r.error || '站点给不出这一天可核对的数据'))
             return null
           }
           const shown = (r && r.date) || dDate
-          setNote(r && r.note ? r.note : (save ? '已抓取：上架日 ' + qDate + ' 存为数据日期 ' + dDate + ' 的快照' : '已查看（未落盘）'))
+          setNote(null)
+          toast('success', r && r.note ? r.note : (save ? '已抓取：上架日 ' + qDate + ' 存为数据日期 ' + dDate + ' 的快照' : '已查看（未落盘）'))
           if (save) { setDirectQ(null); setSd(shown); sel.setPref(curBoard, 'date', shown); setLoadNonce(function (n) { return n + 1 }); return null }
           /**
            * ★ Spec B（2026-10-24）：直查视图是一份**独立**数据。
@@ -2695,7 +2713,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             _contentDate: (r && r.contentDate) || null,
           })
           setDirectQ({ date: shown })
-        }).catch(function (e) { setNote('直查失败：' + e) }).then(function () { setBusy(false) })
+        }).catch(function (e) { setNote(null); toast('error', '直查失败：' + e) }).then(function () { setBusy(false) })
       }
       // Esc：先关详情卡（面板本身由 Panel 那层关）
       useEscLayer(pick ? function () { setPick(null); return true } : null)
@@ -2733,47 +2751,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         return bits.join(' · ')
       })()
       const enrichMissing = data && data.enrich && data.enrich.missing > 0 ? data.enrich.missing : 0
+      const canDay = canDayQuery(curBoard)
+      const dateOptsShown = canDay ? dateOpts.concat([{ value: '__day', label: '按上架日回看…' }]) : dateOpts
       // 减掉正文左右 padding（20）、纵向滚动条与一点余量 ⇒ 表格不会溢出成横向滚动
       const cols = fitColumns(data && data.columns, avail - 48)
       const viewDate = (data && (data._queryDate || sd)) || ''
-      const menuItems = [
-        { label: '扫描本榜（联网）', disabled: busy, onClick: scanBoard, title: '只抓当前这一榜，不动其它榜' },
-        { sep: true },
-        {
-          rows: h('div', null,
-            h('div', { style: { ...C.muted, marginBottom: '3px' } }, '每榜取多少条'),
-            h('div', { style: C.row },
-              h('input', {
-                type: 'number', min: 1, max: info.max, value: depth, placeholder: String(info.max), disabled: !info.can,
-                title: info.hint, onChange: function (e) { setDepth(e.target.value) },
-                style: { width: '58px', fontSize: '12px', padding: '2px 4px' },
-              }),
-              h('span', { style: C.muted }, info.can ? '条（上限 ' + info.max + '）' : '条 · ' + info.hint),
-              h('button', { className: 'rs-btn', disabled: !info.can || busy, onClick: function () { saveDepth(false) }, title: '只保存，下次扫描生效' }, '保存'),
-              h('button', { className: 'rs-btn', disabled: !info.can || busy, onClick: function () { saveDepth(true) }, title: '保存后立刻抓一次这一榜（会联网）' }, '保存并扫描本榜'))),
-        },
-        { sep: true },
-        {
-          label: enrichMissing ? '补全缺失字段（' + enrichMissing + ' 条）' : '补全缺失字段（当前没有待补）',
-          disabled: busy || !enrichMissing,
-          onClick: doEnrich,
-          title: '只补当前这一榜还没取到的字段（收藏/字数等），可能走书页缓存',
-        },
-        // 补全没跑完必须可见（别让「有行但字段空」静默）
-        enrichMissing ? { rows: h('div', { style: C.muted }, '补全未完成：还缺 ' + enrichMissing + ' 条（补全没跑完或被中断；点上面重试，或等定时续跑）') } : null,
-      ]
-      if (canDayQuery(curBoard)) {
-        menuItems.push({ sep: true })
-        menuItems.push({
-          rows: h('div', null,
-            h('div', { style: { ...C.muted, marginBottom: '3px' } }, '按上架日回看（仅本榜支持核对）'),
-            h('div', { style: C.row },
-              h('input', { type: 'date', value: qDate, onChange: function (e) { setQDate(e.target.value) }, style: { fontSize: '12px', padding: '2px 4px' } }),
-              h('button', { className: 'rs-btn', disabled: busy || !qDate, onClick: function () { queryDay(false) } }, '查看'),
-              h('button', { className: 'rs-btn', disabled: busy || !qDate, onClick: function () { queryDay(true) }, title: '抓取该上架日并存为本地快照（已有快照不覆盖）' }, '存入本地')),
-            h('div', { style: { ...C.muted, marginTop: '2px' } }, '首订按 n-1 锚：选上架日 X ⇒ 请求数据日期 X+1（页面内容日期就是 X）；保存后快照记在 X+1 名下。站点给的日期对不上会被拒绝，不写任何文件。')),
-        })
-      }
+      /* 0.4.2：本榜操作不再进「更多」——扫描/补全在操作条，条数在「本榜设置」，回看在日期行。 */
       /**
        * ★ 2026-10-23（窄面板「作品只显示书名前面的信息，后面一大片空白」）：
        *   以前窄的时候是把次级列**整列删掉**、再让表格 width:100% 铺满 ⇒ 每行只剩名次 + 书名，
@@ -2867,18 +2850,43 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           chips.length ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '3px' } }, chips) : null)
       }
       return h('div', null,
-        h('div', { style: C.row },
+        h('div', { style: { ...C.row, flexWrap: 'wrap' } },
           selXS('站', curSite || '', sites.map(function (s) { return { value: s.site, label: s.siteName } }), pickSite),
           selXS('榜', curBoard || '', curBoards.map(function (b) { return { value: b.boardId, label: b.name } }), pickBoard),
-          isDerived ? null : selXS('日期', sd, dateOpts, pickDate),
-          selXS('排序', ss, sortOpts, pickSort),
-          h(PopMenu, { label: '更多', items: menuItems, width: 260, title: '采集与详情（低频操作）' })),
+          isDerived ? null : selXS('日期', sd, dateOptsShown, pickDateSel),
+          selXS('排序', ss, sortOpts, pickSort)),
+        dayOpen && canDay ? h('div', { style: { ...C.row, marginTop: '2px', flexWrap: 'wrap' } },
+          h('span', { style: C.muted }, '上架日'),
+          h('input', { type: 'date', value: qDate, onChange: function (e) { setQDate(e.target.value) }, style: { fontSize: '12px', padding: '2px 4px' } }),
+          h('button', { className: 'rs-btn', disabled: busy || !qDate, onClick: function () { queryDay(false) }, title: '直查站点这一上架日的数据（联网，不落盘）' }, '查看'),
+          h('button', { className: 'rs-btn', disabled: busy || !qDate, onClick: function () { queryDay(true) }, title: '抓取该上架日并存为本地快照（联网）' }, '存入本地'),
+          h('button', { className: 'rs-btn is-ghost', onClick: function () { setDayOpen(false) } }, '收起'),
+          h('div', { style: { ...C.muted, flex: '1 1 100%' } }, '首订按 n-1 锚：选上架日 X ⇒ 请求数据日期 X+1（页面内容日期就是 X）；保存后快照记在 X+1 名下。站点给的日期对不上会被拒绝，不写任何文件。')) : null,
+        h('div', { style: { ...C.row, marginTop: '4px', flexWrap: 'wrap' } },
+          h('button', {
+            className: 'rs-btn',
+            disabled: props.scanBusy || busy,
+            onClick: scanBoard,
+            title: props.scanBusy ? '全局扫描进行中；请到概览点「停止本次」后再扫本榜' : '只抓当前这一榜，不动其它榜（联网）',
+          }, scanning ? '扫描本榜中…' : (props.scanBusy ? '全局扫描进行中…' : '扫描本榜（联网）')),
+          enrichMissing ? h('button', { className: 'rs-btn', disabled: busy || props.scanBusy, onClick: doEnrich, title: '补全当前榜缺失字段（联网：逐本进书页取，可能走缓存）' }, '补全缺失 ' + enrichMissing + ' 条') : null,
+          h('span', { style: C.muted }, '只抓当前这一榜；全局扫描/停止在概览')),
+        enrichMissing ? h(Banner, { tone: 'warn', live: false },
+          h('span', null, '补全未完成：还缺 ' + enrichMissing + ' 条字段'),
+          h('span', { style: C.muted }, '（榜页没给收藏/字数，要进书页取；点上面的「补全缺失」重试，或等定时续跑）')) : null,
+        h(Section, { title: '本榜设置', defaultOpen: false, summary: '每榜 ' + (depth || info.max || '—') + ' 条（上限 ' + (info.max || '—') + '）' },
+          h('div', { style: { ...C.row, flexWrap: 'wrap' } },
+            h('span', { style: C.muted }, '每榜取多少条'),
+            h('input', {
+              type: 'number', min: 1, max: info.max, value: depth, placeholder: String(info.max), disabled: !info.can || busy,
+              title: info.hint, onChange: function (e) { setDepth(e.target.value) },
+              style: { width: '58px', fontSize: '12px', padding: '2px 4px' },
+            }),
+            h('span', { style: C.muted }, info.can ? '条（上限 ' + info.max + '）' : '条 · ' + info.hint),
+            h('button', { className: 'rs-btn', disabled: !info.can || busy, onClick: function () { saveDepth(false) }, title: '只保存，下次扫描生效' }, '保存'),
+            h('button', { className: 'rs-btn', disabled: !info.can || busy || props.scanBusy, onClick: function () { saveDepth(true) }, title: '保存后立刻抓一次这一榜（联网）' }, '保存并扫描本榜')),
+          info.hint ? h('div', { style: C.muted }, info.hint) : null),
         band ? h('div', { style: { ...C.muted, marginTop: '2px' } }, band) : null,
-        /* Spec 4.2：补全缺多少条要**就近可见**，别只藏在「更多」菜单里 */
-        enrichMissing ? h('div', { style: { ...C.row, marginTop: '2px' } },
-          h('span', { style: { color: T.warn } }, '补全未完成：还缺 ' + enrichMissing + ' 条字段'),
-          h('button', { className: 'rs-btn', disabled: busy, onClick: doEnrich }, '补全'),
-          h('span', { style: C.muted }, '（榜页没给收藏/字数，要进书页取；1 秒/本）')) : null,
         viewDate ? h(Banner, { tone: 'warn' },
           h('span', { style: { fontWeight: 600 } }, '正在查看历史：' + viewDate),
           h('span', { style: C.muted }, data && data._queryDate ? '（直查站点，未落盘）' : '（本地快照）'),
@@ -3021,6 +3029,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       //   label「扫榜面板」，重复啰嗦。改为**纯图标**：文字由宿主那行自己的 label 提供。
     }
 
+    /**
+     * 入口分工（0.4.2）：
+     *   · 概览 = 全局扫描：主按钮「扫描已选榜」、运行中「停止本次」、有失败时「重试失败 N 个榜」；
+     *     问题行里的「查看本榜 / 重扫本榜」保留，不增删。
+     *   · 榜单页 = 只对当前这一榜：扫描本榜、补全缺失、本榜设置、按上架日回看。
+     *   · 设置页 = 设置与按站批量动作（补齐缺失），不放单榜扫描。
+     * 扫描忙态 scanBusy 由本层统一算，传给 BoardTab，避免榜单页和概览两处并发。
+     */
     function Panel(props) {
       const [open, setOpen] = panelOpen.use()
       // 收起面板会卸载 Panel ⇒ 用持久化的 tab（否则每次打开都跳回「概览」）
@@ -3097,6 +3113,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       /** act 的 then 里要读「此刻是否还在跑」，用 ref 拿最新值（闭包里的 scanLive 是旧渲染的） */
       const scanLiveRef = React.useRef(false)
       scanLiveRef.current = scanLive
+      /** 全局扫描忙态：定时/手动在跑，或扫描类 POST 还在路上 */
+      const scanBusy = scanLive || scanActBusy
       React.useEffect(function () {
         if (!open) return undefined
         if (polledOnce.current) reload()
@@ -3186,7 +3204,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               onOpenBoard: openBoard,
               onRescanBoard: function (boardId) { act('/scan', { boards: String(boardId) }) },
             })
-              : tab === 'board' ? h(BoardTab, { ov: ov, openLink: props.openLink, narrow: narrow, width: rect.w, rev: rev })
+              : tab === 'board' ? h(BoardTab, { ov: ov, openLink: props.openLink, narrow: narrow, width: rect.w, rev: rev, scanBusy: scanBusy, onScanned: reload })
               : tab === 'bm' ? h(BookmarksTab, { openLink: props.openLink })
               : h(SettingsTab, { ov: ov, onSaved: reload }))),
         h(ToastHost, null),
