@@ -10,13 +10,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isEnrichableBoard, missingEnrichFields } from '../lib/scan/view.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const HOST = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
-const CLIENT = readFileSync(join(ROOT, 'client', 'client.js'), 'utf8')
+const CLIENT = readClientSource()
 
 test('起点图（三江）在纯函数口径里是「可补全、缺字数字段」的榜', () => {
   assert.equal(isEnrichableBoard('qidiantu.sanjiang'), true, '三江必须被判为可补全（否则待办永远清不掉）')

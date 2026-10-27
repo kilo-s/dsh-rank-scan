@@ -7,14 +7,15 @@
  * 外加原报告次要项：粘性表头、补全缺数就近提示、设置站分组折叠、书签显示中文榜名、
  * 自动补全开关归到「数据与性能」。
  *
- * 全部离线：只读 client/client.js，在 vm 里加载 + 用带状态的迷你 React 渲染成虚拟树。
+ * 全部离线：只读 client/parts/*.js，在 vm 里加载 + 用带状态的迷你 React 渲染成虚拟树。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 import vm from 'node:vm'
 
-const SRC = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+const SRC = readClientSource()
 
 /* ---------- 迷你 React：真的记账 state/refs/effects ---------- */
 function React17() {
@@ -178,7 +179,7 @@ function load(routes = {}) {
   sandbox.window = sandbox
   sandbox.globalThis = sandbox
   vm.createContext(sandbox)
-  vm.runInContext(SRC, sandbox, { filename: 'client/client.js' })
+  vm.runInContext(SRC, sandbox, { filename: 'client/parts/*.js' })
   const react = React17()
   const mod = registration.factory((name) => {
     if (name === 'react') return react.api

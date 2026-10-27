@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
@@ -13,12 +14,11 @@ import vm from 'node:vm'
  *   ② 其余站点显示**「名次 —」** —— 名次型榜 row.value 恒为 null，host 仍写 metric={名次,null}，
  *      客户端对 null 回退 '—'（spec-书签-v1:120 的卡片字段清单本来就没有名次 chip）。
  *
- * 与 tests/client-load.test.mjs 同一条纪律：**真加载** client/client.js（宿主同形
+ * 与 tests/client-load.test.mjs 同一条纪律：**真加载** client/parts/*.js（宿主同形
  * window.__ModuleLoader__ + 真跑 factory），直接调模块自己导出的纯函数，而不是在测试里
  * 复刻一份判断逻辑（复刻等于没测）。
  */
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const SOURCE = join(ROOT, 'client', 'client.js')
 
 function load() {
   const fakeReact = {
@@ -58,7 +58,7 @@ function load() {
   sandbox.window.addEventListener = function () {}
   sandbox.window.removeEventListener = function () {}
   sandbox.window.__ModuleLoader__ = { load: function (r) { reg = r } }
-  vm.runInContext(readFileSync(SOURCE, 'utf8'), vm.createContext(sandbox), { filename: 'client/client.js' })
+  vm.runInContext(readClientSource(), vm.createContext(sandbox), { filename: 'client/parts/*.js' })
   assert.ok(reg && typeof reg.factory === 'function', 'client.js 没有通过 __ModuleLoader__ 登记工厂')
   return reg.factory(function (spec) {
     if (spec === 'react') return fakeReact
@@ -95,7 +95,7 @@ test('★ 书签 chip：番茄 metric 与 collect 同源 ⇒ 不再显示两个�
 })
 
 test('★ 书签 chip：卡片渲染必须走这个函数（防止测的是另一份复刻实现）', () => {
-  const src = readFileSync(SOURCE, 'utf8')
+  const src = readClientSource()
   assert.match(src, /metricChipText\(b\.metric, b\.collect, lab\)/, '卡片渲染要调用 metricChipText，不许再写一份内联判断')
   assert.match(src, /书签记录 /, '同口径的旧值要用「书签记录 X」标出来，别跟实时值共用一个标签')
 })

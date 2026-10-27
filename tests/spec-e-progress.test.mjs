@@ -10,6 +10,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
@@ -232,8 +233,7 @@ test('扫描抛错/全部失败后也不留假 running（面板不会一直显�
 
 /* ---------- ④ 面板：按真实运行态显示 ---------- */
 function loadPanel() {
-  const SOURCE = join(HERE, '..', 'client', 'client.js')
-  const SRC = readFileSync(SOURCE, 'utf8')
+  const SRC = readClientSource()
   let registration = null
   const React = {
     createElement: (type, props, ...children) => {

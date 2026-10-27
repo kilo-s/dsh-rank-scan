@@ -1,18 +1,18 @@
 /**
  * 面板「简明性 / 易用性」（工作包 B·C·D）离线验收。
- * 全部断言都不联网、不写运行目录：只读 client/client.js，在 vm 里加载并渲染成虚拟树。
+ * 全部断言都不联网、不写运行目录：只读 client/parts/*.js，在 vm 里加载并渲染成虚拟树。
  * 口径：docs/rank-scan/方案-简明性与易用性优化-v1.md（推荐项已确认）。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import vm from 'node:vm'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const SOURCE = join(HERE, '..', 'client', 'client.js')
-const SRC = readFileSync(SOURCE, 'utf8')
+const SRC = readClientSource()
 
 function fakeReact() {
   function Component(props) { this.props = props || {} }
@@ -75,7 +75,7 @@ function load(opts = {}) {
   sandbox.globalThis = sandbox
   if (opts.shared) sandbox.__rankScanShared = opts.shared
   vm.createContext(sandbox)
-  vm.runInContext(SRC, sandbox, { filename: 'client/client.js' })
+  vm.runInContext(SRC, sandbox, { filename: 'client/parts/*.js' })
   const React = fakeReact()
   const mod = registration.factory((name) => { if (name === 'react') return React; throw new Error('unexpected require: ' + name) })
   return { mod, sandbox, calls }
@@ -442,7 +442,7 @@ function loadInteractive(opts = {}) {
   sandbox.globalThis = sandbox
   if (opts.shared) sandbox.__rankScanShared = opts.shared
   vm.createContext(sandbox)
-  vm.runInContext(SRC, sandbox, { filename: 'client/client.js' })
+  vm.runInContext(SRC, sandbox, { filename: 'client/parts/*.js' })
   const mod = registration.factory((name) => {
     if (name === 'react') return h.React
     throw new Error('unexpected require: ' + name)

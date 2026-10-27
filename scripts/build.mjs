@@ -6,7 +6,7 @@
  * 而 git 直装（dsh plugin add github:…）依赖 package.json 的 prepare 在**用户机器上**跑构建，
  * 所以构建入口必须是纯 Node。
  */
-import { existsSync, mkdirSync, copyFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -33,11 +33,16 @@ if (!tsc) {
 
 execFileSync(process.execPath, [tsc, '-p', join(root, 'tsconfig.json')], { stdio: 'inherit' })
 
-const src = join(root, 'client', 'client.js')
-if (!existsSync(src)) {
-  console.error('build: 缺 client/client.js（面板源）')
+const partsDir = join(root, 'client', 'parts')
+const parts = existsSync(partsDir)
+  ? readdirSync(partsDir).filter((f) => f.endsWith('.js')).sort()
+  : []
+if (parts.length === 0) {
+  console.error('build: 缺 client/parts/*.js（面板源）')
   process.exit(1)
 }
+let bundle = ''
+for (const f of parts) bundle += readFileSync(join(partsDir, f), 'utf8')
 mkdirSync(join(root, 'lib'), { recursive: true })
-copyFileSync(src, join(root, 'lib', 'client.js'))
-console.log('build: 完成 → lib/（host 由 tsc 产出；面板 bundle 由 client/client.js 复制）')
+writeFileSync(join(root, 'lib', 'client.js'), bundle)
+console.log('build: 完成 → lib/（host 由 tsc 产出；面板 bundle 由 client/parts/*.js 按名拼接）')

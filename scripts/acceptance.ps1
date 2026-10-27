@@ -183,17 +183,20 @@ Check "装配闸：cordis.patch.yml 存在且是 dsh.bundle.patch 指向的文�
 Check "分发闸：package.json 有 prepare（仓库链接直装才会现场构建出 lib/）" ($null -ne $pkgJson.scripts.prepare) ("prepare=" + $pkgJson.scripts.prepare)
 Check "装配闸：dsh.client.platform=web 且 exports 有 ./client" (($pkgJson.dsh.client.platform -eq 'web') -and ($null -ne $pkgJson.exports.'./client')) "面板注入路径"
 Check "装配闸：inject 声明的服务都在宿主已知集合（timer/webServer）" ((($pkgJson.dsh.client.inject | Measure-Object).Count -eq 0) -or (& { $ok=$true; foreach ($s in $pkgJson.dsh.client.inject) { if (@('timer','webServer','tools') -notcontains $s) { $ok=$false } }; $ok })) ("client.inject=" + ($pkgJson.dsh.client.inject -join ','))
-Check "轻量闸：面板产物不会再被构建覆盖（无 src/client、无 tsdown 配置）" ((-not (Test-Path (Join-Path $root 'src/client'))) -and (-not (Test-Path (Join-Path $root 'tsdown.config.ts')))) "手写 client/client.js + 构建复制"
+Check "轻量闸：面板产物不会再被构建覆盖（无 src/client、无 tsdown 配置）" ((-not (Test-Path (Join-Path $root 'src/client'))) -and (-not (Test-Path (Join-Path $root 'tsdown.config.ts')))) "手写 client/parts/*.js + 构建拼接"
 #   ★ 面板源必须在仓库里：此前它只存在于开发机的 lib/client.js 里（lib/ 不入库），
 #     于是 CI 从源码构建出的 tgz 没有面板，build.yml 的产物校验必然失败。
-$clientSrcPath = Join-Path $root 'client/client.js'
+$clientPartsDir = Join-Path $root 'client/parts'
 $clientOutPath = Join-Path $root 'lib/client.js'
-#   ★ 2026-10-16（审计-2/46）：旧实现产物缺失时 $clientSame = $true（恒真）⇒ 从没构建过也 PASS。
-#     改成三段真断言：源在 + 产物在 + 哈希一致（缺产物 = FAIL，如实报「没构建」）。
-$clientSrcExists = Test-Path $clientSrcPath
+$clientParts = if (Test-Path $clientPartsDir) { @(Get-ChildItem $clientPartsDir -Filter '*.js' | Sort-Object Name) } else { @() }
+$clientSrcExists = ($clientParts.Count -gt 0)
 $clientOutExists = Test-Path $clientOutPath
-$clientSame = ($clientSrcExists -and $clientOutExists -and ((Get-FileHash $clientSrcPath).Hash -eq (Get-FileHash $clientOutPath).Hash))
-Check "装配闸：面板源入库（client/client.js），且 lib/client.js 与它内容一致" ($clientSrcExists -and $clientOutExists -and $clientSame) ("源在=" + $clientSrcExists + " 产物存在=" + $clientOutExists + " 内容一致=" + $clientSame + "（产物缺失即 FAIL：跑 scripts\build-local.ps1）")
+$clientSrcText = ($clientParts | ForEach-Object { Get-Content -Raw -Encoding UTF8 $_.FullName }) -join ''
+$clientOutText = if ($clientOutExists) { Get-Content -Raw -Encoding UTF8 $clientOutPath } else { '' }
+#   ★ 2026-10-16（审计-2/46）：旧实现产物缺失时 $clientSame = $true（恒真）⇒ 从没构建过也 PASS。
+#     改成三段真断言：源在 + 产物在 + 内容一致（缺产物 = FAIL，如实报「没构建」）。
+$clientSame = ($clientSrcExists -and $clientOutExists -and ($clientSrcText -ceq $clientOutText))
+Check "装配闸：面板源入库（client/parts/*.js），且 lib/client.js 与拼接结果一致" ($clientSrcExists -and $clientOutExists -and $clientSame) ("源文件=" + $clientParts.Count + " 产物存在=" + $clientOutExists + " 内容一致=" + $clientSame + "（产物缺失即 FAIL：跑 scripts\build-local.ps1）")
 $tgz = Get-ChildItem -Path $root -Filter '*.tgz' -ErrorAction SilentlyContinue | Select-Object -First 1
 #   ★ 2026-10-16（审计-2/46）：干净 clone 上必然没有 tgz ⇒ 旧写法 Check ... $false 让 acceptance.ps1 恒 exit 1。
 #     未 pack 改成 SKIP（不计 fail），pack 过了就照旧查体积。

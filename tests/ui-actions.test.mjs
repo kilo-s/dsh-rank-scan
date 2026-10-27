@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 
 /**
  * 0.4.2 入口收拢守门：
@@ -8,7 +9,7 @@ import { readFileSync } from 'node:fs'
  *   · 本榜设置是折叠 Section，按上架日回看只在 canDayQuery 为真时出现
  *   · 设置页每站只有一个动作，平铺成「补齐缺失」，不再有只含一项的 PopMenu
  */
-const s = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+const s = readClientSource()
 const boardStart = s.indexOf('function BoardTab')
 const panelStart = s.indexOf('function Panel(props)')
 const boardSrc = s.slice(boardStart, panelStart)

@@ -1,13 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 
 /**
  * 面板视觉底层守门（0.4.0）：
  *   颜色只能来自设计令牌 T；按钮不再回退成内联 style；提示条统一走 Banner；
  *   作用域样式表只注入一次。这些是后续所有页面都能复用的前提，被改回去就红。
  */
-const s = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+const s = readClientSource()
 const tStart = s.indexOf('const T = {')
 const tEnd = s.indexOf('const C = {')
 

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 
 /**
  * 设置页保存语义（0.4.1）守门：
@@ -9,7 +10,7 @@ import { readFileSync } from 'node:fs'
  *   · settingsDiff 纯函数：改→脏、改回→不脏、captures 顺序不算脏、siteTimes 字段级比较
  *   · Toast 有自动消失计时，error 常驻；Panel 不再常驻渲染 msg
  */
-const s = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+const s = readClientSource()
 const settingsStart = s.indexOf('function SettingsTab')
 const versionStart = s.indexOf('function VersionRow')
 const settingsSrc = s.slice(settingsStart, versionStart)
