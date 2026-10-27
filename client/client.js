@@ -170,6 +170,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       sp: [0, 4, 8, 12, 16],
       fs: { s: '12px', m: '13px', l: '15px' },
       r: { s: '6px', m: '10px' },
+      shadowWin: '0 10px 30px rgba(0,0,0,.20)',
+      shadowMenu: '0 8px 20px rgba(0,0,0,.18)',
+      shadowBar: '0 -8px 12px -8px rgba(0,0,0,.28)',
     }
     /** 语义色低透明度底：用于提示条/未保存条（color-mix 不可用时退化为透明，不影响可读性） */
     const wash = function (color, pct) { return 'color-mix(in srgb, ' + color + ' ' + pct + '%, transparent)' }
@@ -192,7 +195,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         '[data-rank-scan-win] button:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
         '.rs-btn:disabled{opacity:.45;cursor:not-allowed}',
         '.rs-btn.is-primary{background:' + T.primary + ';border-color:' + T.primary + ';color:' + T.onPrimary + ';font-weight:600}',
-        '.rs-btn.is-primary:hover:not(:disabled){background:' + T.primary + ';filter:brightness(1.08)}',
+        '.rs-btn.is-primary:hover:not(:disabled){background:' + T.primary + ';opacity:.88}',
         '.rs-btn.is-ghost{border-color:transparent}',
         '.rs-btn.is-danger{color:' + T.bad + ';border-color:' + T.bad + '}',
         '.rs-btn.is-on{background:' + T.subtle + ';font-weight:600}',
@@ -212,7 +215,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
     const C = {
       win: { position: 'fixed', zIndex: 60, background: T.surface, color: T.fg,
         border: '1px solid ' + T.border, borderRadius: T.r.m,
-        boxShadow: '0 10px 30px rgba(0,0,0,.20)', fontSize: T.fs.m, lineHeight: 1.5,
+        boxShadow: T.shadowWin, fontSize: T.fs.m, lineHeight: 1.5,
         display: 'flex', flexDirection: 'column', overflow: 'hidden' },
       titlebar: { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 8px 6px 10px',
         borderBottom: '1px solid ' + T.border, cursor: 'move', userSelect: 'none', background: T.subtle },
@@ -221,11 +224,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       row: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', margin: '5px 0' },
       tabs: { display: 'flex', gap: '4px', borderBottom: '1px solid ' + T.border, marginBottom: '6px' },
       tab: (on) => ({ padding: '3px 9px', cursor: 'pointer', border: 'none', background: 'transparent',
-        color: on ? T.accent : 'inherit',
+        color: on ? T.fg : T.muted,
         borderBottom: '2px solid ' + (on ? T.accent : 'transparent'), fontWeight: on ? 600 : 400 }),
       table: { width: '100%', borderCollapse: 'collapse', fontSize: T.fs.m },
       th: { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid ' + T.border, whiteSpace: 'nowrap', fontWeight: 600, position: 'sticky', top: 0, zIndex: 3, background: T.surface },
-      td: { padding: '6px 8px', borderBottom: '1px solid ' + T.border, verticalAlign: 'top' },
+      td: { padding: '6px 8px', borderBottom: '1px solid ' + wash(T.border, 50), verticalAlign: 'top' },
       /**
        * ★ 2026-10-17（易用性 P0）：数字列以前会折行（「退 1」被拆成两行、20 个榜的表拉高一倍）。
        *   num 给数字列用（不折行 + 等宽数字，扫一眼就能对齐比大小）。
@@ -241,7 +244,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       dot: (tone) => ({ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%',
         background: tone === 'bad' ? T.bad : tone === 'warn' ? T.warn : T.ok }),
       handle: { position: 'absolute', right: '0', bottom: '0', width: '16px', height: '16px', cursor: 'nwse-resize',
-        background: 'linear-gradient(135deg, transparent 46%, rgba(128,128,128,.55) 46%, rgba(128,128,128,.55) 54%, transparent 54%, transparent 70%, rgba(128,128,128,.55) 70%, rgba(128,128,128,.55) 78%, transparent 78%)' },
+        background: 'linear-gradient(135deg, transparent 46%, ' + T.muted + ' 46%, ' + T.muted + ' 54%, transparent 54%, transparent 70%, ' + T.muted + ' 70%, ' + T.muted + ' 78%, transparent 78%)' },
       detail: { marginTop: '6px', padding: '6px 8px', border: '1px solid ' + T.border, borderRadius: '8px', background: T.subtle },
       // 书签（用户数据）：星标按钮与卡片
       bmOn: { padding: '0 2px', border: 'none', background: 'transparent', cursor: 'pointer', color: T.warn, fontSize: T.fs.m, lineHeight: 1 },
@@ -253,7 +256,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
     }
     /** 统一提示条：三种语气只差颜色，形状一致；错误用 role=alert 让读屏器打断 */
     function Banner(props) {
-      return h('div', { className: 'rs-banner is-' + (props.tone || 'info'), role: props.tone === 'error' ? 'alert' : 'status' },
+      const role = props.live === false ? null : (props.tone === 'error' ? 'alert' : 'status')
+      return h('div', { className: 'rs-banner is-' + (props.tone || 'info'), role: role },
         props.title ? h('strong', null, props.title) : null, props.children)
     }
     /**
@@ -559,11 +563,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             visibility: pos ? 'visible' : 'hidden',
             minWidth: (props.width || 230) + 'px', maxWidth: 'min(420px, calc(100vw - 12px))',
             maxHeight: (pos ? pos.maxH : 420) + 'px', overflowY: 'auto', overflowX: 'hidden',
-            padding: '5px', borderRadius: '8px', border: '1px solid rgba(128,128,128,.35)', background: 'var(--dsh-surface, #fff)',
-            boxShadow: '0 8px 20px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: '4px' },
+            padding: '5px', borderRadius: '8px', border: '1px solid ' + T.border, background: T.surface, color: T.fg,
+            boxShadow: T.shadowMenu, display: 'flex', flexDirection: 'column', gap: '4px' },
         }, items.map(function (it, i) {
           if (!it) return null
-          if (it && it.sep) return h('div', { key: 's' + i, style: { height: '1px', background: 'rgba(128,128,128,.25)', margin: '3px 0' } })
+          if (it && it.sep) return h('div', { key: 's' + i, style: { height: '1px', background: T.border, margin: '3px 0' } })
           if (it && it.rows) return h('div', { key: 'r' + i, style: { padding: '2px 2px 4px' } }, it.rows)
           return h('button', {
             key: 'i' + i,
@@ -580,7 +584,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const st = React.useState(props.defaultOpen !== false)
       const open = st[0]
       const setOpen = st[1]
-      return h('div', { style: { margin: '8px 0', padding: '6px 8px', border: '1px solid rgba(128,128,128,.28)', borderRadius: '8px', background: 'rgba(128,128,128,.04)' } },
+      return h('div', { style: { margin: '8px 0', padding: '6px 8px', border: '1px solid ' + T.border, borderRadius: '8px', background: T.surface2 } },
         h('button', {
           className: 'rs-section-toggle',
           'aria-expanded': open ? 'true' : 'false',
@@ -1156,7 +1160,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             : retryable === 0
               ? '补全已尽力：还缺 ' + left + ' 个榜（当日已试满，明天自动续跑）'
               : '补全未完成：还缺 ' + left + ' 个榜（后台会继续补，也可进榜点「补全缺失字段」）'
-          return h(Banner, { tone: active ? 'info' : 'warn' }, label)
+          return h(Banner, { tone: active ? 'info' : 'warn', live: false }, label)
         })(),
         /* ③ 需要处理：仅有问题时出现 */
         issues.length ? h(Banner, { tone: issues.some(function (it) { return it.status !== 'stale' && it.status !== 'enrich' }) ? 'error' : 'warn', title: '需要处理' },
@@ -1218,7 +1222,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               h('thead', null, h('tr', null, ['分组', '榜', '书名', '变化'].map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
               h('tbody', null, shownBySite.flatMap(function (g) {
                 const head = h('tr', { key: 'ch-' + g.site },
-                  h('td', { style: { ...C.td, paddingTop: '7px', fontWeight: 600, color: 'rgba(128,128,128,.95)' }, colSpan: 4 },
+                  h('td', { style: { ...C.td, paddingTop: '7px', fontWeight: 600, color: T.muted }, colSpan: 4 },
                     g.siteName + ' · ' + g.items.length + ' 条'))
                 const body = g.items.map(function (e, i) {
                   return h('tr', {
@@ -1500,7 +1504,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         border: '1px solid ' + (dirty ? wash(T.warn, 60) : T.border), borderRadius: T.r.s,
         background: T.surface,
         backgroundImage: dirty ? 'linear-gradient(' + wash(T.warn, 16) + ',' + wash(T.warn, 16) + ')' : 'none',
-        boxShadow: '0 -8px 12px -8px rgba(0,0,0,.28)' } },
+        boxShadow: T.shadowBar } },
         h('div', { style: C.row },
           h('button', { className: 'rs-btn is-primary', disabled: busy || !dirty, onClick: save }, dirty ? '保存设置（' + picked.length + ' 个榜）' : '已保存（' + picked.length + ' 个榜）'),
           // 放弃改动 = 真的丢掉草稿（否则 load 会按草稿再恢复一遍，等于没放弃）
@@ -1689,7 +1693,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           ? '当前 ' + chk.current + '：未发布到 npm，请用 Release 附件或仓库链接更新'
           : '当前 ' + chk.current + '（' + (chk.reason || '更新检查不可用') + '）' + (chk.latest ? '；registry 最新 ' + chk.latest : '')
       const canClick = !!(chk && (chk.canUpdateInPlace || chk.action === 'refresh' || chk.action === 'restart'))
-      return h('div', { style: { margin: '8px 0', padding: '7px 9px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '8px', background: 'rgba(128,128,128,.05)' } },
+      return h('div', { style: { ...C.card, margin: '8px 0', padding: '7px 9px' } },
         h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '版本'),
         h('div', { style: C.muted }, line),
         (info && info.name && info.version) ? h('div', { style: C.muted }, info.name + '　v' + info.version) : null,
@@ -2065,7 +2069,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('option', { value: '' }, '全部夹'), (store.folders || []).map(function (x) { return h('option', { key: x, value: x }, x) })),
           h('button', { className: filtersOpen ? 'rs-btn is-on' : 'rs-btn', onClick: function () { setFiltersOpen(!filtersOpen) }, 'aria-expanded': filtersOpen ? 'true' : 'false' }, '筛选'),
           h(PopMenu, { label: '更多', items: moreItems, width: 200 })),
-        filtersOpen ? h('div', { style: { ...C.row, padding: '4px 6px', border: '1px solid rgba(128,128,128,.28)', borderRadius: '6px' } },
+        filtersOpen ? h('div', { style: { ...C.row, padding: '4px 6px', border: '1px solid ' + T.border, borderRadius: '6px' } },
           h('span', { style: C.muted }, '标签'),
           h('input', { style: { ...C.input, width: '120px' }, placeholder: '#标签', value: f.tag || '', onChange: function (e) { setF({ tag: String(e.target.value).replace(/^#/, '') }) } }),
           (f.q || f.site || f.folder || f.tag) ? h('button', { className: 'rs-btn', onClick: function () { setF({ q: '', site: '', folder: '', tag: '' }) } }, '清除筛选') : null,
@@ -2087,7 +2091,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('div', { style: C.muted }, '继续编辑：刚才写的内容还在。放弃并切换：只丢当前这条的未保存改动。')) : null,
         h('div', { style: C.muted }, (store.list === null ? '加载中…' : '共 ' + list.length + ' 条' + (store.total && store.total !== list.length ? '（全部 ' + store.total + ' 条，已按筛选）' : '') + '　·　不含回收站')),
         store.health && store.health.error ? h('div', { style: { ...C.muted, color: T.bad } }, '⚠ ' + store.health.error) : null,
-        selectMode ? h('div', { style: { ...C.row, padding: '4px 6px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '6px', background: 'rgba(128,128,128,.05)' } },
+        selectMode ? h('div', { style: { ...C.row, padding: '4px 6px', border: '1px solid ' + T.border, borderRadius: '6px', background: T.subtle } },
           h('span', null, '已选 ' + sel.length + ' 条'),
           h('button', { className: 'rs-btn', onClick: function () { setSel(list.map(function (b) { return b.bookKey })) } }, '全选当前筛选（' + list.length + '）'),
           h('button', { className: 'rs-btn', disabled: !sel.length, onClick: function () { setSel([]) } }, '取消选择'),
@@ -2153,7 +2157,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                   onChange: function (e) { setDraft({ ...draft, folders: e.target.value }) },
                 })),
               h('div', { style: C.row },
-                h('button', { className: 'rs-btn is-primary', disabled: editBusy, onClick: function () { saveEdit(b) } }, editBusy ? '保存中…' : '保存'),
+                h('button', { className: switchAsk ? 'rs-btn' : 'rs-btn is-primary', disabled: editBusy, onClick: function () { saveEdit(b) } }, editBusy ? '保存中…' : '保存'),
                 h('button', { className: 'rs-btn', disabled: editBusy, onClick: function () { cancelEdit(b) } }, '取消'),
                 discardAsk
                   ? h('span', { style: { ...C.row, color: T.warn } },
@@ -2185,7 +2189,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('span', null, '已删除「' + undo.label + '」'),
           h('button', { className: 'rs-btn', onClick: doUndo }, '撤销'),
           h('span', { style: C.muted }, '（8 秒内；之后可在回收站找回）')) : null,
-        showTrash ? h('div', { style: { marginTop: '8px', padding: '6px 8px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '8px' } },
+        showTrash ? h('div', { style: { marginTop: '8px', padding: '6px 8px', border: '1px solid ' + T.border, borderRadius: '8px' } },
           h('div', { style: C.row },
             h('span', { style: { fontWeight: 600 } }, '回收站（' + trash.length + '）'),
             trash.length
@@ -2575,8 +2579,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           key: r.key || ('row' + i),
           tabIndex: 0,
           style: { ...C.card, padding: '5px 8px', margin: '5px 0', cursor: 'pointer',
-            borderColor: open ? 'rgba(128,128,128,.62)' : undefined,
-            background: open ? 'rgba(128,128,128,.10)' : undefined },
+            borderColor: open ? T.border : undefined,
+            background: open ? T.subtle : undefined },
           onClick: function () { setPick(open ? null : r) },
           onKeyDown: function (e) { if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setPick(open ? null : r) } },
         },

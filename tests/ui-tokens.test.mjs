@@ -14,7 +14,7 @@ const tEnd = s.indexOf('const C = {')
 test('颜色只在 T 里定义', () => {
   assert.ok(tStart > 0 && tEnd > tStart, '找不到 T/C 区块')
   const outside = s.slice(0, tStart) + s.slice(tEnd)
-  const hits = outside.match(/#[0-9a-fA-F]{6}\b|rgba\(2\d\d,/g) || []
+  const hits = outside.match(/#[0-9a-fA-F]{3,8}\b|rgba?\(\s*\d|var\(--dsh-/g) || []
   assert.equal(hits.length, 0, '发现硬编码颜色：' + hits.join(' '))
 })
 
