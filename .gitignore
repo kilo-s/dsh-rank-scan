@@ -10,6 +10,9 @@ node_modules/
 .tmp-types/
 # 临时探针/构建脚本别进仓库
 .tmp-*
+# 面板视觉验收截图（本地产物，不入库）
+docs/ui/before/
+docs/ui/after/
 scripts/build-local.ps1
 
 # npm 凭据（granular token）绝不进仓库

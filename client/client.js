@@ -145,49 +145,116 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         return true
       } catch (e) { return false }
     }
+    /**
+     * 设计令牌：全面板唯一的颜色/间距/字号来源，其余地方不许写色值。
+     * 颜色优先读 DSH 宿主的 --dsw-alias-*（亮/暗主题各自解析），再退到旧版 --dsh-* 与静态兜底；
+     * 兜底只为了在宿主变量缺失时不至于透明或白底白字，不是第二套主题。
+     */
+    const T = {
+      surface: 'var(--dsw-alias-bg-layer-1, var(--dsh-surface, #fff))',
+      surface2: 'var(--dsw-alias-bg-layer-2, var(--dsh-fill, rgba(128,128,128,.06)))',
+      fg: 'var(--dsw-alias-label-primary, var(--dsh-text, currentColor))',
+      muted: 'var(--dsw-alias-label-secondary, var(--dsh-text-secondary, rgba(128,128,128,.9)))',
+      border: 'var(--dsw-alias-border-l3, var(--dsh-border, rgba(128,128,128,.28)))',
+      subtle: 'var(--dsw-alias-interactive-bg-hover, var(--dsh-fill, rgba(128,128,128,.07)))',
+      accent: 'var(--dsw-alias-state-business-primary, var(--dsh-accent, #2f6feb))',
+      onAccent: 'var(--dsw-alias-label-primary-foreground, #fff)',
+      primary: 'var(--dsw-alias-button-primary-fill, #2f6feb)',
+      onPrimary: 'var(--dsw-alias-label-primary-foreground, #fff)',
+      ok: 'var(--dsw-alias-state-success-primary, #2e9e5b)',
+      warn: 'var(--dsw-alias-state-warn-primary, #c98a1a)',
+      bad: 'var(--dsw-alias-state-error-primary, #d6453d)',
+      // 涨跌口径沿用现有行为：名次前进（好）= 绿，后退（坏）= 红；箭头符号仍在，不靠颜色单打
+      up: 'var(--dsw-alias-state-success-primary, #2e9e5b)',
+      down: 'var(--dsw-alias-state-error-primary, #d6453d)',
+      sp: [0, 4, 8, 12, 16],
+      fs: { s: '12px', m: '13px', l: '15px' },
+      r: { s: '6px', m: '10px' },
+    }
+    /** 语义色低透明度底：用于提示条/未保存条（color-mix 不可用时退化为透明，不影响可读性） */
+    const wash = function (color, pct) { return 'color-mix(in srgb, ' + color + ' ' + pct + '%, transparent)' }
+    /**
+     * 作用域样式表：内联 style 写不了 :hover / :focus-visible / :disabled，
+     * 按钮与提示条改用 rs- 前缀的 class。只注入一次；选择器全部带前缀，不污染宿主。
+     */
+    const ensureStyle = function () {
+      if (typeof document === 'undefined' || !document.head) return
+      // 测试/受限环境可能只有半截 document：缺 DOM API 就静默跳过，不影响功能
+      if (typeof document.getElementById !== 'function' || typeof document.createElement !== 'function') return
+      if (typeof document.head.appendChild !== 'function') return
+      if (document.getElementById('rank-scan-style')) return
+      const el = document.createElement('style')
+      el.id = 'rank-scan-style'
+      el.textContent = [
+        '.rs-btn{padding:4px 10px;font-size:' + T.fs.s + ';border-radius:' + T.r.s + ';border:1px solid ' + T.border + ';background:transparent;color:inherit;cursor:pointer;line-height:1.4;font-family:inherit}',
+        '.rs-btn:hover:not(:disabled){background:' + T.subtle + '}',
+        '.rs-btn:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
+        '[data-rank-scan-win] button:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
+        '.rs-btn:disabled{opacity:.45;cursor:not-allowed}',
+        '.rs-btn.is-primary{background:' + T.primary + ';border-color:' + T.primary + ';color:' + T.onPrimary + ';font-weight:600}',
+        '.rs-btn.is-primary:hover:not(:disabled){background:' + T.primary + ';filter:brightness(1.08)}',
+        '.rs-btn.is-ghost{border-color:transparent}',
+        '.rs-btn.is-danger{color:' + T.bad + ';border-color:' + T.bad + '}',
+        '.rs-btn.is-on{background:' + T.subtle + ';font-weight:600}',
+        '.rs-menu-item{text-align:left;width:100%;border-color:transparent;background:transparent}',
+        '.rs-section-toggle{border:none;background:transparent;padding:0;font-weight:600;font-size:' + T.fs.m + ';width:100%;text-align:left;cursor:pointer;color:inherit;font-family:inherit}',
+        '.rs-section-toggle:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:2px}',
+        '.rs-banner{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0;padding:8px 10px;border-radius:' + T.r.s + ';border:1px solid;border-left-width:3px;color:inherit}',
+        '.rs-banner.is-info{border-color:' + T.accent + ';background:' + wash(T.accent, 8) + '}',
+        '.rs-banner.is-warn{border-color:' + T.warn + ';background:' + wash(T.warn, 10) + '}',
+        '.rs-banner.is-error{border-color:' + T.bad + ';background:' + wash(T.bad, 8) + '}',
+        '.rs-banner .rs-banner-body{flex:1 1 100%;min-width:0}',
+        '[data-rank-scan-win] tbody tr:hover td{background:' + T.subtle + '}',
+        '[data-rank-scan-win] a:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
+      ].join('\n')
+      document.head.appendChild(el)
+    }
     const C = {
-      win: { position: 'fixed', zIndex: 60, background: 'var(--dsh-surface, #fff)', border: '1px solid rgba(128,128,128,.32)',
-        borderRadius: '10px', boxShadow: '0 10px 30px rgba(0,0,0,.20)', fontSize: '12.5px', lineHeight: 1.5,
+      win: { position: 'fixed', zIndex: 60, background: T.surface, color: T.fg,
+        border: '1px solid ' + T.border, borderRadius: T.r.m,
+        boxShadow: '0 10px 30px rgba(0,0,0,.20)', fontSize: T.fs.m, lineHeight: 1.5,
         display: 'flex', flexDirection: 'column', overflow: 'hidden' },
       titlebar: { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 8px 6px 10px',
-        borderBottom: '1px solid rgba(128,128,128,.25)', cursor: 'move', userSelect: 'none', background: 'rgba(128,128,128,.06)' },
-      title: { fontWeight: 600, fontSize: '13px', marginRight: '2px' },
-      body: { padding: '8px 10px 10px', overflow: 'auto', flex: '1 1 auto' },
+        borderBottom: '1px solid ' + T.border, cursor: 'move', userSelect: 'none', background: T.subtle },
+      title: { fontWeight: 600, fontSize: T.fs.m, marginRight: '2px' },
+      body: { padding: '12px', overflow: 'auto', flex: '1 1 auto' },
       row: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', margin: '5px 0' },
-      btn: { padding: '3px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid rgba(128,128,128,.35)',
-        background: 'transparent', cursor: 'pointer', color: 'inherit' },
-      btnOn: { padding: '3px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid rgba(128,128,128,.6)',
-        background: 'rgba(128,128,128,.18)', cursor: 'pointer', color: 'inherit', fontWeight: 600 },
-      tabs: { display: 'flex', gap: '4px', borderBottom: '1px solid rgba(128,128,128,.25)', marginBottom: '6px' },
-      tab: (on) => ({ padding: '3px 9px', cursor: 'pointer', border: 'none', background: 'transparent', color: 'inherit',
-        borderBottom: on ? '2px solid currentColor' : '2px solid transparent', fontWeight: on ? 600 : 400 }),
-      table: { width: '100%', borderCollapse: 'collapse', fontSize: '12px' },
-      th: { textAlign: 'left', padding: '2px 5px', borderBottom: '1px solid rgba(128,128,128,.3)', whiteSpace: 'nowrap', fontWeight: 600, position: 'sticky', top: 0, zIndex: 3, background: 'var(--dsh-surface, #fff)' },
-      td: { padding: '2px 5px', borderBottom: '1px solid rgba(128,128,128,.1)', verticalAlign: 'top' },
+      tabs: { display: 'flex', gap: '4px', borderBottom: '1px solid ' + T.border, marginBottom: '6px' },
+      tab: (on) => ({ padding: '3px 9px', cursor: 'pointer', border: 'none', background: 'transparent',
+        color: on ? T.accent : 'inherit',
+        borderBottom: '2px solid ' + (on ? T.accent : 'transparent'), fontWeight: on ? 600 : 400 }),
+      table: { width: '100%', borderCollapse: 'collapse', fontSize: T.fs.m },
+      th: { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid ' + T.border, whiteSpace: 'nowrap', fontWeight: 600, position: 'sticky', top: 0, zIndex: 3, background: T.surface },
+      td: { padding: '6px 8px', borderBottom: '1px solid ' + T.border, verticalAlign: 'top' },
       /**
        * ★ 2026-10-17（易用性 P0）：数字列以前会折行（「退 1」被拆成两行、20 个榜的表拉高一倍）。
        *   num 给数字列用（不折行 + 等宽数字，扫一眼就能对齐比大小）。
        */
       num: { whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' },
       /* 涨跌配色：绿涨红跌，与 dot('ok'/'bad') 同一套语义；符号仍然保留，不靠颜色单打 */
-      up: { color: '#3f9b4f', whiteSpace: 'nowrap' },
-      down: { color: '#d9534f', whiteSpace: 'nowrap' },
+      up: { color: T.up, whiteSpace: 'nowrap' },
+      down: { color: T.down, whiteSpace: 'nowrap' },
       /* 长榜名单行省略（全名放 title 里）——避免「签约榜 × 轻小说（移动端口径）」撑成两行 */
       ellip: { display: 'inline-block', maxWidth: '232px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' },
-      muted: { opacity: 0.7, fontSize: '11.5px' },
-      siteBar: { marginTop: '8px', fontWeight: 600, fontSize: '12.5px', display: 'flex', gap: '6px', alignItems: 'center' },
+      muted: { color: T.muted, fontSize: T.fs.s },
+      siteBar: { marginTop: '8px', fontWeight: 600, fontSize: T.fs.m, display: 'flex', gap: '6px', alignItems: 'center' },
       dot: (tone) => ({ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%',
-        background: tone === 'bad' ? '#d9534f' : tone === 'warn' ? '#d9a441' : '#3f9b4f' }),
+        background: tone === 'bad' ? T.bad : tone === 'warn' ? T.warn : T.ok }),
       handle: { position: 'absolute', right: '0', bottom: '0', width: '16px', height: '16px', cursor: 'nwse-resize',
         background: 'linear-gradient(135deg, transparent 46%, rgba(128,128,128,.55) 46%, rgba(128,128,128,.55) 54%, transparent 54%, transparent 70%, rgba(128,128,128,.55) 70%, rgba(128,128,128,.55) 78%, transparent 78%)' },
-      detail: { marginTop: '6px', padding: '6px 8px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '8px', background: 'rgba(128,128,128,.06)' },
+      detail: { marginTop: '6px', padding: '6px 8px', border: '1px solid ' + T.border, borderRadius: '8px', background: T.subtle },
       // 书签（用户数据）：星标按钮与卡片
-      bmOn: { padding: '0 2px', border: 'none', background: 'transparent', cursor: 'pointer', color: '#d9a441', fontSize: '13px', lineHeight: 1 },
-      bmOff: { padding: '0 2px', border: 'none', background: 'transparent', cursor: 'pointer', opacity: 0.32, fontSize: '13px', lineHeight: 1 },
-      card: { margin: '7px 0', padding: '7px 9px', border: '1px solid rgba(128,128,128,.28)', borderRadius: '8px', background: 'rgba(128,128,128,.045)' },
-      cardTitle: { fontWeight: 600, fontSize: '13px' },
-      chip: { display: 'inline-block', marginRight: '4px', padding: '0 5px', borderRadius: '8px', background: 'rgba(128,128,128,.18)', fontSize: '11px' },
-      input: { padding: '3px 6px', fontSize: '12px', borderRadius: '6px', border: '1px solid rgba(128,128,128,.4)', background: 'transparent', color: 'inherit' },
+      bmOn: { padding: '0 2px', border: 'none', background: 'transparent', cursor: 'pointer', color: T.warn, fontSize: T.fs.m, lineHeight: 1 },
+      bmOff: { padding: '0 2px', border: 'none', background: 'transparent', cursor: 'pointer', opacity: 0.32, fontSize: T.fs.m, lineHeight: 1 },
+      card: { margin: '7px 0', padding: '7px 9px', border: '1px solid ' + T.border, borderRadius: '8px', background: T.subtle },
+      cardTitle: { fontWeight: 600, fontSize: T.fs.m },
+      chip: { display: 'inline-block', marginRight: '4px', padding: '0 5px', borderRadius: '8px', background: T.subtle, fontSize: T.fs.s },
+      input: { padding: '3px 6px', fontSize: T.fs.s, borderRadius: T.r.s, border: '1px solid ' + T.border, background: 'transparent', color: 'inherit' },
+    }
+    /** 统一提示条：三种语气只差颜色，形状一致；错误用 role=alert 让读屏器打断 */
+    function Banner(props) {
+      return h('div', { className: 'rs-banner is-' + (props.tone || 'info'), role: props.tone === 'error' ? 'alert' : 'status' },
+        props.title ? h('strong', null, props.title) : null, props.children)
     }
     /**
      * ★ 2026-10-17（易用性 P0）：哪些列算「数字列」—— 只有它们套 C.num（不折行 + 等宽数字）。
@@ -478,7 +545,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       return h('span', { ref: wrapRef, style: { position: 'relative', display: 'inline-block' }, onKeyDown: onKey },
         h('button', {
           ref: btnRef,
-          style: open ? C.btnOn : C.btn,
+          className: 'rs-btn is-ghost' + (open ? ' is-on' : ''),
           title: props.title || '',
           'aria-haspopup': 'menu',
           'aria-expanded': open ? 'true' : 'false',
@@ -503,7 +570,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             role: 'menuitem',
             disabled: !!it.disabled,
             title: it.title || '',
-            style: { ...C.btn, textAlign: 'left', border: '1px solid transparent', opacity: it.disabled ? 0.45 : 1 },
+            className: 'rs-btn rs-menu-item', style: { opacity: it.disabled ? 0.45 : 1 },
             onClick: function () { if (it.disabled) return; close(); if (it.onClick) it.onClick() },
           }, it.label)
         })) : null)
@@ -515,7 +582,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const setOpen = st[1]
       return h('div', { style: { margin: '8px 0', padding: '6px 8px', border: '1px solid rgba(128,128,128,.28)', borderRadius: '8px', background: 'rgba(128,128,128,.04)' } },
         h('button', {
-          style: { ...C.btn, border: 'none', background: 'transparent', padding: '0', fontWeight: 600, fontSize: '12.5px', width: '100%', textAlign: 'left' },
+          className: 'rs-section-toggle',
           'aria-expanded': open ? 'true' : 'false',
           onClick: function () { setOpen(!open) },
         }, (open ? '▾ ' : '▸ ') + (props.title || '')),
@@ -815,7 +882,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       return h('div', { style: C.titlebar, onMouseDown: start },
         h('span', { style: C.title }, '扫榜面板'),
         h('span', { style: { flex: 1 } }),
-        h('button', { style: C.btn, onClick: props.onCollapse, title: '收起面板（Esc 也可以）' }, '收起'))
+        h('button', { className: 'rs-btn is-ghost', onClick: props.onCollapse, title: '收起面板（Esc 也可以）' }, '收起'))
     }
 
     function ResizeHandle(props) {
@@ -845,10 +912,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       componentDidCatch(err) { try { console.error('[rank-scan] 页签渲染失败：' + (this.props.name || ''), err) } catch (e) {} }
       render() {
         if (this.state.err) {
-          return h('div', { style: { padding: '6px 8px', border: '1px solid rgba(217,83,79,.5)', borderRadius: '6px', background: 'rgba(217,83,79,.08)' } },
-            h('div', { style: { fontWeight: 600 } }, '这个页签渲染出错了（面板其余部分仍可用）'),
-            h('div', { style: { ...C.muted, wordBreak: 'break-all' } }, String((this.state.err && this.state.err.message) || this.state.err)),
-            h('button', { style: C.btn, onClick: function () { this.setState({ err: null }) }.bind(this) }, '重试'))
+          return h(Banner, { tone: 'error' },
+            h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', width: '100%' } },
+              h('div', { style: { fontWeight: 600, flex: '1 1 100%' } }, '这个页签渲染出错了（面板其余部分仍可用）'),
+              h('div', { style: { ...C.muted, wordBreak: 'break-all', flex: '1 1 320px' } }, String((this.state.err && this.state.err.message) || this.state.err)),
+              h('button', { className: 'rs-btn', onClick: function () { this.setState({ err: null }) }.bind(this) }, '重试')))
         }
         return this.props.children
       }
@@ -1057,21 +1125,21 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('span', { style: C.muted }, '·'),
           h('span', null, '已采集 ' + (c.ok || 0) + '/' + total),
           waitingRows.length ? h('span', { style: C.muted, title: '这些站今天还没到自己的抓取时刻：不是失败' }, '· 未到计划 ' + waitingRows.length) : null,
-          dueRows.length ? h('span', { style: { color: '#d9a441' }, title: '已过计划时刻但还没抓到：等兜底，或点「扫描已选榜」马上跑' }, '· 待补跑 ' + dueRows.length) : null,
-          h('span', { style: issues.length ? { color: '#d9a441', fontWeight: 600 } : { color: '#3f9b4f' } },
+          dueRows.length ? h('span', { style: { color: T.warn }, title: '已过计划时刻但还没抓到：等兜底，或点「扫描已选榜」马上跑' }, '· 待补跑 ' + dueRows.length) : null,
+          h('span', { style: issues.length ? { color: T.warn, fontWeight: 600 } : { color: T.ok } },
             issues.length ? '待处理 ' + issues.length + ' 项' : '无待处理'),
           ov.hiddenCount ? h('span', { style: C.muted }, '· 未显示 ' + ov.hiddenCount + ' 个榜') : null),
         /* ② 主动作：扫描（联网）与重新载入（只读本地）分开写清 */
         h('div', { style: C.row },
           h('button', {
-            style: scanBusy ? C.btnOn : C.btn,
+            className: 'rs-btn is-primary',
             disabled: scanBusy,
             title: '按「设置 → 抓取范围」里勾选的榜逐个扫描（会联网）',
             onClick: function () { props.act('/scan') },
           }, scanBtnText),
-          scanBusy ? h('button', { style: C.btn, onClick: function () { props.act('/cancel') } }, '停止本次（保留已完成）') : null,
-          badRows.length ? h('button', { style: C.btn, disabled: scanBusy, onClick: function () { props.act('/retry') } }, '重试失败 ' + badRows.length + ' 个榜') : null,
-          h('button', { style: C.btn, onClick: props.reload, title: '只重新读取本地数据：不联网、不采集' }, '重新载入'),
+          scanBusy ? h('button', { className: 'rs-btn is-danger', onClick: function () { props.act('/cancel') } }, '停止本次（保留已完成）') : null,
+          badRows.length ? h('button', { className: 'rs-btn', disabled: scanBusy, onClick: function () { props.act('/retry') } }, '重试失败 ' + badRows.length + ' 个榜') : null,
+          h('button', { className: 'rs-btn is-ghost', onClick: props.reload, title: '只重新读取本地数据：不联网、不采集' }, '重新载入'),
           // 运行中不显示「上次 …」：那一轮还没结束，进度只放在主按钮一处（否则会同时出现两条「扫描中」）
           scanRunning ? null : h('span', { style: C.muted }, '上次 ' + scanLabel(scan))),
         /* 补全进度：面板顶部只有这一条（三态：跑着 / 还能续跑 / 当日已试满） */
@@ -1088,12 +1156,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             : retryable === 0
               ? '补全已尽力：还缺 ' + left + ' 个榜（当日已试满，明天自动续跑）'
               : '补全未完成：还缺 ' + left + ' 个榜（后台会继续补，也可进榜点「补全缺失字段」）'
-          return h('div', { style: { margin: '4px 0', padding: '4px 7px', borderRadius: '6px', background: 'rgba(255,152,0,0.12)', border: '1px solid rgba(255,152,0,0.45)' } }, label)
+          return h(Banner, { tone: active ? 'info' : 'warn' }, label)
         })(),
         /* ③ 需要处理：仅有问题时出现 */
-        issues.length ? h('div', { style: { margin: '6px 0', padding: '6px 8px', borderRadius: '8px', border: '1px solid rgba(217,164,65,.55)', background: 'rgba(217,164,65,.10)' } },
-          h('div', { style: { fontWeight: 600, marginBottom: '2px' } }, '需要处理'),
-          issues.map(function (it) {
+        issues.length ? h(Banner, { tone: issues.some(function (it) { return it.status !== 'stale' && it.status !== 'enrich' }) ? 'error' : 'warn', title: '需要处理' },
+          h('div', { className: 'rs-banner-body', style: { display: 'flex', flexDirection: 'column', gap: '2px' } }, issues.map(function (it) {
             /**
              * Spec S5：一条问题要给「榜名 + 发生时间 + 影响 + 可执行动作」。
              *   以前只有一个泛化「重试失败 N 个榜」，看不出是哪次尝试、也没法直接进榜看。
@@ -1104,9 +1171,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               it.at ? h('span', { style: C.muted }, fmtLocalHM(it.at)) : null,
               h('span', null, it.why),
               it.detail ? h('span', { style: C.muted }, '（' + String(it.detail).slice(0, 80) + '）') : null,
-              it.boardId ? h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.onOpenBoard && props.onOpenBoard(it.boardId) }, title: '在「榜单」页打开这一榜（保上下文）' }, '查看本榜') : null,
-              it.boardId ? h('button', { style: C.btn, disabled: props.busy, onClick: function () { props.onRescanBoard && props.onRescanBoard(it.boardId) }, title: '只重扫这一榜（会联网）' }, '重扫本榜') : null)
-          })) : null,
+              it.boardId ? h('button', { className: 'rs-btn', disabled: props.busy, onClick: function () { props.onOpenBoard && props.onOpenBoard(it.boardId) }, title: '在「榜单」页打开这一榜（保上下文）' }, '查看本榜') : null,
+              it.boardId ? h('button', { className: 'rs-btn', disabled: props.busy, onClick: function () { props.onRescanBoard && props.onRescanBoard(it.boardId) }, title: '只重扫这一榜（会联网）' }, '重扫本榜') : null)
+          }))) : null,
         /* ④ 今天的变化 */
         h('div', { style: C.siteBar }, '今天的变化' + (chgRealTotal ? '（' + chgRealTotal + ' 条）' : '')),
         chg && chg.note ? h('div', { style: C.muted }, chg.note) : null,
@@ -1116,7 +1183,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           [{ label: '全部', value: '' }].concat(groupNames.map(function (g) { return { label: g, value: g } })).map(function (o) {
             return h('button', {
               key: 'f-' + (o.value || 'all'),
-              style: chgFilter === o.value ? C.btnOn : C.btn,
+              className: chgFilter === o.value ? 'rs-btn is-on' : 'rs-btn',
               onClick: function () { setChgFilter(o.value) },
             }, o.label + ' ' + (o.value ? groupCount(o.value) : chgRealTotal))
           })) : null,
@@ -1172,7 +1239,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         /* ⑤ 全部榜单（可折叠） */
         h('div', { style: { ...C.row, marginTop: '8px' } },
           h('button', {
-            style: C.btn,
+            className: 'rs-btn is-ghost',
             'aria-expanded': showAll ? 'true' : 'false',
             onClick: function () { setShowAll(!showAll) },
           }, (showAll ? '▾ ' : '▸ ') + '全部榜单（' + total + '）')),
@@ -1210,7 +1277,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                       '退 ', h('span', { style: b.out > 0 ? C.down : null }, dash(b.out)))),
                 h('td', { style: C.td }, b.status === 'ok'
                   ? (headTime ? h('span', { style: C.muted }, '—') : (b.lastCapture ? fmtLocalHM(b.lastCapture) : '—'))
-                  : h('span', { style: { color: b.status === 'stale' ? '#d9a441' : '#d9534f' } }, statusText(b.status))),
+                  : h('span', { style: { color: b.status === 'stale' ? T.warn : T.bad } }, statusText(b.status))),
                 hasNoteCol && !chgNarrow ? h('td', { style: C.td }, dash(b.note)) : null)
             })
             return [head].concat(rowsOut)
@@ -1429,17 +1496,17 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
        *   「有未保存的改动」和保存按钮（改了半天以为已经生效）。
        *   保持原语义：保存只落抓取集 + 两个补全开关，计划时刻仍由「保存计划」单独保存。
        */
-      const saveBar = h('div', { style: { position: 'sticky', bottom: '0', zIndex: 4, marginTop: '6px', padding: '5px 7px',
-        border: '1px solid ' + (dirty ? 'rgba(217,164,65,.6)' : 'rgba(128,128,128,.28)') + '', borderRadius: '6px',
-        background: 'var(--dsh-surface, #fff)',
-        backgroundImage: dirty ? 'linear-gradient(rgba(217,164,65,.16), rgba(217,164,65,.16))' : 'linear-gradient(rgba(128,128,128,.06), rgba(128,128,128,.06))',
+      const saveBar = h('div', { style: { position: 'sticky', bottom: '0', zIndex: 4, marginTop: '6px', padding: '6px 8px',
+        border: '1px solid ' + (dirty ? wash(T.warn, 60) : T.border), borderRadius: T.r.s,
+        background: T.surface,
+        backgroundImage: dirty ? 'linear-gradient(' + wash(T.warn, 16) + ',' + wash(T.warn, 16) + ')' : 'none',
         boxShadow: '0 -8px 12px -8px rgba(0,0,0,.28)' } },
         h('div', { style: C.row },
-          h('button', { style: dirty ? C.btnOn : C.btn, disabled: busy || !dirty, onClick: save }, dirty ? '保存设置（' + picked.length + ' 个榜）' : '已保存（' + picked.length + ' 个榜）'),
+          h('button', { className: 'rs-btn is-primary', disabled: busy || !dirty, onClick: save }, dirty ? '保存设置（' + picked.length + ' 个榜）' : '已保存（' + picked.length + ' 个榜）'),
           // 放弃改动 = 真的丢掉草稿（否则 load 会按草稿再恢复一遍，等于没放弃）
-          dirty ? h('button', { style: C.btn, disabled: busy, onClick: function () { DRAFTS.settings = null; dirtyGuard.set('settings', false); setNote('已放弃改动'); load() } }, '放弃改动') : null,
-          dirty ? h('span', { style: { color: '#d9a441' } }, '有未保存的改动') : null,
-          h('button', { style: C.btn, disabled: busy, onClick: restoreDefaults, title: '把勾选恢复成插件默认抓取集（只改草稿，保存后生效）' }, '恢复默认'),
+          dirty ? h('button', { className: 'rs-btn', disabled: busy, onClick: function () { DRAFTS.settings = null; dirtyGuard.set('settings', false); setNote('已放弃改动'); load() } }, '放弃改动') : null,
+          dirty ? h('span', { style: { color: T.warn } }, '有未保存的改动') : null,
+          h('button', { className: 'rs-btn', disabled: busy, onClick: restoreDefaults, title: '把勾选恢复成插件默认抓取集（只改草稿，保存后生效）' }, '恢复默认'),
           note ? h('span', { style: C.muted }, String(note).slice(0, 100)) : null))
       return h('div', null,
         h(Section, { title: '抓取范围（' + picked.length + ' 个榜）', defaultOpen: true },
@@ -1447,8 +1514,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('div', { style: C.row }, sites.map(function (s) {
             return h('span', { key: s, style: { ...C.row, margin: 0 } },
               h('span', { style: C.muted }, siteNameOf(s) + ' ' + pickedOf(s) + '/' + siteTotal(s)),
-              h('button', { style: C.btn, onClick: function () { setAll(s, true) } }, '全选'),
-              h('button', { style: C.btn, onClick: function () { setAll(s, false) } }, '全不选'),
+              h('button', { className: 'rs-btn is-ghost', onClick: function () { setAll(s, true) } }, '全选'),
+              h('button', { className: 'rs-btn is-ghost', onClick: function () { setAll(s, false) } }, '全不选'),
               h(PopMenu, { label: '更多', width: 190, items: [
                 { label: '补齐该站缺失字段', onClick: function () { enrichSite(s) }, title: '把该站已勾选的榜逐个补全（逐本 1 请求，很慢）' },
               ] }))
@@ -1489,18 +1556,18 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             return h('div', { key: key, style: { ...C.row, marginTop: '2px' } },
               h('span', { style: { width: '46px', flex: '0 0 auto' } }, s[1]),
               h('input', {
-                type: 'time', style: { ...C.btn, width: '92px' }, value: (tTimes || {})[key] || '',
+                type: 'time', style: { ...C.input, width: '92px' }, value: (tTimes || {})[key] || '',
                 onChange: function (e) { const nx = Object.assign({}, tTimes); nx[key] = e.target.value; setTTimes(nx) },
               }),
               h('span', { style: C.muted }, why))
           })),
           h('div', { style: { ...C.row, marginTop: '2px' } },
             h('span', { style: { width: '46px', flex: '0 0 auto' } }, '兜底'),
-            h('input', { type: 'time', style: { ...C.btn, width: '92px' }, value: tFall, onChange: function (e) { setTFall(e.target.value) } }),
+            h('input', { type: 'time', style: { ...C.input, width: '92px' }, value: tFall, onChange: function (e) { setTFall(e.target.value) } }),
             h('span', { style: C.muted }, '当天失败或内容待核对的站，到这个点再补一次（每站每天一次）')),
           timesDirty ? h('div', { style: C.row },
-            h('button', { style: C.btnOn, onClick: savePlan }, '保存计划'),
-            h('span', { style: { color: '#d9a441' } }, '时刻有改动，未保存')) : null,
+            h('button', { className: 'rs-btn', onClick: savePlan }, '保存计划'),
+            h('span', { style: { color: T.warn } }, '时刻有改动，未保存')) : null,
           h('div', { style: C.muted }, '状态更新于 ' + ((planLive && planLive.now) || '—') + (planLive && planLive.installedToday ? '　· 今天刚安装：安装当天不自动跑，明天起按上面的时刻执行' : '')),
           tNote ? h('div', { style: C.muted }, String(tNote).slice(0, 140)) : null),
         h(Section, { title: '数据与性能', defaultOpen: false, summary: (ov && ov.storage ? '数据目录 ' + fmtBytes(ov.storage.totalBytes) + ' · 保留 ' + retention + ' 天' : '') },
@@ -1530,8 +1597,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('span', { style: C.muted }, '起点收藏补全'),
             h('input', { type: 'checkbox', checked: qdEnrich, onChange: function (e) { setQdEnrich(e.target.checked); setDirty(true) } }),
             h('span', { style: C.muted }, qdEnrich ? '已开启' : '已关闭（默认关）'),
-            h('button', { style: C.btn, disabled: busy, onClick: function () { setBusy(true); jpost('/qidianEnrich').then(function (r) { setNote((r && r.note) || '起点补全完成'); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '补全起点收藏'),
-            h('button', { style: C.btn, disabled: busy, onClick: function () { setBusy(true); jpost('/qidianCache', { clear: true }).then(function (r) { setNote((r && r.note) || '缓存已清'); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '清空书页缓存')),
+            h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/qidianEnrich').then(function (r) { setNote((r && r.note) || '起点补全完成'); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '补全起点收藏'),
+            h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/qidianCache', { clear: true }).then(function (r) { setNote((r && r.note) || '缓存已清'); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '清空书页缓存')),
           h('div', { style: C.muted }, '起点书页缓存 ' + (qdCache && qdCache.cache ? qdCache.cache.books : 0) + ' 本 · 有效期 ' + ((qdCache && qdCache.ttlDays) || 7) + ' 天' +
             (cat.bookCache ? '　· 通用书页缓存 ' + ((cat.bookCache.stat && cat.bookCache.stat.entries) || 0) + ' 本 · 有效期 ' + (cat.bookCache.ttlDays || 7) + ' 天' : '')),
           h(Section, { title: '高级：请求间隔', defaultOpen: false, summary: '当前 ' + fmtIntervalText(intervalMs) },
@@ -1543,14 +1610,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               },
                 [200, 500, 1000, 2000, 5000].map(function (v) { return h('option', { key: v, value: String(v) }, v + ' ms' + (v === 1000 ? '（默认）' : '')) }),
                 h('option', { key: 0, value: '0' }, '不限速（仅本地测试）')),
-              h('button', { style: C.btn, disabled: busy, onClick: function () { setBusy(true); jpost('/select', { requestIntervalMs: intervalMs }).then(function () { setNote('请求间隔已改为 ' + (intervalMs === 0 ? '不限速' : intervalMs + 'ms')); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '应用'),
+              h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/select', { requestIntervalMs: intervalMs }).then(function () { setNote('请求间隔已改为 ' + (intervalMs === 0 ? '不限速' : intervalMs + 'ms')); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '应用'),
               h('span', { style: C.muted }, '1s 是本项目自定的保守值（不是站点要求）；调小更快，也更容易被站点注意到')))),
         h(Section, { title: '关于与诊断', defaultOpen: false, summary: (sv.webServer ? '服务正常' : 'webServer 未注册') + ' · 自动扫描' + (sv.timerArmed ? '已生效' : '未生效') },
           h(VersionRow, { setNote: setNote }),
           h('div', { style: C.muted }, '服务：webServer ' + (sv.webServer ? '✓' : '✗') + ' · timer ' + (sv.timerService ? '✓' : '✗') + ' · 定时任务' + (sv.timerArmed ? '已启用' : '未启用')),
           note ? h('div', { style: C.muted }, '最近提示：' + String(note).slice(0, 160)) : null,
           h('div', { style: C.row },
-            h('button', { style: C.btn, onClick: function () { try { navigator.clipboard.writeText(diag()); setNote('诊断信息已复制（不含凭证）') } catch (e) { setNote('复制失败：' + e) } } }, '复制诊断信息'))), saveBar)
+            h('button', { className: 'rs-btn', onClick: function () { try { navigator.clipboard.writeText(diag()); setNote('诊断信息已复制（不含凭证）') } catch (e) { setNote('复制失败：' + e) } } }, '复制诊断信息'))), saveBar)
     }
     /**
      * ★ 版本区（2026-10-16）：显示当前版本 + 「一键更新」。
@@ -1628,7 +1695,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         (info && info.name && info.version) ? h('div', { style: C.muted }, info.name + '　v' + info.version) : null,
         h('div', { style: C.row },
           h('button', {
-            style: C.btn,
+            className: 'rs-btn',
             disabled: busy !== '' || !canClick,
             onClick: function () {
               if (!chk) return
@@ -1644,7 +1711,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               else refresh()
             },
           }, busy !== '' ? '处理中…' : (!chk ? '检查中…' : chk.buttonLabel)),
-          h('button', { style: C.btn, disabled: busy !== '', onClick: function () { setNote(''); refresh() } }, '重新检查')),
+          h('button', { className: 'rs-btn', disabled: busy !== '', onClick: function () { setNote(''); refresh() } }, '重新检查')),
         note ? h('div', { style: C.muted }, note) : null)
     }
 
@@ -1786,8 +1853,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         h('div', { style: C.row },
           h('span', { style: C.muted }, '书签夹'),
           h('input', { style: { ...C.input, flex: 1, minWidth: '120px' }, value: folders, placeholder: '空格分隔，可属于多个夹', onChange: function (e) { setFolders(e.target.value) } }),
-          h('button', { style: C.btnOn, disabled: busy || !loaded, onClick: save }, busy ? '保存中…' : '保存')),
-        msg ? h('div', { style: { ...C.muted, color: String(msg).indexOf('失败') >= 0 ? '#d9534f' : null } }, msg) : null)
+          h('button', { className: 'rs-btn is-primary', disabled: busy || !loaded, onClick: save }, busy ? '保存中…' : '保存')),
+        msg ? h('div', { style: { ...C.muted, color: String(msg).indexOf('失败') >= 0 ? T.bad : null } }, msg) : null)
     }
 
     /**
@@ -1996,12 +2063,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('option', { value: '' }, '全部站'), sites.map(function (s) { return h('option', { key: s, value: s }, siteLabel(s)) })),
           h('select', { style: C.input, value: f.folder, onChange: function (e) { setF({ folder: e.target.value }) } },
             h('option', { value: '' }, '全部夹'), (store.folders || []).map(function (x) { return h('option', { key: x, value: x }, x) })),
-          h('button', { style: filtersOpen ? C.btnOn : C.btn, onClick: function () { setFiltersOpen(!filtersOpen) }, 'aria-expanded': filtersOpen ? 'true' : 'false' }, '筛选'),
+          h('button', { className: filtersOpen ? 'rs-btn is-on' : 'rs-btn', onClick: function () { setFiltersOpen(!filtersOpen) }, 'aria-expanded': filtersOpen ? 'true' : 'false' }, '筛选'),
           h(PopMenu, { label: '更多', items: moreItems, width: 200 })),
         filtersOpen ? h('div', { style: { ...C.row, padding: '4px 6px', border: '1px solid rgba(128,128,128,.28)', borderRadius: '6px' } },
           h('span', { style: C.muted }, '标签'),
           h('input', { style: { ...C.input, width: '120px' }, placeholder: '#标签', value: f.tag || '', onChange: function (e) { setF({ tag: String(e.target.value).replace(/^#/, '') }) } }),
-          (f.q || f.site || f.folder || f.tag) ? h('button', { style: C.btn, onClick: function () { setF({ q: '', site: '', folder: '', tag: '' }) } }, '清除筛选') : null,
+          (f.q || f.site || f.folder || f.tag) ? h('button', { className: 'rs-btn', onClick: function () { setF({ q: '', site: '', folder: '', tag: '' }) } }, '清除筛选') : null,
           h('span', { style: C.muted }, '备注里写的 #标签 会自动出现在这里')) : null,
         addOpen ? h('div', { style: { ...C.card, marginTop: '4px' } },
           h('div', { style: C.row },
@@ -2010,22 +2077,22 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('select', { style: C.input, value: manualSite, onChange: function (e) { setManualSite(e.target.value) } },
               h('option', { value: '' }, '（URL 可自动识别）'),
               h('option', { value: 'qidian' }, '起点'), h('option', { value: 'qidiantu' }, '起点图'), h('option', { value: 'ciweimao' }, '刺猬猫'), h('option', { value: 'sfacg' }, '菠萝包'), h('option', { value: 'fanqie' }, '番茄')),
-            h('button', { style: C.btn, disabled: !String(manual || '').trim(), onClick: addManual }, '加入书签'),
-            h('button', { style: C.btn, onClick: function () { setAddOpen(false) } }, '收起'))) : null,
-        switchAsk ? h('div', { style: { ...C.card, marginTop: '4px', borderColor: 'rgba(217,164,65,.55)', background: 'rgba(217,164,65,.10)' } },
-          h('div', { style: { fontWeight: 600 } }, '「' + (switchAsk.label || switchAsk.bookKey) + '」还开着没保存的备注/夹'),
+            h('button', { className: 'rs-btn', disabled: !String(manual || '').trim(), onClick: addManual }, '加入书签'),
+            h('button', { className: 'rs-btn', onClick: function () { setAddOpen(false) } }, '收起'))) : null,
+        switchAsk ? h(Banner, { tone: 'warn' },
+          h('div', { style: { fontWeight: 600, flex: '1 1 100%' } }, '「' + (switchAsk.label || switchAsk.bookKey) + '」还开着没保存的备注/夹'),
           h('div', { style: C.row },
-            h('button', { style: C.btnOn, onClick: function () { setSwitchAsk(null) } }, '继续编辑'),
-            h('button', { style: C.btn, onClick: function () { applyEdit(switchAsk) } }, '放弃并切换')),
+            h('button', { className: 'rs-btn is-primary', onClick: function () { setSwitchAsk(null) } }, '继续编辑'),
+            h('button', { className: 'rs-btn', onClick: function () { applyEdit(switchAsk) } }, '放弃并切换')),
           h('div', { style: C.muted }, '继续编辑：刚才写的内容还在。放弃并切换：只丢当前这条的未保存改动。')) : null,
         h('div', { style: C.muted }, (store.list === null ? '加载中…' : '共 ' + list.length + ' 条' + (store.total && store.total !== list.length ? '（全部 ' + store.total + ' 条，已按筛选）' : '') + '　·　不含回收站')),
-        store.health && store.health.error ? h('div', { style: { ...C.muted, color: '#d9534f' } }, '⚠ ' + store.health.error) : null,
+        store.health && store.health.error ? h('div', { style: { ...C.muted, color: T.bad } }, '⚠ ' + store.health.error) : null,
         selectMode ? h('div', { style: { ...C.row, padding: '4px 6px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '6px', background: 'rgba(128,128,128,.05)' } },
           h('span', null, '已选 ' + sel.length + ' 条'),
-          h('button', { style: C.btn, onClick: function () { setSel(list.map(function (b) { return b.bookKey })) } }, '全选当前筛选（' + list.length + '）'),
-          h('button', { style: C.btn, disabled: !sel.length, onClick: function () { setSel([]) } }, '取消选择'),
-          h('button', { style: C.btn, disabled: !sel.length, onClick: function () { setScope('selected'); setExportOpen(true) } }, '导出已选'),
-          h('button', { style: C.btn, onClick: function () { setSelectMode(false); setSel([]) } }, '退出批量选择')) : null,
+          h('button', { className: 'rs-btn', onClick: function () { setSel(list.map(function (b) { return b.bookKey })) } }, '全选当前筛选（' + list.length + '）'),
+          h('button', { className: 'rs-btn', disabled: !sel.length, onClick: function () { setSel([]) } }, '取消选择'),
+          h('button', { className: 'rs-btn', disabled: !sel.length, onClick: function () { setScope('selected'); setExportOpen(true) } }, '导出已选'),
+          h('button', { className: 'rs-btn', onClick: function () { setSelectMode(false); setSel([]) } }, '退出批量选择')) : null,
         exportOpen ? h('div', { style: { ...C.card, marginTop: '4px' } },
           h('div', { style: { fontWeight: 600 } }, '导出书签'),
           h('div', { style: C.row },
@@ -2038,9 +2105,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('select', { style: C.input, value: fmt, onChange: function (e) { setFmt(e.target.value) } },
               h('option', { value: 'csv' }, 'CSV'), h('option', { value: 'json' }, 'JSON'), h('option', { value: 'md' }, 'Markdown')),
             h('input', { style: { ...C.input, flex: 1, minWidth: '150px' }, placeholder: '导出目录（留空 = 默认目录）', value: dest, onChange: function (e) { setDest(e.target.value) } }),
-            h('button', { style: C.btnOn, disabled: exporting || scopeCount() === 0, title: scopeCount() === 0 ? '这个范围没有条目' : '', onClick: doExport }, exporting ? '导出中…' : '导出 ' + scopeCount() + ' 条'),
-            h('button', { style: C.btn, onClick: function () { jpost('/bookmark/open-folder', { path: String(dest || '').trim() || undefined }).then(function (r) { setExMsg('已打开 ' + ((r && r.opened) || '')) }).catch(function (e) { setExMsg('打不开：' + e) }) } }, '打开文件夹'),
-            h('button', { style: C.btn, onClick: function () { setExportOpen(false) } }, '收起')),
+            h('button', { className: 'rs-btn', disabled: exporting || scopeCount() === 0, title: scopeCount() === 0 ? '这个范围没有条目' : '', onClick: doExport }, exporting ? '导出中…' : '导出 ' + scopeCount() + ' 条'),
+            h('button', { className: 'rs-btn', onClick: function () { jpost('/bookmark/open-folder', { path: String(dest || '').trim() || undefined }).then(function (r) { setExMsg('已打开 ' + ((r && r.opened) || '')) }).catch(function (e) { setExMsg('打不开：' + e) }) } }, '打开文件夹'),
+            h('button', { className: 'rs-btn', onClick: function () { setExportOpen(false) } }, '收起')),
           exMsg ? h('div', { style: C.muted }, String(exMsg).slice(0, 140)) : null) : null,
         list.length === 0 ? h('div', { style: C.muted }, store.list === null ? '' : (f.q || f.site || f.folder || f.tag ? '没有符合筛选条件的书签' : '还没有书签：在「榜单」里点书名旁的 ☆ 就能加')) : null,
         list.map(function (b) {
@@ -2061,11 +2128,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               oldMetric != null ? h('span', { style: { ...C.chip, opacity: 0.8 }, title: '书签记录：最近一次自动更新时该榜的' + lab + '（与上面的实时值不是同一时点）' }, '书签记录 ' + fmtRead(oldMetric)) : null,
               metricText ? h('span', { style: C.chip }, metricText) : null,
               b.capturedAt ? h('span', { style: C.muted, title: '这张卡的数据截止到这一天' }, '截止 ' + mdOf(b.capturedAt) + (b.ageDays != null ? '（' + b.ageDays + ' 天前）' : '')) : null,
-              b.ageDays != null && b.ageDays >= 7 ? h('span', { style: { ...C.chip, color: '#d9a441' }, title: '超过 7 天没有变新：点「更新本书数据」试试；仍不变则这个来源可能取不到数了' }, '数据已 ' + b.ageDays + ' 天未更新') : null,
+              b.ageDays != null && b.ageDays >= 7 ? h('span', { style: { ...C.chip, color: T.warn }, title: '超过 7 天没有变新：点「更新本书数据」试试；仍不变则这个来源可能取不到数了' }, '数据已 ' + b.ageDays + ' 天未更新') : null,
               b.valueFrom === 'manual' ? h('span', { style: C.chip }, '待补') : null),
             h('div', { style: C.row },
               h('button', {
-                style: { ...C.btn, border: '1px dashed rgba(128,128,128,.35)', textAlign: 'left', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                className: 'rs-btn', style: { borderStyle: 'dashed', textAlign: 'left', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
                 title: noteText ? '编辑备注' : '加备注',
                 onClick: function () { startEdit(b) },
               }, noteText ? noteText.slice(0, 60) : '＋ 备注'),
@@ -2086,15 +2153,15 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                   onChange: function (e) { setDraft({ ...draft, folders: e.target.value }) },
                 })),
               h('div', { style: C.row },
-                h('button', { style: C.btnOn, disabled: editBusy, onClick: function () { saveEdit(b) } }, editBusy ? '保存中…' : '保存'),
-                h('button', { style: C.btn, disabled: editBusy, onClick: function () { cancelEdit(b) } }, '取消'),
+                h('button', { className: 'rs-btn is-primary', disabled: editBusy, onClick: function () { saveEdit(b) } }, editBusy ? '保存中…' : '保存'),
+                h('button', { className: 'rs-btn', disabled: editBusy, onClick: function () { cancelEdit(b) } }, '取消'),
                 discardAsk
-                  ? h('span', { style: { ...C.row, color: '#d9a441' } },
+                  ? h('span', { style: { ...C.row, color: T.warn } },
                       h('span', null, '放弃这些改动？'),
-                      h('button', { style: C.btn, onClick: function () { closeEdit() } }, '放弃'),
-                      h('button', { style: C.btn, onClick: function () { setDiscardAsk(false) } }, '继续编辑'))
+                      h('button', { className: 'rs-btn', onClick: function () { closeEdit() } }, '放弃'),
+                      h('button', { className: 'rs-btn', onClick: function () { setDiscardAsk(false) } }, '继续编辑'))
                   : null,
-                editErr ? h('span', { style: { color: '#d9534f' } }, editErr) : null)) : null,
+                editErr ? h('span', { style: { color: T.bad } }, editErr) : null)) : null,
             h('div', { style: C.row },
               h('a', { href: b.url || '#', style: { color: 'inherit', padding: '3px 8px' }, title: '在 DSH 侧栏浏览器打开', onClick: function (e) { e.preventDefault(); (props.openLink || function (u) { window.open(u, '_blank', 'noopener,noreferrer') })(b.url) } }, '打开'),
               h(PopMenu, { label: '更多', width: 190, items: [
@@ -2114,9 +2181,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                 : null,
               h('div', { style: C.muted }, '备注与夹只由你改：任何自动更新都不会覆盖。')) : null)
         }),
-        undo ? h('div', { style: { ...C.row, padding: '5px 7px', border: '1px solid rgba(217,164,65,.5)', borderRadius: '6px', background: 'rgba(217,164,65,.10)' } },
+        undo ? h(Banner, { tone: 'warn' },
           h('span', null, '已删除「' + undo.label + '」'),
-          h('button', { style: C.btnOn, onClick: doUndo }, '撤销'),
+          h('button', { className: 'rs-btn', onClick: doUndo }, '撤销'),
           h('span', { style: C.muted }, '（8 秒内；之后可在回收站找回）')) : null,
         showTrash ? h('div', { style: { marginTop: '8px', padding: '6px 8px', border: '1px solid rgba(128,128,128,.3)', borderRadius: '8px' } },
           h('div', { style: C.row },
@@ -2124,17 +2191,17 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             trash.length
               ? (confirmPurge
                   ? h('span', { style: C.row },
-                      h('span', { style: { color: '#d9534f' } }, '清空后不可恢复，确定？'),
-                      h('button', { style: { ...C.btn, color: '#d9534f' }, onClick: function () { jpost('/bookmark', { action: 'purge', bookKeys: trash.map(function (b) { return b.bookKey }) }).then(function () { setConfirmPurge(false); load() }) } }, '确认清空'),
-                      h('button', { style: C.btn, onClick: function () { setConfirmPurge(false) } }, '取消'))
-                  : h('button', { style: C.btn, onClick: function () { setConfirmPurge(true) } }, '清空回收站'))
+                      h('span', { style: { color: T.bad } }, '清空后不可恢复，确定？'),
+                      h('button', { className: 'rs-btn is-danger', onClick: function () { jpost('/bookmark', { action: 'purge', bookKeys: trash.map(function (b) { return b.bookKey }) }).then(function () { setConfirmPurge(false); load() }) } }, '确认清空'),
+                      h('button', { className: 'rs-btn', onClick: function () { setConfirmPurge(false) } }, '取消'))
+                  : h('button', { className: 'rs-btn', onClick: function () { setConfirmPurge(true) } }, '清空回收站'))
               : null),
           trash.length === 0 ? h('div', { style: C.muted }, '回收站是空的') : trash.map(function (b) {
             return h('div', { key: 'tr' + b.bookKey, style: { ...C.card, opacity: 0.8 } },
               h('div', { style: C.row },
                 h('span', { style: C.cardTitle }, b.label),
                 h('span', { style: C.muted }, '删除于 ' + String(b.deletedAt).slice(0, 10) + '　还可找回 ' + b.daysLeft + ' 天'),
-                h('button', { style: C.btn, onClick: function () { store.act({ action: 'restore', bookKey: b.bookKey }).then(function () { load() }).catch(function () {}) } }, '恢复')))
+                h('button', { className: 'rs-btn', onClick: function () { store.act({ action: 'restore', bookKey: b.bookKey }).then(function () { load() }).catch(function () {}) } }, '恢复')))
           })) : null,
         exMsg && !exportOpen ? h('div', { style: C.muted }, String(exMsg).slice(0, 140)) : null,
         store.msg ? h('div', { style: C.muted }, store.msg) : null,
@@ -2249,7 +2316,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       }, [props.rev, reloadBoard, directQ])
       const selXS = function (label, value, options, onChange) {
         return h('label', { style: C.row }, h('span', { style: C.muted }, label),
-          h('select', { value: value, onChange: function (e) { onChange(e.target.value) }, style: C.btn },
+          h('select', { value: value, onChange: function (e) { onChange(e.target.value) }, style: C.input },
             options.map(function (o) { return h('option', { key: o.value, value: o.value }, o.label) })))
       }
       const pickBoard = function (v) { sel.set({ board: v }); setBt(v); setSd(sel.pref(v, 'date')); setSs(sel.pref(v, 'sort')); setPick(null) }
@@ -2407,8 +2474,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                 style: { width: '58px', fontSize: '12px', padding: '2px 4px' },
               }),
               h('span', { style: C.muted }, info.can ? '条（上限 ' + info.max + '）' : '条 · ' + info.hint),
-              h('button', { style: C.btn, disabled: !info.can || busy, onClick: function () { saveDepth(false) }, title: '只保存，下次扫描生效' }, '保存'),
-              h('button', { style: C.btn, disabled: !info.can || busy, onClick: function () { saveDepth(true) }, title: '保存后立刻抓一次这一榜（会联网）' }, '保存并扫描本榜'))),
+              h('button', { className: 'rs-btn', disabled: !info.can || busy, onClick: function () { saveDepth(false) }, title: '只保存，下次扫描生效' }, '保存'),
+              h('button', { className: 'rs-btn', disabled: !info.can || busy, onClick: function () { saveDepth(true) }, title: '保存后立刻抓一次这一榜（会联网）' }, '保存并扫描本榜'))),
         },
         { sep: true },
         {
@@ -2427,8 +2494,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('div', { style: { ...C.muted, marginBottom: '3px' } }, '按上架日回看（仅本榜支持核对）'),
             h('div', { style: C.row },
               h('input', { type: 'date', value: qDate, onChange: function (e) { setQDate(e.target.value) }, style: { fontSize: '12px', padding: '2px 4px' } }),
-              h('button', { style: C.btn, disabled: busy || !qDate, onClick: function () { queryDay(false) } }, '查看'),
-              h('button', { style: C.btn, disabled: busy || !qDate, onClick: function () { queryDay(true) }, title: '抓取该上架日并存为本地快照（已有快照不覆盖）' }, '存入本地')),
+              h('button', { className: 'rs-btn', disabled: busy || !qDate, onClick: function () { queryDay(false) } }, '查看'),
+              h('button', { className: 'rs-btn', disabled: busy || !qDate, onClick: function () { queryDay(true) }, title: '抓取该上架日并存为本地快照（已有快照不覆盖）' }, '存入本地')),
             h('div', { style: { ...C.muted, marginTop: '2px' } }, '首订按 n-1 锚：选上架日 X ⇒ 请求数据日期 X+1（页面内容日期就是 X）；保存后快照记在 X+1 名下。站点给的日期对不上会被拒绝，不写任何文件。')),
         })
       }
@@ -2480,14 +2547,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('div', { style: C.row },
             h(BookmarkStar, { bookKey: bookKeyOf(curBoard, r.key), row: r, boardId: curBoard, dataDate: data && data.dataDate }),
             h(DetailBookmarkEditor, { bookKey: bookKeyOf(curBoard, r.key) }),
-            h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
+            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
             h('a', { href: r.url || '#', target: '_blank', rel: 'noreferrer', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
-            h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); try { navigator.clipboard.writeText(r.url || '') } catch (err) {} } }, '复制链接'),
-            h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); setPick(null) } }, '关闭')),
+            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); try { navigator.clipboard.writeText(r.url || '') } catch (err) {} } }, '复制链接'),
+            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); setPick(null) } }, '关闭')),
           ex.qidiantuUrl || ex.sourceUrl
             ? h('div', { style: C.row },
-                (ex.qidiantuUrl ? h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.qidiantuUrl) } }, '看起点图原始页') : null),
-                (ex.sourceUrl ? h('button', { style: C.btn, onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.sourceUrl) } }, '看原数据来源页') : null),
+                (ex.qidiantuUrl ? h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.qidiantuUrl) } }, '看起点图原始页') : null),
+                (ex.sourceUrl ? h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.sourceUrl) } }, '看原数据来源页') : null),
                 h('span', { style: C.muted }, '（数据口径以来源页为准）'))
             : null)
       }
@@ -2534,10 +2601,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         band ? h('div', { style: { ...C.muted, marginTop: '2px' } }, band) : null,
         /* Spec 4.2：补全缺多少条要**就近可见**，别只藏在「更多」菜单里 */
         enrichMissing ? h('div', { style: { ...C.row, marginTop: '2px' } },
-          h('span', { style: { color: '#d9a441' } }, '补全未完成：还缺 ' + enrichMissing + ' 条字段'),
-          h('button', { style: C.btn, disabled: busy, onClick: doEnrich }, '补全'),
+          h('span', { style: { color: T.warn } }, '补全未完成：还缺 ' + enrichMissing + ' 条字段'),
+          h('button', { className: 'rs-btn', disabled: busy, onClick: doEnrich }, '补全'),
           h('span', { style: C.muted }, '（榜页没给收藏/字数，要进书页取；1 秒/本）')) : null,
-        viewDate ? h('div', { style: { ...C.row, alignItems: 'center', gap: '6px', padding: '4px 6px', marginTop: '2px', background: 'rgba(255,193,7,0.12)', border: '1px solid rgba(255,193,7,0.45)', borderRadius: '4px' } },
+        viewDate ? h(Banner, { tone: 'warn' },
           h('span', { style: { fontWeight: 600 } }, '正在查看历史：' + viewDate),
           h('span', { style: C.muted }, data && data._queryDate ? '（直查站点，未落盘）' : '（本地快照）'),
           /**
@@ -2546,7 +2613,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
            *   现在显式清直查视图 + 清本地日期偏好 + 递增 nonce ⇒ **一定**重发一次无 date 的 GET。
            */
           h('button', {
-            style: C.btn,
+            className: 'rs-btn',
             onClick: function () {
               setSs('')
               setSd('')
@@ -2558,9 +2625,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           }, '回到最新')) : null,
         data && data.fallbackFrom ? h('div', { style: C.muted }, '当天（' + data.requestedDate + '）没有快照 ⇒ 回落到 ' + data.fallbackFrom) : null,
         data && data.source ? h('div', { style: C.muted }, '来源：' + data.source) : null,
-        err ? h('div', { style: { ...C.row, color: '#d9534f' } },
+        err ? h('div', { style: { ...C.row, color: T.bad } },
           h('span', null, '⚠ 读取失败：' + String(err).slice(0, 120)),
-          h('button', { style: C.btn, onClick: function () { reloadBoard(false) } }, '重试')) : null,
+          h('button', { className: 'rs-btn', onClick: function () { reloadBoard(false) } }, '重试')) : null,
         note ? h('div', { style: C.muted }, note) : null,
         data && data.rows && data.rows.length
           ? (cards
@@ -2806,7 +2873,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       if (!open) return null
       const narrow = rect.w < 720
       const rev = revOf(ov)
-      return h('div', { 'data-rank-scan-win': '1', style: { ...C.win, left: rect.x + 'px', top: rect.y + 'px', width: rect.w + 'px', height: rect.h + 'px', fontSize: '13px' } },
+      return h('div', { 'data-rank-scan-win': '1', style: { ...C.win, left: rect.x + 'px', top: rect.y + 'px', width: rect.w + 'px', height: rect.h + 'px' } },
         h(DragBar, {
           rect: rect, setRect: setRect,
           onCollapse: function () {
@@ -2821,11 +2888,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('button', { style: C.tab(tab === 'bm'), onClick: function () { switchTab('bm') } }, '书签'),
             h('button', { style: C.tab(tab === 'pick'), onClick: function () { switchTab('pick') } }, '设置')),
           msg ? h('div', { style: C.muted }, msg) : null,
-          leaveAsk ? h('div', { style: { ...C.row, margin: '4px 0', padding: '5px 7px', borderRadius: '6px', border: '1px solid rgba(217,164,65,.55)', background: 'rgba(217,164,65,.12)' } },
+          leaveAsk ? h(Banner, { tone: 'warn' },
             h('span', null, '有未保存的改动（' + (leaveAsk.keys || []).map(function (k) { return LEAVE_LABEL[k] || k }).join('、') + '）'),
             h('span', { style: C.muted }, '草稿会保留，下次进来还在'),
-            h('button', { style: C.btnOn, onClick: doLeave }, '仍然离开'),
-            h('button', { style: C.btn, onClick: function () { setLeaveAsk(null) } }, '继续编辑')) : null,
+            h('button', { className: 'rs-btn', onClick: doLeave }, '仍然离开'),
+            h('button', { className: 'rs-btn is-primary', onClick: function () { setLeaveAsk(null) } }, '继续编辑')) : null,
           h(TabBoundary, { name: tab },
             tab === 'ov' ? h(Overview, {
               ov: ov, busy: busy || scanActBusy, act: act, reload: reload, narrow: narrow, width: rect.w, rev: rev,
@@ -2888,6 +2955,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
 
     const inject = ['slots']
     function apply(ctx) {
+      // 样式表只注入一次；选择器都带 rs- 前缀（见 ensureStyle）
+      ensureStyle()
       // ★ 首次安装自动弹一次：认领点从「模块求值期」移到这里（apply 真的跑到了才算数）
       if (claimAutoOpen()) panelOpen.set(true)
       // 可选依赖晚绑定：侧栏浏览器服务可用后捕获（不在 inject 列表里，避免服务缺失时整个面板挂不上）

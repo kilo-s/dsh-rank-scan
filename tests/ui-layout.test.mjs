@@ -63,7 +63,7 @@ test('③ 「最大化」整块去掉：只剩拖动 + 右下角缩放（它跟�
 test('④ 设置页吸底条要不透明、压在上面（勾选行不许透出来）', () => {
   const s = src()
   assert.ok(s.includes("position: 'sticky', bottom: '0', zIndex: 4"), '吸底条要有叠放层级')
-  assert.ok(s.includes("background: 'var(--dsh-surface, #fff)'"), '吸底条必须是实色底（原来是 6%~12% 的半透明灰/黄）')
+  assert.ok(s.includes('background: T.surface'), '吸底条必须是实色底（T.surface，随亮/暗主题）')
 })
 
 test('书签卡的「截止」只显示 MM-DD（mdOf 不许把 ISO 串整段切出来）', () => {
