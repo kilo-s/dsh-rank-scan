@@ -12,7 +12,7 @@
    - 已采集 ok/total；sub 未到计划 / 待补跑，失败时写「有榜没抓到」。
    - 待处理 0 写「无」且 ok；>0 按是否 error 类问题取 bad/warn。
    - 今日变化 chgRealTotal；sub 前两个分组。
-   - 下次计划取 `schedule.waiting` 里最近站点时刻 + 站名；定时关闭写「已关闭」并跳设置；算不出时退回「上次扫描」。
+   - 下次计划取 `schedule.waiting` 里最近站点时刻 + 站名，tone 中性；定时关闭写「已关闭」并跳设置；今天全跑完时取已启用站 `siteTimes` 的最早时刻，写「明天 HH:mm」+ 站名；只有 siteTimes 也为空才把 label 改成「上次扫描」。
    - 网格 `repeat(auto-fit, minmax(180px, 1fr))`：900px 一行 4 张，480px 2×2。**偏差说明**：方案写 140px，但 480px 面板内宽约 455px，140px 会排 3 列；为了让验收要求的 2×2 成立，改成 180px，仍是 auto-fit、不写死列数。
 2. **顺序**：数据日期小字 → 四卡 → 主动作行 → 需要处理 → 补全 Banner → 今天的变化 → 全部榜单；「需要处理」提前到补全前。
 3. **SectionHeader**：标题 + 右侧计数 + 可选操作，替换两处 `C.siteBar`；`innerRef` 给四张卡 `scrollIntoView({block:'nearest'})` 用，滚动容器是面板 body。
@@ -20,6 +20,7 @@
    - 当天未采集（ok=0 且无变化）显示「今天还没有采集结果，到计划时刻会自动跑，也可以点「扫描已选榜」」，不渲染变化表/分组筛选。
    - 有采集但无变化写「今天没有榜单变化」，不渲染分组筛选。
    - `/overview` 未到时四张卡占位「—」，不再整页「加载中…」。
+   - total=0：变化区写「还没有勾选要扫的榜」+ ghost「去设置勾选」；「全部榜单」不渲染表头；「扫描已选榜」置灰并说明原因。
 5. **小尾巴 A**：板页单榜扫描通过 `onScanStart/onScanEnd` 接入 Panel 的 `scanActBusy`/ `postInFlightRef`；扫到一半切概览，「扫描已选榜」已置灰。409 统一 warn「已有扫描在进行，请等它跑完」。
 6. **小尾巴 B**：上架日输入、本榜设置条数输入改用 `...C.input`，不再写死 `fontSize:'12px', padding:'2px 4px'`。
 
@@ -38,7 +39,7 @@
 
 ## 测试
 
-- `scripts/test-local.ps1`：**410 pass / 0 fail**，53 个测试文件。
+- `scripts/test-local.ps1`：**413 pass / 0 fail**，53 个测试文件。
 - `scripts/acceptance.ps1 -SkipLive`：**PASS 96 / FAIL 0**。
   - 过程中修了验收脚本的假红：公开面闸在后台重定向下读到错误退出码，改用 .NET Process.ExitCode；未改任何断言。
 - 新增 `tests/ui-overview.test.mjs`：6 条（顺序、4 处 StatCard、button/div、auto-fit+minmax、空态/无变化筛选、A 忙态/409、B 的 C.input）。
@@ -56,7 +57,7 @@
 
 ## 截图
 
-本地：`docs/ui/after/step4-overview-{900-light,900-dark,480-dark,issue,empty}.png`（gitignored）。
+本地：`docs/ui/after/step4-overview-{900-light,900-dark,480-dark,issue,empty,all-done}.png`（gitignored）。
 入库副本：`docs/screenshots/step4-overview/`（已推到 `ui/step4-overview`）。
 GitHub 目录：https://github.com/kilo-s/dsh-rank-scan/tree/fc7dfba296087da35009f33a792cac604687bbb2/docs/screenshots/step4-overview
 

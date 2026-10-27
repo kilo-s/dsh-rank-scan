@@ -80,3 +80,28 @@ test('小尾巴 B：上架日 / 条数输入用 C.input', () => {
   assert.ok(boardSrc.includes("style: { ...C.input, width: '58px' }"))
   assert.ok(boardSrc.includes("style: { ...C.input, width: 'auto' }"))
 })
+
+test('下次计划：今天全跑完时显示明天最早站时刻，且 tone 中性', () => {
+  const mod = loadComponents()
+  const plan = { enabled: true, waiting: [], fallback: [], siteTimes: { qidian: '01:30', fanqie: '08:30' } }
+  const ov = { sites: [{ site: 'qidian', siteName: '起点' }, { site: 'fanqie', siteName: '番茄' }] }
+  const r = mod.__test.nextPlanOf(plan, ov, { startedAt: '2026-10-27T16:53:53.543Z' }, 20)
+  assert.equal(r.label, '下次计划')
+  assert.equal(r.value, '明天 01:30')
+  assert.equal(r.sub, '起点')
+  assert.equal(r.tone, 'muted')
+})
+
+test('下次计划：仅 siteTimes 为空时 label 退回「上次扫描」', () => {
+  const mod = loadComponents()
+  const plan = { enabled: true, waiting: [], fallback: [], siteTimes: {} }
+  const r = mod.__test.nextPlanOf(plan, { sites: [] }, { startedAt: '2026-10-27T16:53:53.543Z' }, 20)
+  assert.equal(r.label, '上次扫描')
+  assert.notEqual(r.value, '—')
+})
+
+test('0 个榜：不渲染全部榜单表头，变化区给去设置按钮', () => {
+  assert.match(overviewSrc, /showAll && total > 0 \? h\('table'/)
+  assert.ok(overviewSrc.includes('还没有勾选要扫的榜'))
+  assert.ok(overviewSrc.includes('去设置勾选'))
+})

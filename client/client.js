@@ -1073,6 +1073,42 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           props.action || null))
     }
 
+    const SITE_LABELS = { qidian: '起点', qidiantu: '起点图', ciweimao: '刺猬猫', sfacg: '菠萝包', fanqie: '番茄' }
+    const siteLabelOf = function (ov, s) {
+      const hit = ((ov && ov.sites) || []).filter(function (x) { return x.site === s })[0]
+      return hit ? hit.siteName : (SITE_LABELS[s] || String(s))
+    }
+    /**
+     * 下次计划（0.5.0 验收修正）：
+     *   · waiting 里最近站点的时刻 → 中性色；
+     *   · 今天全跑完（无 waiting/fallback）→ 取已启用站 siteTimes 的最早时刻，写「明天 HH:mm」；
+     *   · siteTimes 也为空 → label 改成「上次扫描」，避免把过去的时刻说成将来的计划；
+     *   · 定时关闭/只剩兜底 → warn。
+     */
+    function nextPlanOf(plan, ov, scan, total) {
+      if (!plan) return { label: '下次计划', value: '—', sub: '计划读取中', tone: 'muted' }
+      if (plan.enabled === false) return { label: '下次计划', value: '已关闭', sub: '定时扫描', tone: 'warn' }
+      if (typeof total === 'number' && total === 0) return { label: '下次计划', value: '—', sub: '还没有勾选要扫的榜', tone: 'muted' }
+      const times = plan.siteTimes || {}
+      const waiting = (plan.waiting || []).filter(function (s) { return times[s] })
+      if (waiting.length) {
+        const order = waiting.slice().sort(function (a, b) { return String(times[a]).localeCompare(String(times[b])) })
+        return { label: '下次计划', value: times[order[0]], sub: siteLabelOf(ov, order[0]), tone: 'muted' }
+      }
+      if ((plan.fallback || []).length) {
+        return { label: '下次计划', value: plan.fallbackTime || '22:30', sub: siteLabelOf(ov, plan.fallback[0]), tone: 'warn' }
+      }
+      const enabled = ((ov && ov.sites) || []).map(function (s) { return s.site }).filter(function (s) { return times[s] })
+      const nextTimes = enabled.slice().sort(function (a, b) { return String(times[a]).localeCompare(String(times[b])) })
+      if (nextTimes.length) {
+        const s = nextTimes[0]
+        return { label: '下次计划', value: '明天 ' + times[s], sub: siteLabelOf(ov, s), tone: 'muted' }
+      }
+      const last = scan && (scan.startedAt || scan.at)
+      if (last) return { label: '上次扫描', value: fmtLocalHM(last), sub: '最近一次', tone: 'muted' }
+      return { label: '下次计划', value: '—', sub: '暂时算不出下次', tone: 'muted' }
+    }
+
     function Overview(props) {
       const ov = props.ov
       /**
@@ -1263,24 +1299,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const collectTone = badRows.length ? 'bad' : dueRows.length ? 'warn' : (ov && total > 0 && (c.ok || 0) === total ? 'ok' : 'muted')
       const issuesTone = !issues.length ? 'ok' : (issues.some(function (it) { return it.status !== 'stale' && it.status !== 'enrich' }) ? 'bad' : 'warn')
       const changesSub = Object.keys(chgTotals).slice(0, 2).map(function (g) { return g + ' ' + chgTotals[g] }).join(' · ')
-      const SITE_NAMES = { qidian: '起点', qidiantu: '起点图', ciweimao: '刺猬猫', sfacg: '菠萝包', fanqie: '番茄' }
-      const siteNameOf = function (s) {
-        const hit = ((ov && ov.sites) || []).filter(function (x) { return x.site === s })[0]
-        return hit ? hit.siteName : (SITE_NAMES[s] || String(s))
-      }
-      const nextPlan = (function () {
-        if (!plan) return { value: '—', sub: '计划读取中', tone: 'muted' }
-        if (plan.enabled === false) return { value: '已关闭', sub: '定时扫描', tone: 'warn' }
-        const times = plan.siteTimes || {}
-        const waiting = (plan.waiting || []).filter(function (s) { return times[s] })
-        if (waiting.length) {
-          const order = waiting.slice().sort(function (a, b) { return String(times[a]).localeCompare(String(times[b])) })
-          return { value: times[order[0]], sub: siteNameOf(order[0]), tone: 'ok' }
-        }
-        if ((plan.fallback || []).length) return { value: plan.fallbackTime || '22:30', sub: siteNameOf(plan.fallback[0]), tone: 'warn' }
-        const last = scan && (scan.startedAt || scan.at)
-        return last ? { value: fmtLocalHM(last), sub: '上次扫描', tone: 'muted' } : { value: '—', sub: '暂时算不出下次', tone: 'muted' }
-      })()
+      const nextPlan = nextPlanOf(plan, ov, scan, total)
       const noData = !!(ov && (c.ok || 0) === 0 && chgRealTotal === 0)
       const noChanges = !!(ov && (c.ok || 0) > 0 && chg && chgRealTotal === 0)
       const jump = function (ref) {
@@ -1318,7 +1337,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             title: '滚到「今天的变化」',
           }),
           h(StatCard, {
-            label: '下次计划', value: nextPlan.value, sub: nextPlan.sub, tone: nextPlan.tone,
+            label: nextPlan.label, value: nextPlan.value, sub: nextPlan.sub, tone: nextPlan.tone,
             onClick: plan && plan.enabled === false && props.onOpenSettings ? props.onOpenSettings : undefined,
             title: plan && plan.enabled === false ? '定时已关闭，点这里去设置' : '下一次站点计划',
           })),
@@ -1326,8 +1345,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         h('div', { style: { ...C.row, marginTop: '8px' } },
           h('button', {
             className: 'rs-btn is-primary',
-            disabled: scanBusy || !ov,
-            title: '按「设置 → 抓取范围」里勾选的榜逐个扫描（联网）',
+            disabled: scanBusy || !ov || total === 0,
+            title: total === 0 ? '还没有勾选要扫的榜，先去「设置 → 抓取范围」勾选' : '按「设置 → 抓取范围」里勾选的榜逐个扫描（联网）',
             onClick: function () { props.act('/scan') },
           }, scanBtnText),
           scanBusy ? h('button', { className: 'rs-btn is-danger', onClick: function () { props.act('/cancel') } }, '停止本次（保留已完成）') : null,
@@ -1367,7 +1386,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         h(SectionHeader, { innerRef: changesRef, title: '今天的变化', count: chgRealTotal ? chgRealTotal + ' 条' : '' }),
         chg && chg.note ? h('div', { style: C.muted }, chg.note) : null,
         previewLimited ? h('div', { style: C.muted }, '下表每榜每类最多列 20 条（本次 ' + chgEntries.length + ' 条，共 ' + chgRealTotal + ' 条）；点行到榜页看全部。') : null,
-        noData ? h('div', { style: C.muted }, '今天还没有采集结果，到计划时刻会自动跑，也可以点「扫描已选榜」') : null,
+        total === 0 ? h('div', { style: { ...C.row, alignItems: 'center' } },
+          h('span', { style: C.muted }, '还没有勾选要扫的榜'),
+          props.onOpenSettings ? h('button', { className: 'rs-btn is-ghost', onClick: props.onOpenSettings }, '去设置勾选') : null) : null,
+        total === 0 ? null : noData ? h('div', { style: C.muted }, '今天还没有采集结果，到计划时刻会自动跑，也可以点「扫描已选榜」') : null,
         noChanges ? h('div', { style: C.muted }, '今天没有榜单变化') : null,
         ov && !chg && !noData ? h('div', { style: C.muted }, '正在读取今天的变化…') : null,
         chgEntries.length ? h('div', { style: C.row },
@@ -1436,7 +1458,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             onClick: function () { setShowAll(!showAll) },
           }, showAll ? '收起' : '展开'),
         }),
-        showAll ? h('table', { style: C.table },
+        showAll && total > 0 ? h('table', { style: C.table },
           h('thead', null, h('tr', null, ['榜（按站）', '涨 / 新 / 退', '状态'].concat(hasNoteCol && !chgNarrow ? ['备注'] : []).map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
           h('tbody', null, ((ov && ov.sites) || []).flatMap(function (s) {
             const okN = s.boards.filter(function (b) { return b.status === 'ok' }).length
@@ -3441,6 +3463,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
     metricChipText: metricChipText,
     helpers: { revOf: revOf, statusText: statusText, scanLabel: scanLabel, pollDelay: pollDelay, canDayQuery: canDayQuery, fitColumns: fitColumns, colPrio: colPrio, mdOf: mdOf, boardLabel: boardLabel, rememberBoardNames: rememberBoardNames },
     components: { Overview: Overview, BoardTab: BoardTab, BookmarksTab: BookmarksTab, SettingsTab: SettingsTab, PopMenu: PopMenu, Panel: Panel, ToastHost: ToastHost, StatCard: StatCard, SectionHeader: SectionHeader },
+    nextPlanOf: nextPlanOf,
     toast: toast, toastStore: toastStore, lastNote: lastNote, settingsDiff: settingsDiff,
   } }
   },
