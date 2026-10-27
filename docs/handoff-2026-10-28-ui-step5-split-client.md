@@ -48,9 +48,9 @@
 
 ## git 直装
 
-- 宿主 profile 由 Electron 独占；dsh plugin add 默认 profile 被拒，临时 profile 的 `.dsh` 写入被沙箱 EPERM 拒绝。
+- 宿主 desktop profile 由 Electron 独占；在隔离的 `DSH_HOME` 下 `dsh plugin --profile step5-test add github:kilo-s/dsh-rank-scan#refactor/step5-split-client` 能初始化临时 profile，但 pnpm 调 `git ls-remote` 时被当前沙箱以 `spawn EPERM` 拒绝（不是包/分支本身的问题）。
 - 用 `git archive HEAD` 导出干净树 + `npm ci`（会跑 package.json 的 prepare → build.mjs）跑通：lib/client.js 产物存在，sha256 `39874FA7…4F854B5`；在该干净树里 client-bundle 12/0、client-load 6/0。
-- 仍建议在有 DSH 桌面权限的环境补一次真正的 `dsh plugin add`。
+- 仍建议在有 DSH 桌面权限/可 spawn git 的环境补一次真正的 `dsh plugin add`。
 
 ## 下一步
 
