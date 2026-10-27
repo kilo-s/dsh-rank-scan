@@ -334,7 +334,7 @@ test('S6 变化条数用真实总数（预览只有 20 条也要说 113 条）',
   const { mod, mount } = load({ '/changes': CHANGES, '/enrich-status': { pending: 0 } })
   const tree = await overviewMount(mod, mount, ovWith([board('qidian.sign.cat12', '轻小说', 'ok')])).flush()
   const text = textOf(tree)
-  assert.match(text, /今天的变化（115 条）/, '标题要用后端真实总数')
+  assert.match(text, /今天的变化\s*（115 条）/, '标题要用后端真实总数')
   assert.match(text, /新入榜 113/, '分组按钮也要用真实总数，不能是预览条数 2')
   assert.match(text, /最多列 20 条/, '预览被截断时必须说明')
 })

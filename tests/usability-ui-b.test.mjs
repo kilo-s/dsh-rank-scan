@@ -199,7 +199,8 @@ test('★ 概览：问题在前、变化在后；没问题时不渲染空异常�
   const clean = ovFixture({ counts: { ok: 2, missing: 0, stale: 0, login_required: 0, truncated: 0 }, sites: [{ site: 'qidian', siteName: '起点', boards: [ovFixture().sites[0].boards[0]] }] })
   const okText = textOf(expand(Overview({ ov: clean, busy: false, act() {}, reload() {}, narrow: false, rev: 'r1' })))
   assert.ok(!/需要处理/.test(okText), '没有问题时不许留空异常框')
-  assert.match(okText, /无待处理/)
+  assert.match(okText, /待处理\s*无/)
+  assert.match(okText, /没有要处理的/)
 })
 
 test('概览不再承担存储/保留（移到设置），全部榜单可折叠', () => {
@@ -208,8 +209,8 @@ test('概览不再承担存储/保留（移到设置），全部榜单可折叠'
   const el = expand(Overview({ ov: ovFixture(), busy: false, act() {}, reload() {}, narrow: false, rev: 'r1' }))
   const txt = textOf(el)
   assert.ok(!/保留 \d+ 天/.test(txt), '保留天数不许再占概览')
-  assert.match(txt, /全部榜单（2）/)
-  const toggle = collect(el).filter((n) => n.type === 'button' && /全部榜单/.test(textOf(n)))
+  assert.match(txt, /全部榜单\s*（2）/)
+  const toggle = collect(el).filter((n) => n.type === 'button' && /^(收起|展开)$/.test(textOf(n)))
   assert.equal(toggle.length, 1)
   assert.equal(toggle[0].props['aria-expanded'], 'true', '默认展开，功能不许被藏掉')
 })

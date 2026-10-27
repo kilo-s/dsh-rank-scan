@@ -56,5 +56,6 @@ test('设置页每站只有一个动作，平铺成「补齐缺失」', () => {
 
 test('Panel 统一算 scanBusy 并传给 BoardTab', () => {
   assert.match(s, /const scanBusy = scanLive \|\| scanActBusy/)
-  assert.match(s, /scanBusy: scanBusy, onScanned: reload/)
+  assert.match(s, /scanBusy: scanBusy/)
+  assert.match(s, /onScanned: reload/)
 })
