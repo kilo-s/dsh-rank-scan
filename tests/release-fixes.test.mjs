@@ -63,7 +63,7 @@ test('面板文案不再写死「1 请求/秒 / 1s 限速」', () => {
     assert.ok(!CLIENT.includes(stale), '面板里还有写死的限速文案：' + stale)
   }
   assert.ok(CLIENT.includes('const fmtIntervalText = function (ms) {'), '面板缺 fmtIntervalText（文案要跟着生效值走）')
-  assert.ok(CLIENT.includes('noteRequestInterval(c.requestIntervalMs)'), '打开「抓什么」页时要把生效间隔记下来')
+  assert.ok(CLIENT.includes('noteRequestInterval(sv.requestIntervalMs)'), '打开「抓什么」页时要把生效间隔记下来')
 })
 
 test('npm 取号脚本不能踩 PowerShell 逗号优先级（否则 token 变成第 4 个数组元素）', () => {
