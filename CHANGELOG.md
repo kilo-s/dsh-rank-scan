@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-28
+
+面板源码按组件拆分到 client/parts/，构建时按文件名拼接回 lib/client.js；用户行为与样式不变。升级保留全部快照、书签与配置。
+
+### 变更
+
+- 源码拆分：client/client.js 删除，改为 client/parts/00-head … 90-tail；scripts/build.mjs 纯 Node 排序拼接，零依赖、无 JSX、不引入打包器。
+- 可读性：每个 part 有职责/依赖边界注释；构建产物在每个 part 前插一行定位标记。
+- 测试：新增 tests/_client-source.mjs 统一读取拼接结果、tests/client-parts.test.mjs 守命名/行数/语法/重复定义；所有读 client/client.js 的测试改读 parts。
+- 拆分提交用一次性 sha256 守门确认与 0.5.0 字节一致（第二次提交删除该守门）。
+
 ## [0.5.0] - 2026-10-28
 
 概览首屏改成「先看数字，再看动作」：打开面板不滚动，四张卡回答今天采全没、有没有要处理的、变化多不多、下次什么时候跑。升级保留全部快照、书签与配置。

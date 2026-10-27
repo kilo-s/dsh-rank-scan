@@ -1,3 +1,7 @@
+/**
+ * 90-tail.js：openLink/diagLink、inject、apply 与 factory 返回值/闭合括号。依赖全部。不要放组件。
+ * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
+ */
     function openLink(ctx, url) {
       if (typeof ctx === 'string' && url === undefined) { url = ctx; ctx = null }
       if (!url) return

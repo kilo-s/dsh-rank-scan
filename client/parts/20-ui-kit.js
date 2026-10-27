@@ -1,3 +1,7 @@
+/**
+ * 20-ui-kit.js：通用 UI：Banner、Toast、PopMenu、Section、格式化/状态/列宽工具、useRect。依赖 10。不要放整页页签。
+ * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
+ */
     function Banner(props) {
       const role = props.live === false ? null : (props.tone === 'error' ? 'alert' : 'status')
       return h('div', { className: 'rs-banner is-' + (props.tone || 'info'), role: role },

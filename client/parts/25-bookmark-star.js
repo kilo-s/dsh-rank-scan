@@ -1,3 +1,7 @@
+/**
+ * 25-bookmark-star.js：书签本地 store 的 healStore 与 BookmarkStar 小部件。依赖 10/20。不要放书签页签。
+ * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
+ */
     const healStore = function (s) {
       if (!s || typeof s !== 'object') return s
       if (!s.filters || typeof s.filters !== 'object') s.filters = { q: '', site: '', folder: '', tag: '' }

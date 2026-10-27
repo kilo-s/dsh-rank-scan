@@ -1,3 +1,7 @@
+/**
+ * 80-panel.js：侧栏入口图标与 Panel 外壳（页签、轮询、尺寸、Toast 挂载）。依赖前面全部页签。不要放 apply。
+ * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
+ */
     function SidebarEntryIcon(props) {
       const size = Number(props && props.size) || 16
       const active = !!(props && props.active)

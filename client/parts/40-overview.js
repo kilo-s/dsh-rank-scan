@@ -1,3 +1,7 @@
+/**
+ * 40-overview.js：概览页：fmtBytes、StatCard、SectionHeader、nextPlanOf、Overview。依赖 20。不要放设置/榜单页。
+ * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
+ */
     const fmtBytes = (n) => {
       if (n == null || !isFinite(n)) return '—'
       const u = ['B', 'KB', 'MB', 'GB']

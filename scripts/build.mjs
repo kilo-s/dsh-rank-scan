@@ -42,7 +42,10 @@ if (parts.length === 0) {
   process.exit(1)
 }
 let bundle = ''
-for (const f of parts) bundle += readFileSync(join(partsDir, f), 'utf8')
+for (const f of parts) {
+  bundle += '/* ---- parts/' + f + ' ---- */\n'
+  bundle += readFileSync(join(partsDir, f), 'utf8')
+}
 mkdirSync(join(root, 'lib'), { recursive: true })
 writeFileSync(join(root, 'lib', 'client.js'), bundle)
 console.log('build: 完成 → lib/（host 由 tsc 产出；面板 bundle 由 client/parts/*.js 按名拼接）')

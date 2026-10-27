@@ -1,3 +1,7 @@
+/**
+ * 55-board-cell.js：榜单表格单元格 cell、榜名记忆与 boardLabel。依赖 10/20。不要放 BoardTab 本体。
+ * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
+ */
     function cell(c, r) {
       const k = c.key
       const ex = r.extra || {}

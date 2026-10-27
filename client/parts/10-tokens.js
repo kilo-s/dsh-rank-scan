@@ -1,3 +1,7 @@
+/**
+ * 10-tokens.js：设计令牌 T/C、主题变量、wash 与 ensureStyle 样式注入。依赖 00。不要放业务组件。
+ * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
+ */
     const T = {
       surface: 'var(--dsw-alias-bg-layer-1, var(--dsh-surface, #fff))',
       surface2: 'var(--dsw-alias-bg-layer-2, var(--dsh-fill, rgba(128,128,128,.06)))',

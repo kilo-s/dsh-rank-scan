@@ -1,3 +1,7 @@
+/**
+ * 60-bookmarks.js：书签页：bookKeyOf、DetailBookmarkEditor、BookmarksTab。依赖 20/25。不要放榜单页。
+ * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
+ */
     function bookKeyOf(boardId, key) {
       const id = String(key == null ? '' : key).trim()
       if (!id) return ''

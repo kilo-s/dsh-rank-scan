@@ -1,3 +1,7 @@
+/**
+ * 70-board.js：榜单页：BoardTab（选择器、详情、操作条、本榜设置、日期回看）。依赖 20/55。不要放 Panel。
+ * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
+ */
     function BoardTab(props) {
       const ov = props.ov
       /**

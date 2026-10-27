@@ -1,3 +1,7 @@
+/**
+ * 50-settings.js：设置页：settingsDiff/retention/settingsSavedFrom、SettingsTab、VersionRow。依赖 10/20。不要放榜单页。
+ * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
+ */
     const settingsDiff = function (saved, draft) {
       const out = []
       if (!saved || !draft) return out

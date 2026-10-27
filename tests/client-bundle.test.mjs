@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, existsSync } from 'node:fs'
-import { readClientSource, partsDir } from './_client-source.mjs'
+import { readClientSource, buildClientBundle, partsDir } from './_client-source.mjs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -31,7 +31,7 @@ test('面板源在仓库里（client/parts/*.js）', () => {
 test('lib/client.js 与 client/parts 拼接结果一致（构建不许各自漂移）', () => {
   const out = join(ROOT, 'lib', 'client.js')
   if (!existsSync(out)) return // 未构建：由 CI / 双闸门先构建后再查
-  assert.equal(readFileSync(out, 'utf8'), SOURCE, 'lib/client.js 与 parts 拼接结果不一致：先跑 scripts/build.mjs')
+  assert.equal(readFileSync(out, 'utf8'), buildClientBundle(), 'lib/client.js 与 parts 拼接结果不一致：先跑 scripts/build.mjs')
 })
 
 test('客户端 bundle 必须能被 JS 解析（防 edit 留下孤立 token 变成语法错误）', () => {

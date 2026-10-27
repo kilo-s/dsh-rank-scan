@@ -1,3 +1,7 @@
+/**
+ * 30-window.js：浮窗拖拽/缩放：useWindowDrag、DragBar、ResizeHandle。依赖 10/20。不要放数据逻辑。
+ * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
+ */
     function useWindowDrag() {
       const active = React.useRef(null)
       const stop = React.useCallback(function () {
