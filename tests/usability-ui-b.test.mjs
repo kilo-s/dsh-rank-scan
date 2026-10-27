@@ -526,7 +526,38 @@ test('★ 即时开关失败要回退（界面不许说一套、服务端做另�
   assert.ok(swLabel2, '回退后开关还在')
   const box2 = nodesOf(swLabel2, (n) => n.type === 'input' && n.props.type === 'checkbox')[0]
   assert.equal(box2.props.checked, true, '失败后必须回退到原状态（开）')
-  assert.match(textOf(tree), /已恢复原状态/)
+  assert.match(mod.__test.lastNote.get(), /已恢复原状态/)
+})
+
+test('★ 设置保存成功：走 /select、底栏回「已保存」、Toast 里有一条 success', async () => {
+  const { mod, mount, calls } = loadInteractive({
+    routes: {
+      '/catalog': CATALOG,
+      '/timer-plan': { ok: true, plan: { now: '10:00', today: '2026-10-22', enabled: true } },
+      '/select': { ok: true, note: '间隔已保存' },
+      '/overview': ovFixture(),
+    },
+  })
+  const app = mount(mod.__test.components.SettingsTab, { ov: ovFixture(), onSaved() {} })
+  let tree = await app.flush()
+  const dataBtn = nodesOf(tree, (n) => n.type === 'button' && /数据与性能/.test(textOf(n)))[0]
+  assert.ok(dataBtn, '要有「数据与性能」分组')
+  tree = app.act(() => dataBtn.props.onClick({ preventDefault() {}, stopPropagation() {}, target: {} }))
+  const secBtn = nodesOf(tree, (n) => n.type === 'button' && /高级：请求间隔/.test(textOf(n)))[0]
+  assert.ok(secBtn, '要有「高级：请求间隔」分组')
+  tree = app.act(() => secBtn.props.onClick({ preventDefault() {}, stopPropagation() {}, target: {} }))
+  const sel = nodesOf(tree, (n) => n.type === 'select' && n.props.value === '1000')[0]
+  assert.ok(sel, '高级里要有请求间隔 select')
+  tree = app.act(() => sel.props.onChange({ target: { value: '2000' } }))
+  assert.match(textOf(tree), /有 1 处未保存：请求间隔/)
+  click(tree, '保存设置')
+  tree = await app.flush()
+  const selCall = calls.filter((c) => c.url.indexOf('/select') >= 0).pop()
+  assert.ok(selCall, '保存必须发 /select')
+  assert.equal(selCall.body.requestIntervalMs, 2000, '/select 要带上草稿里的新间隔')
+  assert.match(textOf(tree), /已保存/, '成功后底栏回「已保存」')
+  const toastTree = mount(mod.__test.components.ToastHost, {}).render()
+  assert.match(textOf(toastTree), /间隔已保存/, 'Toast 里要有宿主返回的成功提示')
 })
 
 test('★ 离开保护：有未保存草稿时切页/收起先拦，草稿保留', async () => {
@@ -546,7 +577,7 @@ test('★ 离开保护：有未保存草稿时切页/收起先拦，草稿保留
   assert.ok(timeInput, '扫描计划里要有时刻输入')
   st = settings.act(() => timeInput.props.onChange({ target: { value: '05:15' } }))
   st = await settings.flush()
-  assert.match(textOf(st), /时刻有改动，未保存/, '改时刻后要显示未保存')
+  assert.match(textOf(st), /有 1 处未保存：计划时刻/, '改时刻后要显示未保存')
 
   // ② 打开面板：切页应被拦下
   const panel = mount(mod.__test.components.Panel, { openLink() {} })
@@ -898,7 +929,7 @@ test('★ Spec E：默认摘要说人话（不出现「接线」）；吸底保�
   const box = nodesOf(lab, (n) => n.type === 'input')[0]
   assert.equal(box.props.checked, true)
   tree = app.act(() => box.props.onChange({ target: { checked: false } }))
-  assert.match(textOf(tree), /有未保存的改动/, '折叠抓取范围后改别的设置，也要看得到未保存状态')
+  assert.match(textOf(tree), /有 1 处未保存：自动补全/, '折叠抓取范围后改别的设置，也要看得到未保存状态')
   const saveBtn = nodesOf(tree, (n) => n.type === 'button' && /保存设置/.test(textOf(n)))[0]
   assert.ok(saveBtn, '保存条必须留在设置层，不随「抓取范围」折叠消失')
   saveBtn.props.onClick({})

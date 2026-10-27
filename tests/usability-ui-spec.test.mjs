@@ -392,7 +392,7 @@ test('S4 恢复默认只改草稿并报「新增/移除」数，不直接落盘'
   tree = app.render()
   const text = textOf(tree)
   assert.match(text, /将新增 1 个、移除 0 个/, '要说清这次恢复改了什么')
-  assert.match(text, /有未保存的改动/, '恢复默认只是草稿')
+  assert.match(text, /有 1 处未保存：抓取范围/, '恢复默认只是草稿')
   assert.ok(
     !calls.some((c) => String(c.url).indexOf('/select') >= 0),
     '点「恢复默认」不许直接写盘（必须再点保存设置）',

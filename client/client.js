@@ -207,6 +207,15 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         '.rs-banner.is-warn{border-color:' + T.warn + ';background:' + wash(T.warn, 10) + '}',
         '.rs-banner.is-error{border-color:' + T.bad + ';background:' + wash(T.bad, 8) + '}',
         '.rs-banner .rs-banner-body{flex:1 1 100%;min-width:0}',
+        '.rs-toasts{position:absolute;right:12px;bottom:18px;z-index:95;display:flex;flex-direction:column;gap:6px;max-width:min(380px,calc(100% - 24px));pointer-events:none}',
+        '.rs-toast{pointer-events:auto;display:flex;align-items:flex-start;gap:8px;padding:7px 9px;border-radius:' + T.r.s + ';border:1px solid;border-left-width:3px;background:' + T.surface + ';color:' + T.fg + ';box-shadow:' + T.shadowMenu + ';font-size:' + T.fs.s + ';line-height:1.45}',
+        '.rs-toast.is-info{border-color:' + T.accent + ';background-image:linear-gradient(' + wash(T.accent, 10) + ',' + wash(T.accent, 10) + ')}',
+        '.rs-toast.is-warn{border-color:' + T.warn + ';background-image:linear-gradient(' + wash(T.warn, 12) + ',' + wash(T.warn, 12) + ')}',
+        '.rs-toast.is-error{border-color:' + T.bad + ';background-image:linear-gradient(' + wash(T.bad, 10) + ',' + wash(T.bad, 10) + ')}',
+        '.rs-toast.is-success{border-color:' + T.ok + ';background-image:linear-gradient(' + wash(T.ok, 10) + ',' + wash(T.ok, 10) + ')}',
+        '.rs-toast-text{flex:1 1 auto;min-width:0;white-space:pre-wrap;word-break:break-word}',
+        '.rs-toast-x{border:none;background:transparent;color:inherit;cursor:pointer;font-size:14px;line-height:1;padding:0 2px;font-family:inherit}',
+        '.rs-toast-x:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
         '[data-rank-scan-win] tbody tr:hover td{background:' + T.subtle + '}',
         '[data-rank-scan-win] a:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
       ].join('\n')
@@ -259,6 +268,91 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const role = props.live === false ? null : (props.tone === 'error' ? 'alert' : 'status')
       return h('div', { className: 'rs-banner is-' + (props.tone || 'info'), role: role },
         props.title ? h('strong', null, props.title) : null, props.children)
+    }
+    /**
+     * Toast：模块级队列，任何页签直接 toast(tone, text)，不必层层传 props。
+     * success/info/warn 4 秒自动消失；error 常驻，带关闭按钮。最多同时 3 条。
+     */
+    const TOAST_MAX = 3
+    const toastStore = (function () {
+      const subs = new Set()
+      const timers = new Map()
+      let items = []
+      let seq = 0
+      const emit = function () { subs.forEach(function (f) { try { f(items.slice()) } catch (e) {} }) }
+      const drop = function (id) {
+        items = items.filter(function (t) { return t.id !== id })
+        const tm = timers.get(id)
+        if (tm) { clearTimeout(tm); timers.delete(id) }
+        emit()
+      }
+      const arm = function (t) {
+        if (t.tone === 'error') return
+        const tm = setTimeout(function () { drop(t.id) }, t.ms || 4000)
+        timers.set(t.id, tm)
+      }
+      const push = function (tone, text, opts) {
+        const o = opts || {}
+        const t = { id: 'toast-' + (++seq), tone: tone || 'info', text: String(text == null ? '' : text), ms: o.ms || 4000 }
+        items = items.concat(t)
+        while (items.length > (o.max || TOAST_MAX)) {
+          const old = items.shift()
+          const tm = timers.get(old.id)
+          if (tm) { clearTimeout(tm); timers.delete(old.id) }
+        }
+        emit()
+        arm(t)
+        return t.id
+      }
+      const pause = function (id) { const tm = timers.get(id); if (tm) { clearTimeout(tm); timers.delete(id) } }
+      const resume = function (id) { const t = items.filter(function (x) { return x.id === id })[0]; if (t) arm(t) }
+      return {
+        push: push,
+        remove: drop,
+        pause: pause,
+        resume: resume,
+        get: function () { return items.slice() },
+        subscribe: function (f) { subs.add(f); return function () { subs.delete(f) } },
+      }
+    })()
+    /** 最近一条提示：诊断复制与「最近提示」用（不进 Toast 的纯状态文字不会进来） */
+    const lastNote = (function () {
+      let v = ''
+      const subs = new Set()
+      return {
+        get: function () { return v },
+        set: function (s) { v = String(s == null ? '' : s); subs.forEach(function (f) { try { f(v) } catch (e) {} }) },
+        subscribe: function (f) { subs.add(f); return function () { subs.delete(f) } },
+      }
+    })()
+    const toast = function (tone, text, opts) {
+      const s = String(text == null ? '' : text)
+      lastNote.set(s)
+      return toastStore.push(tone, s, opts)
+    }
+    function useLastNote() {
+      const [v, setV] = React.useState(lastNote.get())
+      React.useEffect(function () { return lastNote.subscribe(setV) }, [])
+      return v
+    }
+    function ToastHost() {
+      const [items, setItems] = React.useState(toastStore.get())
+      React.useEffect(function () { return toastStore.subscribe(setItems) }, [])
+      if (!items.length) return null
+      return h('div', { className: 'rs-toasts' },
+        items.map(function (t) {
+          return h('div', {
+            key: t.id,
+            className: 'rs-toast is-' + t.tone,
+            role: t.tone === 'error' ? 'alert' : 'status',
+            onMouseEnter: function () { toastStore.pause(t.id) },
+            onMouseLeave: function () { toastStore.resume(t.id) },
+          },
+          h('span', { className: 'rs-toast-text' }, t.text),
+          t.tone === 'error'
+            ? h('button', { className: 'rs-toast-x', onClick: function () { toastStore.remove(t.id) }, 'aria-label': '关闭提示', title: '关闭' }, '×')
+            : null)
+        }))
     }
     /**
      * ★ 2026-10-17（易用性 P0）：哪些列算「数字列」—— 只有它们套 C.num（不折行 + 等宽数字）。
@@ -1294,13 +1388,68 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
      *   · 扫描计划：开关即时生效（旁边写明开/关；失败回退），时刻改动走「保存计划」
      *   · 全站补全从榜单页挪到这里（按站「更多」），榜单页只保留「补全缺失字段」
      */
+    /**
+     * 设置草稿 vs 已保存快照的差异（纯函数）。
+     * captures 按集合比较（顺序不算变化）；siteTimes 按字段比较。返回人类可读的分组名；空数组 = 干净。
+     */
+    const settingsDiff = function (saved, draft) {
+      const out = []
+      if (!saved || !draft) return out
+      const a = Array.isArray(saved.captures) ? saved.captures.slice().sort() : []
+      const b = Array.isArray(draft.captures) ? draft.captures.slice().sort() : []
+      if (a.length !== b.length || a.some(function (x, i) { return x !== b[i] })) out.push('抓取范围')
+      if (!!saved.autoEnrich !== !!draft.autoEnrich) out.push('自动补全')
+      if (!!saved.qidianEnrich !== !!draft.qidianEnrich) out.push('起点收藏补全')
+      if (Number(saved.requestIntervalMs) !== Number(draft.requestIntervalMs)) out.push('请求间隔')
+      const st = saved.siteTimes || {}
+      const dt = draft.siteTimes || {}
+      const keys = Object.keys(Object.assign({}, st, dt))
+      if (keys.some(function (k) { return String(st[k] || '') !== String(dt[k] || '') })) out.push('计划时刻')
+      if (String(saved.fallbackTime || '') !== String(draft.fallbackTime || '')) out.push('兜底时刻')
+      if (String(saved.retentionDays) !== String(draft.retentionDays)) out.push('保留天数')
+      return out
+    }
+    /** 从 /catalog + overview 生成「已保存」快照 */
+    const settingsSavedFrom = function (c, ov) {
+      const t = (c && c.timer) || {}
+      const rd = ov && ov.storage && (typeof ov.storage.retentionDays === 'number' || ov.storage.retentionDays === 'forever') ? ov.storage.retentionDays : 180
+      return {
+        captures: ((c && c.captures) || []).slice(),
+        autoEnrich: !(c && c.autoEnrich === false),
+        qidianEnrich: !!(c && c.qidian && c.qidian.enrich),
+        requestIntervalMs: c && typeof c.requestIntervalMs === 'number' ? c.requestIntervalMs : 1000,
+        siteTimes: Object.assign({}, (t && t.siteTimes) || {}),
+        fallbackTime: (t && t.fallbackTime) || '22:30',
+        retentionDays: rd,
+      }
+    }
+    /** 旧草稿（picked/times/fall）→ 新草稿形状；缺失字段回落到已保存快照 */
+    const settingsDraftFrom = function (d, saved) {
+      const sv = saved || {}
+      return {
+        captures: Array.isArray(d.captures) ? d.captures.slice() : (Array.isArray(d.picked) ? d.picked.slice() : (sv.captures || []).slice()),
+        autoEnrich: typeof d.autoEnrich === 'boolean' ? d.autoEnrich : !!sv.autoEnrich,
+        qidianEnrich: typeof d.qidianEnrich === 'boolean' ? d.qidianEnrich : !!sv.qidianEnrich,
+        requestIntervalMs: typeof d.requestIntervalMs === 'number' ? d.requestIntervalMs : (typeof sv.requestIntervalMs === 'number' ? sv.requestIntervalMs : 1000),
+        siteTimes: d.siteTimes && typeof d.siteTimes === 'object' ? Object.assign({}, d.siteTimes) : (d.times && typeof d.times === 'object' ? Object.assign({}, d.times) : Object.assign({}, sv.siteTimes || {})),
+        fallbackTime: typeof d.fallbackTime === 'string' ? d.fallbackTime : (typeof d.fall === 'string' ? d.fall : (sv.fallbackTime || '22:30')),
+        retentionDays: (typeof d.retentionDays === 'number' || d.retentionDays === 'forever') ? d.retentionDays : (sv.retentionDays == null ? 180 : sv.retentionDays),
+      }
+    }
+    /**
+     * 设置页保存语义（0.4.1）：
+     *   · 即时生效：只有「定时扫描」开关（乐观置位 + 失败回滚，结果走 Toast）。
+     *   · 草稿 + 底栏保存：抓取范围、自动补全、起点收藏补全、请求间隔、各站计划时刻、兜底时刻、保留天数。
+     *   · 动作按钮（不是设置，点了就做）：补全起点收藏、清空书页缓存、补齐该站缺失字段、复制诊断、检查更新；
+     *     保持原行为，结果走 Toast。
+     */
     function SettingsTab(props) {
       const ov = props.ov
+      const ovRef = React.useRef(ov)
+      ovRef.current = ov
       const [cat, setCat] = React.useState(null)
       const [picked, setPicked] = React.useState(null)
-      const [note, setNote] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
-      const [dirty, setDirty] = React.useState(false)
       const [autoEnrich, setAutoEnrich] = React.useState(true)
       const [qdEnrich, setQdEnrich] = React.useState(false)
       const [qdCache, setQdCache] = React.useState(null)
@@ -1308,38 +1457,53 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const [tOn, setTOn] = React.useState(false)
       const [tTimes, setTTimes] = React.useState({})
       const [tFall, setTFall] = React.useState('22:30')
-      const [tNote, setTNote] = React.useState(null)
       const [tLast, setTLast] = React.useState(null)
       const [planLive, setPlanLive] = React.useState(null)
-      const [retMsg, setRetMsg] = React.useState(null)
+      const [retentionDays, setRetentionDays] = React.useState(180)
+      const [saved, setSaved] = React.useState(null)
+      const savedRef = React.useRef(null)
+      const [barNote, setBarNote] = React.useState('')
+      const [retentionConfirm, setRetentionConfirm] = React.useState(false)
+      const lastNote = useLastNote()
       /** 站分组默认展开（含已勾选榜的站更该展开）；只记「被收起」的，避免新站默认藏着 */
       const [closedGroups, setClosedGroups] = React.useState({})
       const load = React.useCallback(function () {
         jget('/catalog').then(function (c) {
           setCat(c)
-          setPicked((c.captures || []).slice())
-          setAutoEnrich(c.autoEnrich !== false)
-          setQdEnrich(!!(c.qidian && c.qidian.enrich))
+          const sv = settingsSavedFrom(c, ovRef.current)
+          savedRef.current = sv
+          setSaved(sv)
+          setPicked(sv.captures.slice())
+          setAutoEnrich(sv.autoEnrich)
+          setQdEnrich(sv.qidianEnrich)
           setQdCache(c.qidian || null)
-          setIntervalMs(typeof c.requestIntervalMs === 'number' ? c.requestIntervalMs : 1000)
-          noteRequestInterval(c.requestIntervalMs)
+          setIntervalMs(sv.requestIntervalMs)
+          setRetentionDays(sv.retentionDays)
+          noteRequestInterval(sv.requestIntervalMs)
           const t = c.timer || {}
           setTOn(t.enabled === true)
-          setTTimes(t.siteTimes || {})
-          setTFall(t.fallbackTime || '22:30')
+          setTTimes(Object.assign({}, sv.siteTimes))
+          setTFall(sv.fallbackTime)
           setTLast(t)
           // ★ 组件被卸载过：草稿优先（不拿服务端值盖掉用户没保存的选择）
           const d = DRAFTS.settings
-          if (d && Array.isArray(d.picked)) {
-            setPicked(d.picked.slice())
-            if (typeof d.autoEnrich === 'boolean') setAutoEnrich(d.autoEnrich)
-            if (typeof d.qdEnrich === 'boolean') setQdEnrich(d.qdEnrich)
-            if (d.times && typeof d.times === 'object') setTTimes(d.times)
-            if (typeof d.fall === 'string') setTFall(d.fall)
-            setDirty(!!d.dirty)
-            setNote('已恢复未保存的改动（还没保存）')
-          } else setDirty(false)
-        }).catch(function (e) { setNote(String(e)) })
+          if (d) {
+            const dd = settingsDraftFrom(d, sv)
+            setPicked(dd.captures.slice())
+            setAutoEnrich(dd.autoEnrich)
+            setQdEnrich(dd.qidianEnrich)
+            setIntervalMs(dd.requestIntervalMs)
+            setTTimes(Object.assign({}, dd.siteTimes))
+            setTFall(dd.fallbackTime)
+            setRetentionDays(dd.retentionDays)
+            setBarNote('已恢复未保存的改动（还没保存）')
+          } else {
+            setBarNote('')
+          }
+        }).catch(function (e) {
+          toast('error', '设置加载失败：' + e)
+          setBarNote('设置加载失败：' + e)
+        })
       }, [])
       React.useEffect(function () { load() }, [load])
       // 只读的实时调度状态（3 分钟；有站到点待跑时 30 秒）——**不重载 /catalog**，免得冲掉草稿
@@ -1359,23 +1523,34 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         tick()
         return function () { alive = false; if (id) clearInterval(id) }
       }, [])
-      /** 计划时刻有没有未保存的改动（提前算：离开保护要用，且必须早于任何 return） */
-      const timesDirty = !!tLast && (function () {
-        const a0 = tTimes || {}
-        const b0 = tLast.siteTimes || {}
-        const keys = Object.keys({ ...a0, ...b0 })
-        for (let i = 0; i < keys.length; i++) { if (String(a0[keys[i]] || '') !== String(b0[keys[i]] || '')) return true }
-        return String(tFall || '') !== String(tLast.fallbackTime || '')
-      })()
-      /** 草稿写回组件外 + 登记脏状态（**含计划时刻**；面板切页/收起前据此拦一下） */
+      /** 统一草稿：设置项全部走这个对象；顺序固定，便于比较与持久化 */
+      const draft = {
+        captures: (picked || []).slice(),
+        autoEnrich: !!autoEnrich,
+        qidianEnrich: !!qdEnrich,
+        requestIntervalMs: intervalMs,
+        siteTimes: tTimes || {},
+        fallbackTime: tFall || '',
+        retentionDays: retentionDays,
+      }
+      const diff = saved ? settingsDiff(saved, draft) : []
+      const dirty = diff.length > 0
+      const draftKey = [
+        draft.captures.slice().sort().join(','),
+        draft.autoEnrich, draft.qidianEnrich, draft.requestIntervalMs,
+        Object.keys(draft.siteTimes).sort().map(function (k) { return k + '=' + (draft.siteTimes[k] || '') }).join(','),
+        draft.fallbackTime, draft.retentionDays,
+      ].join('|')
+      /** 草稿写回组件外 + 登记脏状态（面板切页/收起前据此拦一下） */
       React.useEffect(function () {
-        if (!cat || !picked) return
-        const anyDirty = dirty || timesDirty
-        if (!anyDirty) { DRAFTS.settings = null; dirtyGuard.set('settings', false); return }
-        DRAFTS.settings = { picked: (picked || []).slice(), autoEnrich: !!autoEnrich, qdEnrich: !!qdEnrich, times: tTimes || {}, fall: tFall || '', dirty: !!dirty }
+        if (!saved) return
+        if (!dirty) { DRAFTS.settings = null; dirtyGuard.set('settings', false); return }
+        DRAFTS.settings = Object.assign({}, draft, { dirty: true })
         dirtyGuard.set('settings', true)
-      }, [dirty, timesDirty, picked, autoEnrich, qdEnrich, tTimes, tFall])
-      if (!cat || !picked) return h('div', { style: C.muted }, note || '加载中…')
+      }, [draftKey, saved, dirty])
+      /** 草稿一变就收起删除确认，避免确认的是旧值 */
+      React.useEffect(function () { setRetentionConfirm(false) }, [draftKey])
+      if (!cat || !picked) return h('div', { style: C.muted }, barNote || '加载中…')
       const has = function (id) { return picked.indexOf(id) >= 0 }
       const toggle = function (id, on) {
         const next = picked.slice()
@@ -1383,13 +1558,12 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         if (on && at < 0) next.push(id)
         if (!on && at >= 0) next.splice(at, 1)
         setPicked(next)
-        setDirty(true)
-        setNote(null)
+        setBarNote('')
       }
       const setAll = function (site, on) {
         const ids = cat.boards.filter(function (b) { return b.site === site }).map(function (b) { return b.boardId })
         setPicked(on ? picked.concat(ids.filter(function (i) { return picked.indexOf(i) < 0 })) : picked.filter(function (i) { return ids.indexOf(i) < 0 }))
-        setDirty(true)
+        setBarNote('')
       }
       /**
        * ★ Spec S4「恢复默认」：只改**草稿**，并说清将新增/移除多少 —— 保存后才生效。
@@ -1399,31 +1573,100 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const restoreDefaults = function () {
         const def = cat && Array.isArray(cat.defaultCaptures) ? cat.defaultCaptures.slice() : null
         if (!def || !def.length) {
-          setNote('这台宿主没有提供默认抓取集（catalog.defaultCaptures 缺失），只能手动勾选')
+          setBarNote('这台宿主没有提供默认抓取集（catalog.defaultCaptures 缺失），只能手动勾选')
+          toast('warn', '这台宿主没有提供默认抓取集，只能手动勾选')
           return
         }
         const add = def.filter(function (id) { return picked.indexOf(id) < 0 })
         const del = picked.filter(function (id) { return def.indexOf(id) < 0 })
         setPicked(def)
-        setDirty(true)
-        setNote('已恢复默认抓取：将新增 ' + add.length + ' 个、移除 ' + del.length + ' 个（点「保存设置」才落盘）')
+        setBarNote('已恢复默认抓取：将新增 ' + add.length + ' 个、移除 ' + del.length + ' 个（点「保存设置」才落盘）')
       }
       const toggleGroup = function (key) {
         const nx = Object.assign({}, closedGroups)
         nx[key] = !nx[key]
         setClosedGroups(nx)
       }
-      const save = function () {
+      const daysOf = function (v) { return v === 'forever' ? Infinity : Number(v) }
+      const retentionLabel = retentionDays === 'forever' ? '永久' : retentionDays + ' 天'
+      const retentionShortens = !!(saved && diff.indexOf('保留天数') >= 0 && daysOf(draft.retentionDays) < daysOf(saved.retentionDays))
+      /** 底栏保存：按变化分组顺序提交；成功的组并入 saved，失败的组留在草稿里继续算脏 */
+      const doSave = function () {
+        if (busy) return
+        const d = draft
+        const changes = diff.slice()
+        const selChanged = changes.some(function (x) { return x === '抓取范围' || x === '自动补全' || x === '起点收藏补全' || x === '请求间隔' })
+        const timerChanged = changes.some(function (x) { return x === '计划时刻' || x === '兜底时刻' })
+        const retChanged = changes.indexOf('保留天数') >= 0
+        const done = []
+        const failed = []
+        const notes = []
+        let nextSaved = saved ? Object.assign({}, saved, { captures: (saved.captures || []).slice(), siteTimes: Object.assign({}, saved.siteTimes || {}) }) : null
         setBusy(true)
-        jpost('/select', { captures: picked, autoEnrich: !!autoEnrich, qidianEnrich: !!qdEnrich }).then(function (r) {
-          setNote((r && r.note ? r.note : '已保存：' + picked.length + ' 个榜') + '（下次扫描生效）')
-          setDirty(false)
-          DRAFTS.settings = timesDirty ? { picked: picked.slice(), autoEnrich: !!autoEnrich, qdEnrich: !!qdEnrich, times: tTimes, fall: tFall, dirty: false } : null
-          dirtyGuard.set('settings', timesDirty)
+        setRetentionConfirm(false)
+        const run = async function () {
+          if (selChanged) {
+            try {
+              const r = await jpost('/select', { captures: d.captures, autoEnrich: d.autoEnrich, qidianEnrich: d.qidianEnrich, requestIntervalMs: d.requestIntervalMs })
+              if (r && r.note) notes.push(r.note)
+              nextSaved = Object.assign({}, nextSaved, { captures: d.captures.slice(), autoEnrich: d.autoEnrich, qidianEnrich: d.qidianEnrich, requestIntervalMs: d.requestIntervalMs })
+              done.push('抓取/补全/间隔')
+            } catch (e) { failed.push('抓取/补全/间隔：' + e) }
+          }
+          if (timerChanged) {
+            try {
+              const r = await jpost('/timer', { enabled: tOn, siteTimes: d.siteTimes, fallbackTime: d.fallbackTime })
+              if (r && r.note) notes.push(r.note)
+              nextSaved = Object.assign({}, nextSaved, { siteTimes: Object.assign({}, d.siteTimes), fallbackTime: d.fallbackTime })
+              done.push('计划时刻')
+            } catch (e) { failed.push('计划时刻：' + e) }
+          }
+          if (retChanged) {
+            try {
+              const r = await jpost('/retention', { days: d.retentionDays })
+              if (r && r.note) notes.push(r.note)
+              nextSaved = Object.assign({}, nextSaved, { retentionDays: d.retentionDays })
+              done.push('保留天数')
+            } catch (e) { failed.push('保留天数：' + e) }
+          }
+        }
+        run().then(function () {
+          setBusy(false)
+          if (nextSaved) { savedRef.current = nextSaved; setSaved(nextSaved) }
+          if (failed.length) {
+            toast('error', (done.length ? '已保存：' + done.join('、') + '；失败：' : '保存失败：') + failed.join('；') + '（失败项仍在草稿里，可再试）')
+            return
+          }
+          DRAFTS.settings = null
+          dirtyGuard.set('settings', false)
+          toast('success', notes.filter(Boolean).join('；') || ('已保存：' + (changes.length ? changes.join('、') : '设置')))
           if (props.onSaved) props.onSaved()
           try { window.dispatchEvent(new Event('rank-scan:saved')) } catch (e) {}
-          return load()
-        }).catch(function (e) { setNote('保存失败：' + e) }).then(function () { setBusy(false) })
+        }).catch(function (e) {
+          setBusy(false)
+          toast('error', '保存失败：' + e)
+        })
+      }
+      /** 保存入口：保留天数变短时先在底栏出确认；确认后再真正提交 */
+      const onSaveClick = function () {
+        if (busy) return
+        if (retentionShortens && !retentionConfirm) { setRetentionConfirm(true); return }
+        doSave()
+      }
+      const discard = function () {
+        const sv = savedRef.current
+        if (!sv) return
+        setPicked(sv.captures.slice())
+        setAutoEnrich(sv.autoEnrich)
+        setQdEnrich(sv.qidianEnrich)
+        setIntervalMs(sv.requestIntervalMs)
+        setTTimes(Object.assign({}, sv.siteTimes))
+        setTFall(sv.fallbackTime)
+        setRetentionDays(sv.retentionDays)
+        DRAFTS.settings = null
+        dirtyGuard.set('settings', false)
+        setRetentionConfirm(false)
+        setBarNote('已放弃改动')
       }
       const groups = []
       const seenG = {}
@@ -1444,44 +1687,38 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const toggleTimer = function (next) {
         const prev = tOn
         setTOn(next)
-        setTNote(next ? '正在开启…' : '正在关闭…')
         jpost('/timer', { enabled: next }).then(function (r) {
-          setTNote((r && r.note ? r.note : '已' + (next ? '开启' : '关闭')) + '（立即生效）')
+          toast('success', (r && r.note ? r.note : '已' + (next ? '开启' : '关闭')) + '（立即生效）')
           return jget('/catalog').then(function (c) { setTLast(c.timer || null) })
         }).catch(function (e) {
           setTOn(prev)
-          setTNote('没能' + (next ? '开启' : '关闭') + '：' + e + '（已恢复原状态）')
+          toast('error', '没能' + (next ? '开启' : '关闭') + '：' + e + '（已恢复原状态）')
         })
-      }
-      const savePlan = function () {
-        setTNote('保存计划中…')
-        jpost('/timer', { enabled: tOn, siteTimes: tTimes, fallbackTime: tFall }).then(function (r) {
-          setTNote(r && r.note ? r.note : '计划已保存')
-          return jget('/catalog').then(function (c) { setTLast(c.timer || null) })
-        }).catch(function (e) { setTNote('保存失败：' + e) })
       }
       /** 全站补全：按站把抓取集里的榜逐个补（逐本 1 请求 + 当前间隔，会很慢） */
       const enrichSite = function (site) {
         const ids = (cat.captures || []).filter(function (id) { return String(id).split('.')[0] === site })
-        if (!ids.length) { setNote('该站当前没有勾选任何榜'); return }
+        if (!ids.length) { setBarNote('该站当前没有勾选任何榜'); toast('warn', '该站当前没有勾选任何榜'); return }
         setBusy(true)
         let done = 0
         let filled = 0
         let seq = Promise.resolve()
         ids.forEach(function (id) {
           seq = seq.then(function () {
-            setNote('补全 ' + siteNameOf(site) + ' ' + done + '/' + ids.length + ' 个榜…')
+            setBarNote('补全 ' + siteNameOf(site) + ' ' + done + '/' + ids.length + ' 个榜…')
             return jpost('/enrich?boardId=' + encodeURIComponent(id)).then(function (r) {
               done += 1
               filled += (r && r.filled) || 0
             }).catch(function () { done += 1 })
           })
         })
-        seq.then(function () { setNote(siteNameOf(site) + ' 补全完成：' + ids.length + ' 个榜，共补 ' + filled + ' 条') })
-          .catch(function (e) { setNote('补全失败：' + e) })
+        seq.then(function () {
+          setBarNote('')
+          toast('success', siteNameOf(site) + ' 补全完成：' + ids.length + ' 个榜，共补 ' + filled + ' 条')
+        })
+          .catch(function (e) { setBarNote(''); toast('error', '补全失败：' + e) })
           .then(function () { setBusy(false) })
       }
-      const retention = ov && ov.storage ? ov.storage.retentionDays : 180
       const sv = (ov && ov.services) || {}
       const diag = function () {
         const lines = []
@@ -1492,6 +1729,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         lines.push('定时: enabled=' + tOn + ' 时刻=' + JSON.stringify(tTimes) + ' 兜底=' + tFall)
         lines.push('抓取集: ' + picked.length + ' 个榜')
         lines.push('上次扫描: ' + scanLabel(ov && ov.scan))
+        lines.push('最近提示: ' + (lastNote || '—'))
         return lines.join('\n')
       }
       /**
@@ -1505,13 +1743,16 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         background: T.surface,
         backgroundImage: dirty ? 'linear-gradient(' + wash(T.warn, 16) + ',' + wash(T.warn, 16) + ')' : 'none',
         boxShadow: T.shadowBar } },
+        retentionConfirm ? h(Banner, { tone: 'warn', live: false },
+          h('span', null, '将删除早于 ' + retentionLabel + '的数据日期目录，不可恢复'),
+          h('button', { className: 'rs-btn is-danger', disabled: busy, onClick: doSave }, '确认保存'),
+          h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setRetentionConfirm(false) } }, '取消')) : null,
         h('div', { style: C.row },
-          h('button', { className: 'rs-btn is-primary', disabled: busy || !dirty, onClick: save }, dirty ? '保存设置（' + picked.length + ' 个榜）' : '已保存（' + picked.length + ' 个榜）'),
-          // 放弃改动 = 真的丢掉草稿（否则 load 会按草稿再恢复一遍，等于没放弃）
-          dirty ? h('button', { className: 'rs-btn', disabled: busy, onClick: function () { DRAFTS.settings = null; dirtyGuard.set('settings', false); setNote('已放弃改动'); load() } }, '放弃改动') : null,
-          dirty ? h('span', { style: { color: T.warn } }, '有未保存的改动') : null,
+          h('button', { className: 'rs-btn is-primary', disabled: busy || !dirty, onClick: onSaveClick }, busy ? '保存中…' : '保存设置'),
+          dirty ? h('button', { className: 'rs-btn', disabled: busy, onClick: discard }, '放弃改动') : null,
+          h('span', { style: { color: dirty ? T.warn : T.muted } }, dirty ? '有 ' + diff.length + ' 处未保存：' + diff.join('、') : '已保存'),
           h('button', { className: 'rs-btn', disabled: busy, onClick: restoreDefaults, title: '把勾选恢复成插件默认抓取集（只改草稿，保存后生效）' }, '恢复默认'),
-          note ? h('span', { style: C.muted }, String(note).slice(0, 100)) : null))
+          barNote ? h('span', { style: C.muted }, String(barNote).slice(0, 120)) : null))
       return h('div', null,
         h(Section, { title: '抓取范围（' + picked.length + ' 个榜）', defaultOpen: true },
           h('div', { style: C.muted }, '勾选 = 抓什么；改动进草稿，点下面的「保存设置」才落盘（下次扫描生效）。抓到的榜就会显示。'),
@@ -1544,7 +1785,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         h(Section, { title: '扫描计划', defaultOpen: false, summary: (tOn ? '已开启' : '已关闭') + ' · 兜底 ' + (tFall || '') + ' · ' + (tLast && tLast.wired ? '自动扫描已生效' : '自动扫描未生效') },
           h('label', { style: C.row },
             h('input', { type: 'checkbox', checked: tOn, onChange: function (e) { toggleTimer(e.target.checked) } }),
-            h('span', null, tOn ? '已开启（立即生效）' : '已关闭（立即生效）'),
+            h('span', null, tOn ? '已开启' : '已关闭'),
+            h('span', { style: C.muted }, '立即生效'),
             h('span', { style: C.muted }, '按站分时：每站放它自己的刷新点之后抓一次，一次只跑一个站')),
           h('div', null, [['qidian', '起点'], ['sfacg', '菠萝包'], ['fanqie', '番茄'], ['ciweimao', '刺猬猫'], ['qidiantu', '起点图']].map(function (s) {
             const key = s[0]
@@ -1569,40 +1811,35 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('span', { style: { width: '46px', flex: '0 0 auto' } }, '兜底'),
             h('input', { type: 'time', style: { ...C.input, width: '92px' }, value: tFall, onChange: function (e) { setTFall(e.target.value) } }),
             h('span', { style: C.muted }, '当天失败或内容待核对的站，到这个点再补一次（每站每天一次）')),
-          timesDirty ? h('div', { style: C.row },
-            h('button', { className: 'rs-btn', onClick: savePlan }, '保存计划'),
-            h('span', { style: { color: T.warn } }, '时刻有改动，未保存')) : null,
           h('div', { style: C.muted }, '状态更新于 ' + ((planLive && planLive.now) || '—') + (planLive && planLive.installedToday ? '　· 今天刚安装：安装当天不自动跑，明天起按上面的时刻执行' : '')),
-          tNote ? h('div', { style: C.muted }, String(tNote).slice(0, 140)) : null),
-        h(Section, { title: '数据与性能', defaultOpen: false, summary: (ov && ov.storage ? '数据目录 ' + fmtBytes(ov.storage.totalBytes) + ' · 保留 ' + retention + ' 天' : '') },
+          ),
+        h(Section, { title: '数据与性能', defaultOpen: false, summary: (ov && ov.storage ? '数据目录 ' + fmtBytes(ov.storage.totalBytes) + ' · 保留 ' + retentionLabel : '') },
           h('div', { style: C.row },
             h('span', { style: C.muted }, '保留'),
             h('select', {
               style: { ...C.input, width: 'auto', padding: '1px 4px' },
-              value: String(retention),
+              value: String(retentionDays),
               title: '只影响数据日期目录（快照/报告）；配置、书签、书页缓存永不删',
               onChange: function (e) {
-                const v = e.target.value === 'forever' ? 'forever' : Number(e.target.value)
-                jpost('/retention', { days: v }).then(function (r) { setRetMsg((r && r.note) || '已更新'); if (props.onSaved) props.onSaved() })
-                  .catch(function (e2) { setRetMsg('设置失败：' + e2) })
+                setRetentionDays(e.target.value === 'forever' ? 'forever' : Number(e.target.value))
+                setBarNote('')
               },
             },
               [30, 90, 180, 365].map(function (n) { return h('option', { key: n, value: String(n) }, n + ' 天') }),
-              h('option', { key: 'forever', value: 'forever' }, '永久保留')),
-            retMsg ? h('span', { style: C.muted }, String(retMsg).slice(0, 80)) : null),
+              h('option', { key: 'forever', value: 'forever' }, '永久保留'))),
           ov && ov.storage ? h('div', { style: C.muted },
             '快照 ' + fmtBytes(ov.storage.snapshotBytes) + ' · state ' + fmtBytes(ov.storage.stateBytes) +
             ' · ' + ov.storage.dates + ' 天（' + dash(ov.storage.oldest) + ' 起）· 书签 ' + ov.storage.bookmarks + ' 条') : null,
           h('label', { style: C.row },
-            h('input', { type: 'checkbox', checked: autoEnrich, onChange: function (e) { setAutoEnrich(e.target.checked); setDirty(true) } }),
+            h('input', { type: 'checkbox', checked: autoEnrich, onChange: function (e) { setAutoEnrich(e.target.checked); setBarNote('') } }),
             h('span', null, '扫描后自动补全缺失字段'),
             h('span', { style: C.muted }, '（榜页没有收藏/字数时要进书页取；补全在后台跑，抓榜先返回）')),
           h('div', { style: { ...C.row, marginTop: '4px' } },
             h('span', { style: C.muted }, '起点收藏补全'),
-            h('input', { type: 'checkbox', checked: qdEnrich, onChange: function (e) { setQdEnrich(e.target.checked); setDirty(true) } }),
+            h('input', { type: 'checkbox', checked: qdEnrich, onChange: function (e) { setQdEnrich(e.target.checked); setBarNote('') } }),
             h('span', { style: C.muted }, qdEnrich ? '已开启' : '已关闭（默认关）'),
-            h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/qidianEnrich').then(function (r) { setNote((r && r.note) || '起点补全完成'); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '补全起点收藏'),
-            h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/qidianCache', { clear: true }).then(function (r) { setNote((r && r.note) || '缓存已清'); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '清空书页缓存')),
+            h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/qidianEnrich').then(function (r) { toast('success', (r && r.note) || '起点补全完成'); return load() }).catch(function (e) { toast('error', String(e)) }).then(function () { setBusy(false) }) } }, '补全起点收藏'),
+            h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/qidianCache', { clear: true }).then(function (r) { toast('success', (r && r.note) || '缓存已清'); return load() }).catch(function (e) { toast('error', String(e)) }).then(function () { setBusy(false) }) } }, '清空书页缓存')),
           h('div', { style: C.muted }, '起点书页缓存 ' + (qdCache && qdCache.cache ? qdCache.cache.books : 0) + ' 本 · 有效期 ' + ((qdCache && qdCache.ttlDays) || 7) + ' 天' +
             (cat.bookCache ? '　· 通用书页缓存 ' + ((cat.bookCache.stat && cat.bookCache.stat.entries) || 0) + ' 本 · 有效期 ' + (cat.bookCache.ttlDays || 7) + ' 天' : '')),
           h(Section, { title: '高级：请求间隔', defaultOpen: false, summary: '当前 ' + fmtIntervalText(intervalMs) },
@@ -1614,14 +1851,13 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               },
                 [200, 500, 1000, 2000, 5000].map(function (v) { return h('option', { key: v, value: String(v) }, v + ' ms' + (v === 1000 ? '（默认）' : '')) }),
                 h('option', { key: 0, value: '0' }, '不限速（仅本地测试）')),
-              h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/select', { requestIntervalMs: intervalMs }).then(function () { setNote('请求间隔已改为 ' + (intervalMs === 0 ? '不限速' : intervalMs + 'ms')); return load() }).catch(function (e) { setNote(String(e)) }).then(function () { setBusy(false) }) } }, '应用'),
               h('span', { style: C.muted }, '1s 是本项目自定的保守值（不是站点要求）；调小更快，也更容易被站点注意到')))),
         h(Section, { title: '关于与诊断', defaultOpen: false, summary: (sv.webServer ? '服务正常' : 'webServer 未注册') + ' · 自动扫描' + (sv.timerArmed ? '已生效' : '未生效') },
-          h(VersionRow, { setNote: setNote }),
+          h(VersionRow, null),
           h('div', { style: C.muted }, '服务：webServer ' + (sv.webServer ? '✓' : '✗') + ' · timer ' + (sv.timerService ? '✓' : '✗') + ' · 定时任务' + (sv.timerArmed ? '已启用' : '未启用')),
-          note ? h('div', { style: C.muted }, '最近提示：' + String(note).slice(0, 160)) : null,
+          lastNote ? h('div', { style: C.muted }, '最近提示：' + String(lastNote).slice(0, 160)) : null,
           h('div', { style: C.row },
-            h('button', { className: 'rs-btn', onClick: function () { try { navigator.clipboard.writeText(diag()); setNote('诊断信息已复制（不含凭证）') } catch (e) { setNote('复制失败：' + e) } } }, '复制诊断信息'))), saveBar)
+            h('button', { className: 'rs-btn', onClick: function () { try { navigator.clipboard.writeText(diag()); toast('success', '诊断信息已复制（不含凭证）') } catch (e) { toast('error', '复制失败：' + e) } } }, '复制诊断信息'))), saveBar)
     }
     /**
      * ★ 版本区（2026-10-16）：显示当前版本 + 「一键更新」。
@@ -1634,7 +1870,6 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const [info, setInfo] = React.useState(null)
       const [chk, setChk] = React.useState(null)
       const [busy, setBusy] = React.useState('')
-      const [note, setNote] = React.useState('')
       /**
        * ★ 2026-10-16 审计：一键更新的轮询链最多 30 次 × 2s（§runUpdate 的 poll）。
        *   旧写法没有任何取消令牌 ⇒ 组件卸载（收起浮窗/切页签/热重载）后旧链还在 setTimeout 里
@@ -1644,7 +1879,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       function refresh(opId) {
         return jget('/update-check' + (opId ? '?operationId=' + encodeURIComponent(opId) : ''))
           .then(function (j) { if (aliveRef.current) setChk(j); return j })
-          .catch(function (e) { if (aliveRef.current) setNote('检查更新失败：' + String(e).slice(0, 80)); return null })
+          .catch(function (e) { if (aliveRef.current) toast('error', '检查更新失败：' + String(e).slice(0, 80)); return null })
       }
       React.useEffect(function () {
         aliveRef.current = true
@@ -1654,10 +1889,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         return function () { alive = false; aliveRef.current = false }
       }, [])
       function runUpdate() {
-        setBusy('update'); setNote('已请求更新…')
+        setBusy('update'); toast('info', '已请求更新…')
         jpost('/update', {}).then(function (r) {
           const id = r && r.operationId
-          if (!id) { setNote((r && r.error) || '更新提供方没有返回 operationId'); return refresh() }
+          if (!id) { toast('error', (r && r.error) || '更新提供方没有返回 operationId'); return refresh() }
           let n = 0
           function poll() {
             if (!aliveRef.current) return null
@@ -1668,16 +1903,16 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               if (n < 30 && (st === 'busy' || st === 'update-available')) {
                 return new Promise(function (res) { setTimeout(res, 2000) }).then(function () { return aliveRef.current ? poll() : j })
               }
-              if (st === 'failed') setNote('更新未成功：' + ((j && j.reason) || '未知原因'))
-              else if (j && j.action === 'refresh') setNote('更新完成，刷新页面即可生效')
-              else if (j && j.action === 'restart') setNote('更新完成，按提示重启 DSH 生效')
-              else if (j && j.action === 'manual') setNote('更新完成，但需要你自己重启 DSH 才能生效')
-              else setNote('更新完成')
+              if (st === 'failed') toast('error', '更新未成功：' + ((j && j.reason) || '未知原因'))
+              else if (j && j.action === 'refresh') toast('success', '更新完成，刷新页面即可生效')
+              else if (j && j.action === 'restart') toast('success', '更新完成，按提示重启 DSH 生效')
+              else if (j && j.action === 'manual') toast('success', '更新完成，但需要你自己重启 DSH 才能生效')
+              else toast('success', '更新完成')
               return j
             })
           }
           return poll()
-        }).catch(function (e) { if (aliveRef.current) setNote('更新请求失败：' + String(e).slice(0, 80)) })
+        }).catch(function (e) { if (aliveRef.current) toast('error', '更新请求失败：' + String(e).slice(0, 80)) })
           .then(function () { if (aliveRef.current) setBusy('') })
       }
       const st = chk ? chk.state : null
@@ -1705,9 +1940,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               if (!chk) return
               if (chk.action === 'refresh') { try { window.location.reload() } catch (e) {} return }
               if (chk.action === 'restart') {
-                setBusy('update'); setNote('已请求重启…')
-                jpost('/update-restart', {}).then(function (r) { setNote((r && r.ok) ? '重启请求已发出' : ('重启失败：' + ((r && r.error) || '?'))) })
-                  .catch(function (e) { setNote('重启请求失败：' + String(e).slice(0, 80)) })
+                setBusy('update'); toast('info', '已请求重启…')
+                jpost('/update-restart', {}).then(function (r) { toast((r && r.ok) ? 'success' : 'error', (r && r.ok) ? '重启请求已发出' : ('重启失败：' + ((r && r.error) || '?'))) })
+                  .catch(function (e) { toast('error', '重启请求失败：' + String(e).slice(0, 80)) })
                   .then(function () { setBusy('') })
                 return
               }
@@ -1715,8 +1950,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               else refresh()
             },
           }, busy !== '' ? '处理中…' : (!chk ? '检查中…' : chk.buttonLabel)),
-          h('button', { className: 'rs-btn', disabled: busy !== '', onClick: function () { setNote(''); refresh() } }, '重新检查')),
-        note ? h('div', { style: C.muted }, note) : null)
+          h('button', { className: 'rs-btn', disabled: busy !== '', onClick: function () { refresh() } }, '重新检查')))
     }
 
     function cell(c, r) {
@@ -1831,7 +2065,6 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const bk = props.bookKey
       const [note, setNote] = React.useState('')
       const [folders, setFolders] = React.useState('')
-      const [msg, setMsg] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
       const [loaded, setLoaded] = React.useState(false)
       React.useEffect(function () {
@@ -1845,10 +2078,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       if (!bk || !store.has(bk)) return null
       const save = function () {
         setBusy(true)
-        setMsg(null)
         store.act({ action: 'update', bookKey: bk, note: note, folders: String(folders || '').split(/[\s,，]+/).filter(Boolean) })
-          .then(function () { setBusy(false); setMsg('已保存'); return store.refreshList() })
-          .catch(function (e) { setBusy(false); setMsg('保存失败：' + e + '（草稿还在）') })
+          .then(function () { setBusy(false); toast('success', '书签已保存'); return store.refreshList() })
+          .catch(function (e) { setBusy(false); toast('error', '保存失败：' + e + '（草稿还在）') })
       }
       return h('div', { style: { ...C.detail, marginTop: '6px' } },
         h('div', { style: C.row },
@@ -1857,8 +2089,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         h('div', { style: C.row },
           h('span', { style: C.muted }, '书签夹'),
           h('input', { style: { ...C.input, flex: 1, minWidth: '120px' }, value: folders, placeholder: '空格分隔，可属于多个夹', onChange: function (e) { setFolders(e.target.value) } }),
-          h('button', { className: 'rs-btn is-primary', disabled: busy || !loaded, onClick: save }, busy ? '保存中…' : '保存')),
-        msg ? h('div', { style: { ...C.muted, color: String(msg).indexOf('失败') >= 0 ? T.bad : null } }, msg) : null)
+          h('button', { className: 'rs-btn is-primary', disabled: busy || !loaded, onClick: save }, busy ? '保存中…' : '保存')))
     }
 
     /**
@@ -1996,7 +2227,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           .catch(function (e) {
             setEditBusy(false)
             if (editKeyRef.current === b.bookKey) setEditErr('保存失败：' + e + '　（草稿还在，可再试一次）')
-            else { store.msg = '「' + (b.label || b.bookKey) + '」保存失败：' + e; bump() }
+            else { toast('error', '「' + (b.label || b.bookKey) + '」保存失败：' + e); bump() }
           })
       }
       const doRemove = function (b) {
@@ -2011,9 +2242,10 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const doRefresh = function (keys) {
         store.msg = '更新中（每本 1 请求，逐本 ' + fmtIntervalText() + '）…'; bump()
         jpost('/bookmark/refresh', { bookKeys: keys }).then(function (r) {
-          store.msg = (r && r.note) || '已更新'
+          store.msg = null
+          toast('success', (r && r.note) || '已更新')
           return store.refreshList()
-        }).then(function () { bump() }).catch(function (e) { store.msg = '更新失败：' + e; bump() })
+        }).then(function () { bump() }).catch(function (e) { store.msg = null; toast('error', '更新失败：' + e); bump() })
       }
       const scopeCount = function () {
         if (scope === 'selected') return sel.length
@@ -2040,10 +2272,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       }
       const addManual = function () {
         jpost('/bookmark/add-manual', { input: String(manual || '').trim(), site: manualSite || undefined }).then(function (r) {
-          store.msg = (r && r.note) || '已添加'
+          store.msg = null
+          toast('success', (r && r.note) || '已添加')
           setManual('')
           return store.refreshList()
-        }).then(function () { bump() }).catch(function (e) { store.msg = '添加失败：' + e; bump() })
+        }).then(function () { bump() }).catch(function (e) { store.msg = null; toast('error', '添加失败：' + e); bump() })
       }
       const collectTitle = function (b, lab) {
         const src = b.collectFrom === 'qidian-book-cache' ? '来自起点书页缓存（扫描后补全回填）'
@@ -2778,7 +3011,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
        */
       const [scanActBusy, setScanActBusy] = React.useState(false)
       const postInFlightRef = React.useRef(0)
-      const [msg, setMsg] = React.useState(null)
+      /** 概览轮询失败会每 20s 来一次：同一条错误 60s 内只弹一次，别把 Toast 刷屏 */
+      const errToastRef = React.useRef({ msg: '', at: 0 })
       const [rect, setRect] = useRect()
 
       /** 有未保存草稿时切页/收起先问一句（草稿留在 DRAFTS，回来还在） */
@@ -2796,8 +3030,15 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         if (reloadBusyRef.current) return Promise.resolve()
         reloadBusyRef.current = true
         return readOverview()
-          .then(setOv)
-          .catch(function (e) { setMsg(String(e)) })
+          .then(function (data) { setOv(data); errToastRef.current = { msg: '', at: 0 } })
+          .catch(function (e) {
+            const s = String(e)
+            const now = Date.now()
+            if (errToastRef.current.msg !== s || now - errToastRef.current.at > 60000) {
+              errToastRef.current = { msg: s, at: now }
+              toast('error', '读取概览失败：' + s)
+            }
+          })
           .then(function () { reloadBusyRef.current = false })
       }, [])
       React.useEffect(function () { reload() }, [reload])
@@ -2853,8 +3094,11 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         if (scanAct) setScanActBusy(true)
         else setBusy(true)
         postInFlightRef.current += 1
-        jpost(path, body).then(function (r) { setMsg(r && r.note ? r.note : '完成：' + (r.outcome || 'ok')); return reload() })
-          .catch(function (e) { setMsg(String(e)) })
+        jpost(path, body).then(function (r) {
+          toast('success', r && r.note ? r.note : '完成：' + (r.outcome || 'ok'))
+          return reload()
+        })
+          .catch(function (e) { toast('error', String(e)) })
           .then(function () {
             postInFlightRef.current -= 1
             if (!scanAct) return setBusy(false)
@@ -2891,7 +3135,6 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('button', { style: C.tab(tab === 'board'), onClick: function () { switchTab('board') } }, '榜单'),
             h('button', { style: C.tab(tab === 'bm'), onClick: function () { switchTab('bm') } }, '书签'),
             h('button', { style: C.tab(tab === 'pick'), onClick: function () { switchTab('pick') } }, '设置')),
-          msg ? h('div', { style: C.muted }, msg) : null,
           leaveAsk ? h(Banner, { tone: 'warn' },
             h('span', null, '有未保存的改动（' + (leaveAsk.keys || []).map(function (k) { return LEAVE_LABEL[k] || k }).join('、') + '）'),
             h('span', { style: C.muted }, '草稿会保留，下次进来还在'),
@@ -2908,6 +3151,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               : tab === 'board' ? h(BoardTab, { ov: ov, openLink: props.openLink, narrow: narrow, width: rect.w, rev: rev })
               : tab === 'bm' ? h(BookmarksTab, { openLink: props.openLink })
               : h(SettingsTab, { ov: ov, onSaved: reload }))),
+        h(ToastHost, null),
         h(ResizeHandle, { rect: rect, setRect: setRect }))
     }
 
@@ -3027,7 +3271,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
   return { name: 'dsh-rank-scan', inject: inject, apply: apply, __test: {
     metricChipText: metricChipText,
     helpers: { revOf: revOf, statusText: statusText, scanLabel: scanLabel, pollDelay: pollDelay, canDayQuery: canDayQuery, fitColumns: fitColumns, colPrio: colPrio, mdOf: mdOf, boardLabel: boardLabel, rememberBoardNames: rememberBoardNames },
-    components: { Overview: Overview, BoardTab: BoardTab, BookmarksTab: BookmarksTab, SettingsTab: SettingsTab, PopMenu: PopMenu, Panel: Panel },
+    components: { Overview: Overview, BoardTab: BoardTab, BookmarksTab: BookmarksTab, SettingsTab: SettingsTab, PopMenu: PopMenu, Panel: Panel, ToastHost: ToastHost },
+    toast: toast, toastStore: toastStore, lastNote: lastNote, settingsDiff: settingsDiff,
   } }
   },
 })
