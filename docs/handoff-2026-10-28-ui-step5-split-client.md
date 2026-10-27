@@ -2,7 +2,7 @@
 
 - 分支：refactor/step5-split-client（从 v0.5.0 合并后的 main 拉出）
 - 提交 1（纯搬家）：fed18ce
-- 提交 2（可读性）：待填
+- 提交 2（可读性）：`fe7aff7`
 - 版本：0.5.1
 - 状态：**未合并 main、未打 tag**，等验收。
 
@@ -48,7 +48,9 @@
 
 ## git 直装
 
-待填。
+- 宿主 profile 由 Electron 独占；dsh plugin add 默认 profile 被拒，临时 profile 的 `.dsh` 写入被沙箱 EPERM 拒绝。
+- 用 `git archive HEAD` 导出干净树 + `npm ci`（会跑 package.json 的 prepare → build.mjs）跑通：lib/client.js 产物存在，sha256 `39874FA7…4F854B5`；在该干净树里 client-bundle 12/0、client-load 6/0。
+- 仍建议在有 DSH 桌面权限的环境补一次真正的 `dsh plugin add`。
 
 ## 下一步
 
