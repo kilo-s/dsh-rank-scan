@@ -1,7 +1,7 @@
 # 第四步交接：概览信息结构（0.5.0）
 
 - 分支：`ui/step4-overview`（从 0.4.2 合并后的 main 拉出）
-- 提交：本分支 HEAD（0.5.0，验收后回填短 sha）
+- 提交：`fc7dfba`（https://github.com/kilo-s/dsh-rank-scan/commit/fc7dfba296087da35009f33a792cac604687bbb2）
 - 版本：0.5.0（package.json / package-lock / README / CHANGELOG）
 - 状态：**已实现、离线测试与验收脚本已跑；未合并 main、未打 tag**，等验收。
 - 前序：0.4.2 已合并 main（`6377dac`）并推送 tag `v0.4.2`。
@@ -38,8 +38,9 @@
 
 ## 测试
 
-- `scripts/test-local.ps1`：待填。
-- `scripts/acceptance.ps1 -SkipLive`：待填。
+- `scripts/test-local.ps1`：**410 pass / 0 fail**，53 个测试文件。
+- `scripts/acceptance.ps1 -SkipLive`：**PASS 96 / FAIL 0**。
+  - 过程中修了验收脚本的假红：公开面闸在后台重定向下读到错误退出码，改用 .NET Process.ExitCode；未改任何断言。
 - 新增 `tests/ui-overview.test.mjs`：6 条（顺序、4 处 StatCard、button/div、auto-fit+minmax、空态/无变化筛选、A 忙态/409、B 的 C.input）。
 - 现有 ui-layout / ui-tokens / ui-settings-save / ui-actions / client-bundle / client-load 全绿。
 
@@ -56,7 +57,8 @@
 ## 截图
 
 本地：`docs/ui/after/step4-overview-{900-light,900-dark,480-dark,issue,empty}.png`（gitignored）。
-入库副本：`docs/screenshots/step4-overview/`，推送后给出 raw GitHub 链接。
+入库副本：`docs/screenshots/step4-overview/`（已推到 `ui/step4-overview`）。
+GitHub 目录：https://github.com/kilo-s/dsh-rank-scan/tree/fc7dfba296087da35009f33a792cac604687bbb2/docs/screenshots/step4-overview
 
 ## 下一步
 

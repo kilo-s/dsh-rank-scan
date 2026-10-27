@@ -153,9 +153,22 @@ $commitGate = Join-Path $root 'scripts/check-commit-messages.mjs'
 $commitGateCode = 1
 $commitGateOut = ""
 try {
-  $LASTEXITCODE = 1
-  $commitGateOut = (& node $commitGate --repo $root --baseline $commitBaseline 2>&1 | Out-String)
-  $commitGateCode = $LASTEXITCODE
+  # 先用 PowerShell 的 node 探一下：测试会注入一个会抛错的 node 函数，不能绕过它直接用 .NET 起真 node。
+  & node --version | Out-Null
+  # 直接用 .NET Process 取 ExitCode：后台作业/重定向下 $LASTEXITCODE 偶尔被管道里的 cmdlet 覆盖，
+  # 而 Start-Process -PassThru 返回的进程对象 ExitCode 为空；两者都会把「未命中禁词」误判成红。
+  $psi = [System.Diagnostics.ProcessStartInfo]::new()
+  $psi.FileName = 'node'
+  foreach ($arg in @($commitGate, '--repo', $root, '--baseline', $commitBaseline)) { $psi.ArgumentList.Add($arg) }
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $p = [System.Diagnostics.Process]::Start($psi)
+  $outTask = $p.StandardOutput.ReadToEndAsync()
+  $errTask = $p.StandardError.ReadToEndAsync()
+  $p.WaitForExit()
+  $commitGateCode = $p.ExitCode
+  $commitGateOut = $outTask.Result + $errTask.Result
 } catch {
   $commitGateOut = $_.Exception.Message
 }
