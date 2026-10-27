@@ -27,7 +27,7 @@ test('设置页不再有零散保存入口（应用 / 保存计划）', () => {
 })
 
 test('保留天数只在保存流程里提交，不在 onChange 里直接 jpost', () => {
-  const at = settingsSrc.indexOf('value: String(retentionDays)')
+  const at = settingsSrc.indexOf('value: retentionKnown ? String(retentionDays)')
   assert.ok(at > 0, '找不到保留天数 select')
   const block = settingsSrc.slice(at, at + 600)
   assert.ok(!block.includes("jpost('/retention'"), 'onChange 不许直接删目录')
@@ -60,6 +60,40 @@ test('settingsDiff：改→脏、改回→不脏、captures 顺序不算脏、si
   const changed = Object.assign({}, saved, { captures: ['a', 'b', 'c'], requestIntervalMs: 500 })
   assert.deepEqual(fn(saved, changed), ['抓取范围', '请求间隔'])
   assert.deepEqual(fn(saved, Object.assign({}, changed, { captures: ['b', 'a'], requestIntervalMs: 1000 })), [])
+})
+
+test('保留天数未知不参与 diff；ov 到达 30 后选 90 不算变短', () => {
+  const dStart = s.indexOf('const settingsDiff = function')
+  const braceAt = s.indexOf('{', dStart)
+  let depth = 0
+  let dEnd = -1
+  for (let i = braceAt; i < s.length; i++) {
+    const ch = s[i]
+    if (ch === '{') depth += 1
+    else if (ch === '}') { depth -= 1; if (depth === 0) { dEnd = i; break } }
+  }
+  assert.ok(dStart > 0 && dEnd > braceAt, '找不到 settingsDiff 函数体')
+  const settingsDiff = new Function(s.slice(dStart, dEnd + 1) + '; return settingsDiff;')()
+  const hStart = s.indexOf('const daysOf = function')
+  const hEnd = s.indexOf('/** 从 /catalog', hStart)
+  assert.ok(hStart > 0 && hEnd > hStart, '找不到 daysOf / retentionShortensOf')
+  const { retentionShortensOf } = new Function(s.slice(hStart, hEnd) + '; return { daysOf: daysOf, retentionShortensOf: retentionShortensOf };')()
+  const baseSaved = {
+    captures: ['a'], autoEnrich: true, qidianEnrich: false, requestIntervalMs: 1000,
+    siteTimes: { qidian: '08:00' }, fallbackTime: '22:30', retentionDays: null,
+  }
+  const draft90 = Object.assign({}, baseSaved, { retentionDays: 90 })
+  assert.deepEqual(settingsDiff(baseSaved, draft90), [], 'ov 没到（null）时保留天数不参与 diff')
+  assert.equal(retentionShortensOf(baseSaved, draft90), false, '未知保留天数绝不弹删除确认')
+  const known30 = Object.assign({}, baseSaved, { retentionDays: 30 })
+  assert.deepEqual(settingsDiff(known30, draft90), ['保留天数'])
+  assert.equal(retentionShortensOf(known30, draft90), false, '30 → 90 是变长，不弹删除确认')
+  assert.equal(retentionShortensOf(Object.assign({}, baseSaved, { retentionDays: 180 }), Object.assign({}, draft90, { retentionDays: 30 })), true)
+})
+
+test('起点补全/清缓存只刷新缓存，不重跑 load 写 barNote', () => {
+  assert.ok(settingsSrc.includes('refreshQd()'), '动作后应走 refreshQd')
+  assert.ok(!/qidian(Enrich|Cache)[\s\S]{0,400}?return load\(\)/.test(settingsSrc), '不许在动作后 return load()')
 })
 
 test('Toast：success/info 有自动消失计时，error 常驻并带关闭按钮', () => {

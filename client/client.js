@@ -207,7 +207,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         '.rs-banner.is-warn{border-color:' + T.warn + ';background:' + wash(T.warn, 10) + '}',
         '.rs-banner.is-error{border-color:' + T.bad + ';background:' + wash(T.bad, 8) + '}',
         '.rs-banner .rs-banner-body{flex:1 1 100%;min-width:0}',
-        '.rs-toasts{position:absolute;right:12px;bottom:18px;z-index:95;display:flex;flex-direction:column;gap:6px;max-width:min(380px,calc(100% - 24px));pointer-events:none}',
+        '.rs-toasts{position:absolute;right:12px;top:64px;bottom:auto;z-index:95;display:flex;flex-direction:column;gap:6px;max-width:min(380px,calc(100% - 24px));max-height:calc(100% - 80px);overflow:auto;pointer-events:none}',
         '.rs-toast{pointer-events:auto;display:flex;align-items:flex-start;gap:8px;padding:7px 9px;border-radius:' + T.r.s + ';border:1px solid;border-left-width:3px;background:' + T.surface + ';color:' + T.fg + ';box-shadow:' + T.shadowMenu + ';font-size:' + T.fs.s + ';line-height:1.45}',
         '.rs-toast.is-info{border-color:' + T.accent + ';background-image:linear-gradient(' + wash(T.accent, 10) + ',' + wash(T.accent, 10) + ')}',
         '.rs-toast.is-warn{border-color:' + T.warn + ';background-image:linear-gradient(' + wash(T.warn, 12) + ',' + wash(T.warn, 12) + ')}',
@@ -1406,13 +1406,21 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const keys = Object.keys(Object.assign({}, st, dt))
       if (keys.some(function (k) { return String(st[k] || '') !== String(dt[k] || '') })) out.push('计划时刻')
       if (String(saved.fallbackTime || '') !== String(draft.fallbackTime || '')) out.push('兜底时刻')
-      if (String(saved.retentionDays) !== String(draft.retentionDays)) out.push('保留天数')
+      // 保留天数在 /overview 到达前是未知（null）：先不参与 diff，避免把「读取中」误判成改动
+      if (saved.retentionDays != null && draft.retentionDays != null && String(saved.retentionDays) !== String(draft.retentionDays)) out.push('保留天数')
       return out
+    }
+    const daysOf = function (v) { return v === 'forever' ? Infinity : Number(v) }
+    /** 只有两边都已知且草稿更短才算「会删数据」；未知时绝不弹删除确认 */
+    const retentionShortensOf = function (saved, draft) {
+      if (!saved || !draft) return false
+      if (saved.retentionDays == null || draft.retentionDays == null) return false
+      return daysOf(draft.retentionDays) < daysOf(saved.retentionDays)
     }
     /** 从 /catalog + overview 生成「已保存」快照 */
     const settingsSavedFrom = function (c, ov) {
       const t = (c && c.timer) || {}
-      const rd = ov && ov.storage && (typeof ov.storage.retentionDays === 'number' || ov.storage.retentionDays === 'forever') ? ov.storage.retentionDays : 180
+      const rd = ov && ov.storage && (typeof ov.storage.retentionDays === 'number' || ov.storage.retentionDays === 'forever') ? ov.storage.retentionDays : null
       return {
         captures: ((c && c.captures) || []).slice(),
         autoEnrich: !(c && c.autoEnrich === false),
@@ -1433,7 +1441,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         requestIntervalMs: typeof d.requestIntervalMs === 'number' ? d.requestIntervalMs : (typeof sv.requestIntervalMs === 'number' ? sv.requestIntervalMs : 1000),
         siteTimes: d.siteTimes && typeof d.siteTimes === 'object' ? Object.assign({}, d.siteTimes) : (d.times && typeof d.times === 'object' ? Object.assign({}, d.times) : Object.assign({}, sv.siteTimes || {})),
         fallbackTime: typeof d.fallbackTime === 'string' ? d.fallbackTime : (typeof d.fall === 'string' ? d.fall : (sv.fallbackTime || '22:30')),
-        retentionDays: (typeof d.retentionDays === 'number' || d.retentionDays === 'forever') ? d.retentionDays : (sv.retentionDays == null ? 180 : sv.retentionDays),
+        retentionDays: (typeof d.retentionDays === 'number' || d.retentionDays === 'forever') ? d.retentionDays : (sv.retentionDays == null ? null : sv.retentionDays),
       }
     }
     /**
@@ -1459,7 +1467,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const [tFall, setTFall] = React.useState('22:30')
       const [tLast, setTLast] = React.useState(null)
       const [planLive, setPlanLive] = React.useState(null)
-      const [retentionDays, setRetentionDays] = React.useState(180)
+      const [retentionDays, setRetentionDays] = React.useState(null)
       const [saved, setSaved] = React.useState(null)
       const savedRef = React.useRef(null)
       const [barNote, setBarNote] = React.useState('')
@@ -1506,6 +1514,26 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         })
       }, [])
       React.useEffect(function () { load() }, [load])
+      /**
+       * /overview 可能晚于 /catalog 到达（面板直接停在设置页时尤其常见）：
+       * 保留天数未知时先禁用 select、不参与 diff；值到达或变化后补进 saved，
+       * 草稿里的保留天数若当时不脏，跟着同步，避免把「变长」误判成「删数据」。
+       */
+      React.useEffect(function () {
+        const rd = ov && ov.storage && (typeof ov.storage.retentionDays === 'number' || ov.storage.retentionDays === 'forever') ? ov.storage.retentionDays : null
+        if (rd == null) return
+        const sv = savedRef.current
+        if (!sv) return
+        const old = sv.retentionDays
+        if (String(old) === String(rd)) return
+        const next = Object.assign({}, sv, { retentionDays: rd })
+        savedRef.current = next
+        setSaved(next)
+        setRetentionDays(function (cur) {
+          if (cur == null || String(cur) === String(old)) return rd
+          return cur
+        })
+      }, [ov])
       // 只读的实时调度状态（3 分钟；有站到点待跑时 30 秒）——**不重载 /catalog**，免得冲掉草稿
       React.useEffect(function () {
         let alive = true
@@ -1587,9 +1615,16 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         nx[key] = !nx[key]
         setClosedGroups(nx)
       }
-      const daysOf = function (v) { return v === 'forever' ? Infinity : Number(v) }
-      const retentionLabel = retentionDays === 'forever' ? '永久' : retentionDays + ' 天'
-      const retentionShortens = !!(saved && diff.indexOf('保留天数') >= 0 && daysOf(draft.retentionDays) < daysOf(saved.retentionDays))
+      /** 动作后只刷新起点缓存计数；不重跑 load（否则会把未保存草稿写成「已恢复未保存的改动」） */
+      const refreshQd = function () {
+        return jget('/catalog').then(function (c) {
+          setQdCache((c && c.qidian) || null)
+          setCat(c)
+        }).catch(function () {})
+      }
+      const retentionKnown = !!(saved && saved.retentionDays != null)
+      const retentionLabel = retentionDays == null ? '读取中' : (retentionDays === 'forever' ? '永久' : retentionDays + ' 天')
+      const retentionShortens = !!(diff.indexOf('保留天数') >= 0 && retentionShortensOf(saved, draft))
       /** 底栏保存：按变化分组顺序提交；成功的组并入 saved，失败的组留在草稿里继续算脏 */
       const doSave = function () {
         if (busy) return
@@ -1818,15 +1853,18 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('span', { style: C.muted }, '保留'),
             h('select', {
               style: { ...C.input, width: 'auto', padding: '1px 4px' },
-              value: String(retentionDays),
-              title: '只影响数据日期目录（快照/报告）；配置、书签、书页缓存永不删',
+              value: retentionKnown ? String(retentionDays) : '__loading',
+              disabled: !retentionKnown || busy,
+              title: retentionKnown ? '只影响数据日期目录（快照/报告）；配置、书签、书页缓存永不删' : '正在读取数据目录的保留天数…',
               onChange: function (e) {
                 setRetentionDays(e.target.value === 'forever' ? 'forever' : Number(e.target.value))
                 setBarNote('')
               },
             },
-              [30, 90, 180, 365].map(function (n) { return h('option', { key: n, value: String(n) }, n + ' 天') }),
-              h('option', { key: 'forever', value: 'forever' }, '永久保留'))),
+              retentionKnown
+                ? [30, 90, 180, 365].map(function (n) { return h('option', { key: n, value: String(n) }, n + ' 天') })
+                  .concat([h('option', { key: 'forever', value: 'forever' }, '永久保留')])
+                : [h('option', { key: 'loading', value: '__loading' }, '读取中')])),
           ov && ov.storage ? h('div', { style: C.muted },
             '快照 ' + fmtBytes(ov.storage.snapshotBytes) + ' · state ' + fmtBytes(ov.storage.stateBytes) +
             ' · ' + ov.storage.dates + ' 天（' + dash(ov.storage.oldest) + ' 起）· 书签 ' + ov.storage.bookmarks + ' 条') : null,
@@ -1838,8 +1876,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('span', { style: C.muted }, '起点收藏补全'),
             h('input', { type: 'checkbox', checked: qdEnrich, onChange: function (e) { setQdEnrich(e.target.checked); setBarNote('') } }),
             h('span', { style: C.muted }, qdEnrich ? '已开启' : '已关闭（默认关）'),
-            h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/qidianEnrich').then(function (r) { toast('success', (r && r.note) || '起点补全完成'); return load() }).catch(function (e) { toast('error', String(e)) }).then(function () { setBusy(false) }) } }, '补全起点收藏'),
-            h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/qidianCache', { clear: true }).then(function (r) { toast('success', (r && r.note) || '缓存已清'); return load() }).catch(function (e) { toast('error', String(e)) }).then(function () { setBusy(false) }) } }, '清空书页缓存')),
+            h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/qidianEnrich').then(function (r) { toast('success', (r && r.note) || '起点补全完成'); return refreshQd() }).catch(function (e) { toast('error', String(e)) }).then(function () { setBusy(false) }) } }, '补全起点收藏'),
+            h('button', { className: 'rs-btn', disabled: busy, onClick: function () { setBusy(true); jpost('/qidianCache', { clear: true }).then(function (r) { toast('success', (r && r.note) || '缓存已清'); return refreshQd() }).catch(function (e) { toast('error', String(e)) }).then(function () { setBusy(false) }) } }, '清空书页缓存')),
           h('div', { style: C.muted }, '起点书页缓存 ' + (qdCache && qdCache.cache ? qdCache.cache.books : 0) + ' 本 · 有效期 ' + ((qdCache && qdCache.ttlDays) || 7) + ' 天' +
             (cat.bookCache ? '　· 通用书页缓存 ' + ((cat.bookCache.stat && cat.bookCache.stat.entries) || 0) + ' 本 · 有效期 ' + (cat.bookCache.ttlDays || 7) + ' 天' : '')),
           h(Section, { title: '高级：请求间隔', defaultOpen: false, summary: '当前 ' + fmtIntervalText(intervalMs) },
