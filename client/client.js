@@ -17,7 +17,10 @@ window.__ModuleLoader__.load({
     const readResponse = async (response) => {
       const data = await response.json()
       if (response.ok === false || (data && (data.ok === false || data.error))) {
-        throw new Error((data && (data.error || data.note)) || ('请求失败：' + response.status))
+        const err = new Error((data && (data.error || data.note)) || ('请求失败：' + response.status))
+        err.status = response.status
+        if (data && data.code) err.code = data.code
+        throw err
       }
       return data
     }
@@ -208,6 +211,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         '.rs-banner.is-error{border-color:' + T.bad + ';background:' + wash(T.bad, 8) + '}',
         '.rs-banner .rs-banner-body{flex:1 1 100%;min-width:0}',
         '.rs-toasts{position:absolute;right:12px;top:64px;bottom:auto;z-index:95;display:flex;flex-direction:column;gap:6px;max-width:min(380px,calc(100% - 24px));max-height:calc(100% - 80px);overflow:auto;pointer-events:none}',
+        '.rs-statcard:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
         '.rs-toast{pointer-events:auto;display:flex;align-items:flex-start;gap:8px;padding:7px 9px;border-radius:' + T.r.s + ';border:1px solid;border-left-width:3px;background:' + T.surface + ';color:' + T.fg + ';box-shadow:' + T.shadowMenu + ';font-size:' + T.fs.s + ';line-height:1.45}',
         '.rs-toast.is-info{border-color:' + T.accent + ';background-image:linear-gradient(' + wash(T.accent, 10) + ',' + wash(T.accent, 10) + ')}',
         '.rs-toast.is-warn{border-color:' + T.warn + ';background-image:linear-gradient(' + wash(T.warn, 12) + ',' + wash(T.warn, 12) + ')}',
@@ -1037,6 +1041,74 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
      *   ③ 全部榜单（可折叠；逐榜状态 + 涨/新/退；同站抓取时刻一致时只写一次）
      * ★ 2026-10-22（简明性 B）：存储/保留/诊断移到「设置」页 —— 采集管理不再占首屏。
      */
+    /**
+     * 概览数字卡（0.5.0）：值大、标签小；tone 只影响左色条与数字颜色，文字本身必须能读懂状态。
+     * 有 onClick 时渲染成 button（Tab 可聚焦，focus-visible 蓝框），没有时是 div。
+     */
+    function StatCard(props) {
+      const tone = props.tone || 'muted'
+      const color = tone === 'ok' ? T.ok : tone === 'warn' ? T.warn : tone === 'bad' ? T.bad : T.muted
+      const body = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0, textAlign: 'left' } },
+        h('div', { style: { ...C.muted, fontSize: T.fs.s, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, props.label),
+        h('div', { style: { fontSize: T.fs.l, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color, lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, props.value),
+        props.sub ? h('div', { style: { ...C.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, title: String(props.sub) }, props.sub) : null)
+      const style = {
+        display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0, boxSizing: 'border-box', textAlign: 'left',
+        padding: '8px 10px', paddingLeft: '12px', border: '1px solid ' + T.border, borderLeft: '3px solid ' + color,
+        borderRadius: T.r.s, background: T.surface, color: T.fg, font: 'inherit',
+        cursor: props.onClick ? 'pointer' : 'default',
+      }
+      if (props.onClick) {
+        return h('button', { type: 'button', className: 'rs-statcard', style: Object.assign({ appearance: 'none' }, style), onClick: props.onClick, title: props.title || props.label },
+          body)
+      }
+      return h('div', { className: 'rs-statcard', style: style, title: props.title || '' }, body)
+    }
+    /** 概览区块小标题：标题 + 右侧计数 + 可选操作；innerRef 供数字卡 scrollIntoView 用 */
+    function SectionHeader(props) {
+      return h('div', { ref: props.innerRef, style: { display: 'flex', alignItems: 'baseline', gap: '8px', minWidth: 0, margin: props.first ? '8px 0 4px' : '12px 0 6px' } },
+        h('div', { style: { fontWeight: 600, fontSize: T.fs.m, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, props.title),
+        h('div', { style: { marginLeft: 'auto', display: 'flex', alignItems: 'baseline', gap: '6px', flex: '0 0 auto' } },
+          props.count != null && props.count !== '' ? h('span', { style: C.muted }, '（' + props.count + '）') : null,
+          props.action || null))
+    }
+
+    const SITE_LABELS = { qidian: '起点', qidiantu: '起点图', ciweimao: '刺猬猫', sfacg: '菠萝包', fanqie: '番茄' }
+    const siteLabelOf = function (ov, s) {
+      const hit = ((ov && ov.sites) || []).filter(function (x) { return x.site === s })[0]
+      return hit ? hit.siteName : (SITE_LABELS[s] || String(s))
+    }
+    /**
+     * 下次计划（0.5.0 验收修正）：
+     *   · waiting 里最近站点的时刻 → 中性色；
+     *   · 今天全跑完（无 waiting/fallback）→ 取已启用站 siteTimes 的最早时刻，写「明天 HH:mm」；
+     *   · siteTimes 也为空 → label 改成「上次扫描」，避免把过去的时刻说成将来的计划；
+     *   · 定时关闭/只剩兜底 → warn。
+     */
+    function nextPlanOf(plan, ov, scan, total) {
+      if (!plan) return { label: '下次计划', value: '—', sub: '计划读取中', tone: 'muted' }
+      if (plan.enabled === false) return { label: '下次计划', value: '已关闭', sub: '定时扫描', tone: 'warn' }
+      if (typeof total === 'number' && total === 0) return { label: '下次计划', value: '—', sub: '还没有勾选要扫的榜', tone: 'muted' }
+      const times = plan.siteTimes || {}
+      const waiting = (plan.waiting || []).filter(function (s) { return times[s] })
+      if (waiting.length) {
+        const order = waiting.slice().sort(function (a, b) { return String(times[a]).localeCompare(String(times[b])) })
+        return { label: '下次计划', value: times[order[0]], sub: siteLabelOf(ov, order[0]), tone: 'muted' }
+      }
+      if ((plan.fallback || []).length) {
+        return { label: '下次计划', value: plan.fallbackTime || '22:30', sub: siteLabelOf(ov, plan.fallback[0]), tone: 'warn' }
+      }
+      const enabled = ((ov && ov.sites) || []).map(function (s) { return s.site }).filter(function (s) { return times[s] })
+      const nextTimes = enabled.slice().sort(function (a, b) { return String(times[a]).localeCompare(String(times[b])) })
+      if (nextTimes.length) {
+        const s = nextTimes[0]
+        return { label: '下次计划', value: '明天 ' + times[s], sub: siteLabelOf(ov, s), tone: 'muted' }
+      }
+      const last = scan && (scan.startedAt || scan.at)
+      if (last) return { label: '上次扫描', value: fmtLocalHM(last), sub: '最近一次', tone: 'muted' }
+      return { label: '下次计划', value: '—', sub: '暂时算不出下次', tone: 'muted' }
+    }
+
     function Overview(props) {
       const ov = props.ov
       /**
@@ -1060,6 +1132,9 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       const allS = React.useState(true)
       const showAll = allS[0]
       const setShowAll = allS[1]
+      const allRef = React.useRef(null)
+      const issuesRef = React.useRef(null)
+      const changesRef = React.useRef(null)
       const rev = props.rev || revOf(ov)
       /**
        * ★ 2026-10-22（同日刷新）：依赖**修订号**而不是 dataDate。
@@ -1094,15 +1169,15 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         id = setInterval(tick, 5000)
         return function () { alive = false; if (id) clearInterval(id) }
       }, [])
-      if (!ov) return h('div', { style: C.muted }, '加载中…')
-      const c = ov.counts || {}
+      // 0.5.0：/overview 未到时不再整页「加载中…」——四张卡先占位「—」，版面不跳
+      const c = (ov && ov.counts) || {}
       const total = (c.ok || 0) + (c.missing || 0) + (c.stale || 0) + (c.login_required || 0) + (c.truncated || 0)
-      const rows = (ov.sites || []).flatMap(function (s) { return (s.boards || []).map(function (b) { return { ...b, siteName: s.siteName } }) })
+      const rows = ((ov && ov.sites) || []).flatMap(function (s) { return (s.boards || []).map(function (b) { return { ...b, siteName: s.siteName } }) })
 
-      const scan = ov.scan || null
-      const plan = (ov.services && ov.services.schedule) || null
+      const scan = (ov && ov.scan) || null
+      const plan = (ov && ov.services && ov.services.schedule) || null
       const staleIds = plan && plan.staleFlag
-        ? Object.keys(plan.staleFlag).filter(function (k) { return plan.staleFlag[k] && plan.staleFlag[k].date === ov.dataDate })
+        ? Object.keys(plan.staleFlag).filter(function (k) { return plan.staleFlag[k] && plan.staleFlag[k].date === (ov && ov.dataDate) })
         : []
       /**
        * ★ Spec S3（2026-10-22）：「未到计划」和「待补跑」不是失败。
@@ -1124,7 +1199,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
       }
       const plannedTimeOf = function (b) {
         if (b.plannedTime) return String(b.plannedTime)
-        const times = (plan && plan.siteTimes) || (ov.defaults && ov.defaults.siteTimes) || {}
+        const times = (plan && plan.siteTimes) || (ov && ov.defaults && ov.defaults.siteTimes) || {}
         return times[siteOfBoardId(b.boardId)] || ''
       }
       const waitingRows = rows.filter(function (b) { return scheduleStateOf(b) === 'waiting' })
@@ -1216,23 +1291,62 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
         if (last && last.site === e.site) last.items.push(e)
         else shownBySite.push({ site: e.site, siteName: e.siteName, items: [e] })
       })
+      const collectSub = [
+        waitingRows.length ? '未到计划 ' + waitingRows.length : '',
+        dueRows.length ? '待补跑 ' + dueRows.length : '',
+      ].filter(Boolean).join(' · ')
+      const collectSubText = collectSub || (badRows.length ? '有榜没抓到' : (ov && total > 0 && (c.ok || 0) === total ? '全部采集完成' : ''))
+      const collectTone = badRows.length ? 'bad' : dueRows.length ? 'warn' : (ov && total > 0 && (c.ok || 0) === total ? 'ok' : 'muted')
+      const issuesTone = !issues.length ? 'ok' : (issues.some(function (it) { return it.status !== 'stale' && it.status !== 'enrich' }) ? 'bad' : 'warn')
+      const changesSub = Object.keys(chgTotals).slice(0, 2).map(function (g) { return g + ' ' + chgTotals[g] }).join(' · ')
+      const nextPlan = nextPlanOf(plan, ov, scan, total)
+      const noData = !!(ov && (c.ok || 0) === 0 && chgRealTotal === 0)
+      const noChanges = !!(ov && (c.ok || 0) > 0 && chg && chgRealTotal === 0)
+      const jump = function (ref) {
+        const el = ref && ref.current
+        if (el && typeof el.scrollIntoView === 'function') { try { el.scrollIntoView({ block: 'nearest' }) } catch (e) {} }
+      }
+      const goAll = function () {
+        setShowAll(true)
+        setTimeout(function () { jump(allRef) }, 0)
+      }
       return h('div', null,
-        /* ① 摘要带：日期 + 采集/待处理（文字，不靠颜色） */
-        h('div', { style: C.row },
-          h('span', { title: '扫描开始时刻的本地自然日', style: { fontWeight: 600 } }, '数据日期 ' + dash(ov.dataDate)),
-          h('span', { style: C.muted }, '·'),
-          h('span', null, '已采集 ' + (c.ok || 0) + '/' + total),
-          waitingRows.length ? h('span', { style: C.muted, title: '这些站今天还没到自己的抓取时刻：不是失败' }, '· 未到计划 ' + waitingRows.length) : null,
-          dueRows.length ? h('span', { style: { color: T.warn }, title: '已过计划时刻但还没抓到：等兜底，或点「扫描已选榜」马上跑' }, '· 待补跑 ' + dueRows.length) : null,
-          h('span', { style: issues.length ? { color: T.warn, fontWeight: 600 } : { color: T.ok } },
-            issues.length ? '待处理 ' + issues.length + ' 项' : '无待处理'),
-          ov.hiddenCount ? h('span', { style: C.muted }, '· 未显示 ' + ov.hiddenCount + ' 个榜') : null),
-        /* ② 主动作：扫描（联网）与重新载入（只读本地）分开写清 */
-        h('div', { style: C.row },
+        /* ① 数据日期小字 */
+        h('div', { style: { ...C.muted, display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' } },
+          h('span', { title: '扫描开始时刻的本地自然日' }, '数据日期 ' + dash(ov && ov.dataDate)),
+          ov && ov.hiddenCount ? h('span', null, '· 未显示 ' + ov.hiddenCount + ' 个榜') : null),
+        /* ② 四张数字卡：先回答「今天怎么样」 */
+        // 480px 面板内宽约 455px：140px 会挤成 3 列，180px 才能落到验收要求的 2×2
+        h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '8px' } },
+          h(StatCard, {
+            label: '已采集', value: ov ? (c.ok || 0) + '/' + total : '—',
+            sub: ov ? (collectSubText || (total ? '—' : '还没有采集')) : '读取中', tone: collectTone,
+            onClick: goAll, title: '展开全部榜单并滚到那里',
+          }),
+          h(StatCard, {
+            label: '待处理', value: !ov ? '—' : (issues.length ? String(issues.length) : '无'),
+            sub: !ov ? '读取中' : (issues.length ? '需要你动手' : '没有要处理的'), tone: !ov ? 'muted' : issuesTone,
+            onClick: issues.length ? function () { jump(issuesRef) } : undefined,
+            title: issues.length ? '滚到「需要处理」' : '当前没有问题',
+          }),
+          h(StatCard, {
+            label: '今日变化', value: chg ? String(chgRealTotal) : '—',
+            sub: !chg ? '读取中' : (changesSub || (chgRealTotal ? '' : '今天没有变化')),
+            tone: chgRealTotal ? 'ok' : 'muted',
+            onClick: chg ? function () { jump(changesRef) } : undefined,
+            title: '滚到「今天的变化」',
+          }),
+          h(StatCard, {
+            label: nextPlan.label, value: nextPlan.value, sub: nextPlan.sub, tone: nextPlan.tone,
+            onClick: plan && plan.enabled === false && props.onOpenSettings ? props.onOpenSettings : undefined,
+            title: plan && plan.enabled === false ? '定时已关闭，点这里去设置' : '下一次站点计划',
+          })),
+        /* ③ 主动作：扫描（联网）与重新载入（只读本地）分开写清 */
+        h('div', { style: { ...C.row, marginTop: '8px' } },
           h('button', {
             className: 'rs-btn is-primary',
-            disabled: scanBusy,
-            title: '按「设置 → 抓取范围」里勾选的榜逐个扫描（联网）',
+            disabled: scanBusy || !ov || total === 0,
+            title: total === 0 ? '还没有勾选要扫的榜，先去「设置 → 抓取范围」勾选' : '按「设置 → 抓取范围」里勾选的榜逐个扫描（联网）',
             onClick: function () { props.act('/scan') },
           }, scanBtnText),
           scanBusy ? h('button', { className: 'rs-btn is-danger', onClick: function () { props.act('/cancel') } }, '停止本次（保留已完成）') : null,
@@ -1240,14 +1354,26 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           h('button', { className: 'rs-btn is-ghost', onClick: props.reload, title: '只重新读取本地数据：不联网、不采集' }, '重新载入'),
           // 运行中不显示「上次 …」：那一轮还没结束，进度只放在主按钮一处（否则会同时出现两条「扫描中」）
           scanRunning ? null : h('span', { style: C.muted }, '上次 ' + scanLabel(scan))),
-        /* 补全进度：面板顶部只有这一条（三态：跑着 / 还能续跑 / 当日已试满） */
+        /* ④ 需要处理：要用户动手的排后台补全前面 */
+        issues.length ? h('div', { ref: issuesRef },
+          h(Banner, { tone: issues.some(function (it) { return it.status !== 'stale' && it.status !== 'enrich' }) ? 'error' : 'warn', title: '需要处理' },
+            h('div', { className: 'rs-banner-body', style: { display: 'flex', flexDirection: 'column', gap: '2px' } }, issues.map(function (it) {
+              return h('div', { key: it.key, style: { ...C.row, alignItems: 'baseline' } },
+                h('span', { style: C.dot(it.status === 'stale' || it.status === 'enrich' ? 'warn' : 'bad') }),
+                h('span', { style: { fontWeight: 600 } }, it.name),
+                it.at ? h('span', { style: C.muted }, fmtLocalHM(it.at)) : null,
+                h('span', null, it.why),
+                it.detail ? h('span', { style: C.muted }, '（' + String(it.detail).slice(0, 80) + '）') : null,
+                it.boardId ? h('button', { className: 'rs-btn', disabled: props.busy, onClick: function () { props.onOpenBoard && props.onOpenBoard(it.boardId) }, title: '在「榜单」页打开这一榜（保上下文）' }, '查看本榜') : null,
+                it.boardId ? h('button', { className: 'rs-btn', disabled: props.busy, onClick: function () { props.onRescanBoard && props.onRescanBoard(it.boardId) }, title: '只重扫这一榜（联网）' }, '重扫本榜') : null)
+            })))) : null,
+        /* ⑤ 补全进度：面板顶部只有这一条（三态：跑着 / 还能续跑 / 当日已试满） */
         (function () {
           if (!enrichStatus) return null
           const run = enrichStatus.enrichRun
           const active = !!(run && run.active === true)
           const left = typeof enrichStatus.pending === 'number' ? enrichStatus.pending : 0
           if (!active && !left) return null
-          // 「还能不能续跑」用宿主的 retryable 判（0 = 当日已试满），前端不自己猜
           const retryable = typeof enrichStatus.retryable === 'number' ? enrichStatus.retryable : null
           const label = active
             ? '补全中 ' + ((run && run.done) || 0) + '/' + ((run && run.total) || 0) + ' 个榜（可以先浏览，不用等）'
@@ -1256,27 +1382,16 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               : '补全未完成：还缺 ' + left + ' 个榜（后台会继续补，也可进榜点「补全缺失字段」）'
           return h(Banner, { tone: active ? 'info' : 'warn', live: false }, label)
         })(),
-        /* ③ 需要处理：仅有问题时出现 */
-        issues.length ? h(Banner, { tone: issues.some(function (it) { return it.status !== 'stale' && it.status !== 'enrich' }) ? 'error' : 'warn', title: '需要处理' },
-          h('div', { className: 'rs-banner-body', style: { display: 'flex', flexDirection: 'column', gap: '2px' } }, issues.map(function (it) {
-            /**
-             * Spec S5：一条问题要给「榜名 + 发生时间 + 影响 + 可执行动作」。
-             *   以前只有一个泛化「重试失败 N 个榜」，看不出是哪次尝试、也没法直接进榜看。
-             */
-            return h('div', { key: it.key, style: { ...C.row, alignItems: 'baseline' } },
-              h('span', { style: C.dot(it.status === 'stale' || it.status === 'enrich' ? 'warn' : 'bad') }),
-              h('span', { style: { fontWeight: 600 } }, it.name),
-              it.at ? h('span', { style: C.muted }, fmtLocalHM(it.at)) : null,
-              h('span', null, it.why),
-              it.detail ? h('span', { style: C.muted }, '（' + String(it.detail).slice(0, 80) + '）') : null,
-              it.boardId ? h('button', { className: 'rs-btn', disabled: props.busy, onClick: function () { props.onOpenBoard && props.onOpenBoard(it.boardId) }, title: '在「榜单」页打开这一榜（保上下文）' }, '查看本榜') : null,
-              it.boardId ? h('button', { className: 'rs-btn', disabled: props.busy, onClick: function () { props.onRescanBoard && props.onRescanBoard(it.boardId) }, title: '只重扫这一榜（联网）' }, '重扫本榜') : null)
-          }))) : null,
         /* ④ 今天的变化 */
-        h('div', { style: C.siteBar }, '今天的变化' + (chgRealTotal ? '（' + chgRealTotal + ' 条）' : '')),
+        h(SectionHeader, { innerRef: changesRef, title: '今天的变化', count: chgRealTotal ? chgRealTotal + ' 条' : '' }),
         chg && chg.note ? h('div', { style: C.muted }, chg.note) : null,
         previewLimited ? h('div', { style: C.muted }, '下表每榜每类最多列 20 条（本次 ' + chgEntries.length + ' 条，共 ' + chgRealTotal + ' 条）；点行到榜页看全部。') : null,
-        chg && chg.count === 0 ? h('div', { style: C.muted }, '没有变化条目（或还没有可比基准）') : null,
+        total === 0 ? h('div', { style: { ...C.row, alignItems: 'center' } },
+          h('span', { style: C.muted }, '还没有勾选要扫的榜'),
+          props.onOpenSettings ? h('button', { className: 'rs-btn is-ghost', onClick: props.onOpenSettings }, '去设置勾选') : null) : null,
+        total === 0 ? null : noData ? h('div', { style: C.muted }, '今天还没有采集结果，到计划时刻会自动跑，也可以点「扫描已选榜」') : null,
+        noChanges ? h('div', { style: C.muted }, '今天没有榜单变化') : null,
+        ov && !chg && !noData ? h('div', { style: C.muted }, '正在读取今天的变化…') : null,
         chgEntries.length ? h('div', { style: C.row },
           [{ label: '全部', value: '' }].concat(groupNames.map(function (g) { return { label: g, value: g } })).map(function (o) {
             return h('button', {
@@ -1335,15 +1450,17 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
                 return [head].concat(body)
               })))) : null,
         /* ⑤ 全部榜单（可折叠） */
-        h('div', { style: { ...C.row, marginTop: '8px' } },
-          h('button', {
+        h(SectionHeader, {
+          innerRef: allRef, title: '全部榜单', count: total,
+          action: h('button', {
             className: 'rs-btn is-ghost',
             'aria-expanded': showAll ? 'true' : 'false',
             onClick: function () { setShowAll(!showAll) },
-          }, (showAll ? '▾ ' : '▸ ') + '全部榜单（' + total + '）')),
-        showAll ? h('table', { style: C.table },
+          }, showAll ? '收起' : '展开'),
+        }),
+        showAll && total > 0 ? h('table', { style: C.table },
           h('thead', null, h('tr', null, ['榜（按站）', '涨 / 新 / 退', '状态'].concat(hasNoteCol && !chgNarrow ? ['备注'] : []).map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
-          h('tbody', null, (ov.sites || []).flatMap(function (s) {
+          h('tbody', null, ((ov && ov.sites) || []).flatMap(function (s) {
             const okN = s.boards.filter(function (b) { return b.status === 'ok' }).length
             const times = s.boards.map(function (b) { return b.lastCapture ? fmtLocalHM(b.lastCapture) : '' })
             const sameTime = times.length > 0 && times.every(function (t) { return t === times[0] })
@@ -2615,6 +2732,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             toast('success', (r && r.note) || ('已保存：每榜取 ' + n + ' 条'))
             if (!alsoScan) return null
             setScanning(true)
+            if (props.onScanStart) props.onScanStart()
             setNote('已保存 ' + n + ' 条，正在扫描本榜…')
             return jpost('/scan', { boards: curBoard }).then(function (rr) {
               const got = ((rr && rr.boards) || []).map(function (x) { return x.boardId + ' ' + x.rows + ' 条' }).join('')
@@ -2625,14 +2743,25 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             }).catch(function (e2) {
               // ★ 保存成功、采集失败要**分开说**，否则用户会以为设置没存住、反复点
               setNote(null)
-              toast('error', '条数已保存，但扫描失败：' + e2 + '（可稍后重试扫描）')
-            })
+              if (isScanBusyError(e2)) toast('warn', '已有扫描在进行，请等它跑完')
+              else toast('error', '条数已保存，但扫描失败：' + e2 + '（可稍后重试扫描）')
+            }).then(function () { if (props.onScanEnd) props.onScanEnd() })
           })
           .catch(function (e) { setNote(null); toast('error', '保存失败：' + e) })
           .then(function () { setScanning(false); setBusy(false) })
       }
+      /** 409 = 已有扫描（host 互斥）：不是错误，用 warn 提醒等一下 */
+      const isScanBusyError = function (e) {
+        return !!(e && (e.status === 409 || e.code === 'scan_in_flight' || /409|已有扫描/.test(String(e))))
+      }
+      const toastScanError = function (e) {
+        setNote(null)
+        if (isScanBusyError(e)) { toast('warn', '已有扫描在进行，请等它跑完'); return }
+        toast('error', '扫描失败：' + e)
+      }
       const scanBoard = function () {
         if (props.scanBusy || busy) return
+        if (props.onScanStart) props.onScanStart()
         setBusy(true)
         setScanning(true)
         setNote('正在扫描本榜…')
@@ -2644,8 +2773,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             reloadBoard(true)
             if (props.onScanned) props.onScanned()
           })
-          .catch(function (e) { setNote(null); toast('error', '扫描失败：' + e) })
-          .then(function () { setScanning(false); setBusy(false) })
+          .catch(function (e) { toastScanError(e) })
+          .then(function () { if (props.onScanEnd) props.onScanEnd(); setScanning(false); setBusy(false) })
       }
       const doEnrich = function () {
         setBusy(true)
@@ -2857,7 +2986,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
           selXS('排序', ss, sortOpts, pickSort)),
         dayOpen && canDay ? h('div', { style: { ...C.row, marginTop: '2px', flexWrap: 'wrap' } },
           h('span', { style: C.muted }, '上架日'),
-          h('input', { type: 'date', value: qDate, onChange: function (e) { setQDate(e.target.value) }, style: { fontSize: '12px', padding: '2px 4px' } }),
+          h('input', { type: 'date', value: qDate, onChange: function (e) { setQDate(e.target.value) }, style: { ...C.input, width: 'auto' } }),
           h('button', { className: 'rs-btn', disabled: busy || !qDate, onClick: function () { queryDay(false) }, title: '直查站点这一上架日的数据（联网，不落盘）' }, '查看'),
           h('button', { className: 'rs-btn', disabled: busy || !qDate, onClick: function () { queryDay(true) }, title: '抓取该上架日并存为本地快照（联网）' }, '存入本地'),
           h('button', { className: 'rs-btn is-ghost', onClick: function () { setDayOpen(false) } }, '收起'),
@@ -2880,7 +3009,7 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
             h('input', {
               type: 'number', min: 1, max: info.max, value: depth, placeholder: String(info.max), disabled: !info.can || busy,
               title: info.hint, onChange: function (e) { setDepth(e.target.value) },
-              style: { width: '58px', fontSize: '12px', padding: '2px 4px' },
+              style: { ...C.input, width: '58px' },
             }),
             h('span', { style: C.muted }, info.can ? '条（上限 ' + info.max + '）' : '条 · ' + info.hint),
             h('button', { className: 'rs-btn', disabled: !info.can || busy, onClick: function () { saveDepth(false) }, title: '只保存，下次扫描生效' }, '保存'),
@@ -3203,8 +3332,14 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
               scanStarting: scanActBusy && !scanLive,
               onOpenBoard: openBoard,
               onRescanBoard: function (boardId) { act('/scan', { boards: String(boardId) }) },
+              onOpenSettings: function () { switchTab('pick') },
             })
-              : tab === 'board' ? h(BoardTab, { ov: ov, openLink: props.openLink, narrow: narrow, width: rect.w, rev: rev, scanBusy: scanBusy, onScanned: reload })
+              : tab === 'board' ? h(BoardTab, {
+                ov: ov, openLink: props.openLink, narrow: narrow, width: rect.w, rev: rev, scanBusy: scanBusy,
+                onScanned: reload,
+                onScanStart: function () { postInFlightRef.current += 1; setScanActBusy(true) },
+                onScanEnd: function () { postInFlightRef.current = Math.max(0, postInFlightRef.current - 1); if (!scanLiveRef.current && postInFlightRef.current === 0) setScanActBusy(false) },
+              })
               : tab === 'bm' ? h(BookmarksTab, { openLink: props.openLink })
               : h(SettingsTab, { ov: ov, onSaved: reload }))),
         h(ToastHost, null),
@@ -3327,7 +3462,8 @@ const LS_OPEN = 'rank-scan-panel:open:v1'
   return { name: 'dsh-rank-scan', inject: inject, apply: apply, __test: {
     metricChipText: metricChipText,
     helpers: { revOf: revOf, statusText: statusText, scanLabel: scanLabel, pollDelay: pollDelay, canDayQuery: canDayQuery, fitColumns: fitColumns, colPrio: colPrio, mdOf: mdOf, boardLabel: boardLabel, rememberBoardNames: rememberBoardNames },
-    components: { Overview: Overview, BoardTab: BoardTab, BookmarksTab: BookmarksTab, SettingsTab: SettingsTab, PopMenu: PopMenu, Panel: Panel, ToastHost: ToastHost },
+    components: { Overview: Overview, BoardTab: BoardTab, BookmarksTab: BookmarksTab, SettingsTab: SettingsTab, PopMenu: PopMenu, Panel: Panel, ToastHost: ToastHost, StatCard: StatCard, SectionHeader: SectionHeader },
+    nextPlanOf: nextPlanOf,
     toast: toast, toastStore: toastStore, lastNote: lastNote, settingsDiff: settingsDiff,
   } }
   },
