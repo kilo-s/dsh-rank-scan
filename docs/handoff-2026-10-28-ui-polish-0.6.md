@@ -109,7 +109,7 @@ A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipL
 
 - 它**只**出现在本次推送的单条命令里，作为 `git -c http.sslVerify=false …` 的一次性参数（同一批还用了 `-c credential.helper=` 与 `-c http.extraheader=Authorization: …`）。
 - **没有**写进任何 global / local / system 配置，也**没有**写进任何脚本的默认值：实测 `git config --global --get http.sslVerify` 与 `--local` 均为空，`credential.helper` 同样为空。
-- 为什么需要它：本机直连 GitHub 被 TLS 拦截，而本地代理口（12000/7890/7891）当时都没在监听（`dsh-git-audit.ps1` 的判断）。下次推送仍然要重新判断，**不要**把它固化成默认。
+- 为什么需要它：开发机直连 GitHub 被 TLS 拦截，而本地代理口（12000/7890/7891）当时都没在监听（`dsh-git-audit.ps1` 的判断）。下次推送仍然要重新判断，**不要**把它固化成默认。
 
 ## 发布后必须人工确认的一条（暗色）
 
