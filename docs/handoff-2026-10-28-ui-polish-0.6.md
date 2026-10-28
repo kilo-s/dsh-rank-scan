@@ -53,29 +53,23 @@ A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipL
 
 ## 截图矩阵（docs/screenshots/polish-0.6/）
 
-| 文件 | 链接 |
-|---|---|
-| `bm-480-light-note.png` | [打开](screenshots/polish-0.6/bm-480-light-note.png) |
-| `bm-900-dark-longlist.png` | [打开](screenshots/polish-0.6/bm-900-dark-longlist.png) |
-| `bm-900-dark.png` | [打开](screenshots/polish-0.6/bm-900-dark.png) |
-| `bm-900-light-after.png` | [打开](screenshots/polish-0.6/bm-900-light-after.png) |
-| `bm-900-light-before.png` | [打开](screenshots/polish-0.6/bm-900-light-before.png) |
-| `bm-900-light.png` | [打开](screenshots/polish-0.6/bm-900-light.png) |
-| `board-480-dark-expanded.png` | [打开](screenshots/polish-0.6/board-480-dark-expanded.png) |
-| `board-900-dark.png` | [打开](screenshots/polish-0.6/board-900-dark.png) |
-| `board-900-light-after.png` | [打开](screenshots/polish-0.6/board-900-light-after.png) |
-| `board-900-light-before.png` | [打开](screenshots/polish-0.6/board-900-light-before.png) |
-| `board-900-light.png` | [打开](screenshots/polish-0.6/board-900-light.png) |
-| `ov-900-dark.png` | [打开](screenshots/polish-0.6/ov-900-dark.png) |
-| `ov-900-light.png` | [打开](screenshots/polish-0.6/ov-900-light.png) |
-| `pick-900-dark.png` | [打开](screenshots/polish-0.6/pick-900-dark.png) |
-| `pick-900-light.png` | [打开](screenshots/polish-0.6/pick-900-light.png) |
-
 - 1–8：概览 / 榜单 / 书签 / 设置 × 900 亮 + 900 暗
-- 9：榜单 480 暗色，展开一张卡（`board-480-dark-expanded.png`）
-- 10：书签 480 亮色，含带备注 + 标签的卡（`bm-480-light-note.png`）
-- 11：书签 900 暗色长列表，底部「已显示 50 / 120 · 再显示 50 条」（`bm-900-dark-longlist.png`）
-- 12–15：`board-900-light-before/after`、`bm-900-light-before/after`（改前用 v0.5.2 现拍）
+  - docs/screenshots/polish-0.6/ov-900-light.png
+  - docs/screenshots/polish-0.6/ov-900-dark.png
+  - docs/screenshots/polish-0.6/board-900-light.png
+  - docs/screenshots/polish-0.6/board-900-dark.png
+  - docs/screenshots/polish-0.6/bm-900-light.png
+  - docs/screenshots/polish-0.6/bm-900-dark.png
+  - docs/screenshots/polish-0.6/pick-900-light.png
+  - docs/screenshots/polish-0.6/pick-900-dark.png
+- 9：榜单 480 暗色，展开一张卡 —— docs/screenshots/polish-0.6/board-480-dark-expanded.png
+- 10：书签 480 亮色，含带备注 + 标签的卡 —— docs/screenshots/polish-0.6/bm-480-light-note.png
+- 11：书签 900 暗色长列表，底部「已显示 50 / 120 · 再显示 50 条」 —— docs/screenshots/polish-0.6/bm-900-dark-longlist.png
+- 12–15：改前 / 改后对照（改前用 v0.5.2 现拍）
+  - docs/screenshots/polish-0.6/board-900-light-before.png
+  - docs/screenshots/polish-0.6/board-900-light-after.png
+  - docs/screenshots/polish-0.6/bm-900-light-before.png
+  - docs/screenshots/polish-0.6/bm-900-light-after.png
 
 ### 拍图脚本的两条纪律（照方案执行 + 一处修正）
 
