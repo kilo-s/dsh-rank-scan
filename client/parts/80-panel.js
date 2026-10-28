@@ -223,7 +223,7 @@
             h('span', null, '有未保存的改动（' + (leaveAsk.keys || []).map(function (k) { return LEAVE_LABEL[k] || k }).join('、') + '）'),
             h('span', { style: C.muted }, '草稿会保留，下次进来还在'),
             h('button', { className: 'rs-btn', onClick: doLeave }, '仍然离开'),
-            h('button', { className: 'rs-btn is-primary', onClick: function () { setLeaveAsk(null) } }, '继续编辑')) : null,
+            h('button', { className: 'rs-btn', onClick: function () { setLeaveAsk(null) } }, '继续编辑')) : null,
           h(TabBoundary, { name: tab },
             tab === 'ov' ? h(Overview, {
               ov: ov, busy: busy || scanActBusy, act: act, reload: reload, narrow: narrow, width: rect.w, rev: rev,

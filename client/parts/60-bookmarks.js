@@ -270,7 +270,7 @@
         switchAsk ? h(Banner, { tone: 'warn' },
           h('div', { style: { fontWeight: 600, flex: '1 1 100%' } }, '「' + (switchAsk.label || switchAsk.bookKey) + '」还开着没保存的备注/夹'),
           h('div', { style: C.row },
-            h('button', { className: 'rs-btn is-primary', onClick: function () { setSwitchAsk(null) } }, '继续编辑'),
+            h('button', { className: 'rs-btn', onClick: function () { setSwitchAsk(null) } }, '继续编辑'),
             h('button', { className: 'rs-btn', onClick: function () { applyEdit(switchAsk) } }, '放弃并切换')),
           h('div', { style: C.muted }, '继续编辑：刚才写的内容还在。放弃并切换：只丢当前这条的未保存改动。')) : null,
         h('div', { style: C.muted }, (store.list === null ? '加载中…' : '共 ' + list.length + ' 条' + (store.total && store.total !== list.length ? '（全部 ' + store.total + ' 条，已按筛选）' : '') + '　·　不含回收站')),
@@ -332,7 +332,7 @@
                 h('textarea', {
                   rows: 2, value: draft.note, placeholder: '可用 #标签',
                   onChange: function (e) { setDraft({ ...draft, note: e.target.value }) },
-                  style: { ...C.input, flex: 1, minWidth: '160px', resize: 'vertical', fontFamily: 'inherit' },
+                  style: { ...C.input, height: 'auto', flex: 1, minWidth: '160px', resize: 'vertical', fontFamily: 'inherit' },
                 })),
               h('div', { style: C.row },
                 h('span', { style: C.muted }, '书签夹'),

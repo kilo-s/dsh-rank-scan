@@ -434,7 +434,7 @@
        */
       const detailCard = function (r) {
         const ex = r.extra || {}
-        return h('div', { style: { ...C.detail, marginTop: '4px', boxShadow: 'inset 3px 0 0 ' + T.accent } },
+        return h('div', { style: { ...C.detail, marginTop: '4px' } },
           h('div', { style: { fontWeight: 600 } }, dash(r.title)),
           h('div', { style: C.muted }, '作者 ' + dash(r.author) + ' · 名次 ' + dash(r.rank) + ' · 字数 ' + fmtWords(ex.wordsText || ex.wordsCnt || ex.wordNumber || ex.words)),
           h('div', { style: C.muted }, '更新 ' + fmtTime(ex.lastChapterUpdateTime)),
@@ -445,9 +445,9 @@
           h('div', { style: C.row },
             h(BookmarkStar, { bookKey: bookKeyOf(curBoard, r.key), row: r, boardId: curBoard, dataDate: data && data.dataDate }),
             h(DetailBookmarkEditor, { bookKey: bookKeyOf(curBoard, r.key) }),
-            h('button', { className: 'rs-btn is-primary', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
+            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
             h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); copyLink(r.url) } }, '复制链接'),
-            h('a', { href: r.url || '#', target: '_blank', rel: 'noreferrer', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
+            h('a', { href: r.url || '#', target: '_blank', rel: 'noreferrer', className: 'rs-link-action', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
             h('button', { className: 'rs-btn is-ghost', style: { marginLeft: 'auto' }, onClick: function (e) { e.stopPropagation(); closeDetail() } }, '关闭')),
           ex.qidiantuUrl || ex.sourceUrl
             ? h('div', { style: C.row },

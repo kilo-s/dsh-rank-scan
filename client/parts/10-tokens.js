@@ -20,7 +20,7 @@
       up: 'var(--dsw-alias-state-success-primary, #2e9e5b)',
       down: 'var(--dsw-alias-state-error-primary, #d6453d)',
       sp: [0, 4, 8, 12, 16],
-      fs: { s: '12px', m: '13px', l: '15px' },
+      fs: { xs: '11px', s: '12px', m: '13px', l: '15px' },
       r: { s: '6px', m: '10px' },
       shadowWin: '0 10px 30px rgba(0,0,0,.20)',
       shadowMenu: '0 8px 20px rgba(0,0,0,.18)',
@@ -41,7 +41,7 @@
       const el = document.createElement('style')
       el.id = 'rank-scan-style'
       el.textContent = [
-        '.rs-btn{padding:4px 10px;font-size:' + T.fs.s + ';border-radius:' + T.r.s + ';border:1px solid ' + T.border + ';background:transparent;color:inherit;cursor:pointer;line-height:1.4;font-family:inherit}',
+        '.rs-btn{display:inline-flex;align-items:center;justify-content:center;height:28px;padding:0 10px;font-size:' + T.fs.s + ';border-radius:' + T.r.s + ';border:1px solid ' + T.border + ';background:transparent;color:inherit;cursor:pointer;line-height:1.4;font-family:inherit}',
         '.rs-btn:hover:not(:disabled){background:' + T.subtle + '}',
         '.rs-btn:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
         '[data-rank-scan-win] button:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
@@ -71,6 +71,13 @@
         '.rs-toast-x:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
         '[data-rank-scan-win] tbody tr:hover td{background:' + T.subtle + '}',
         '[data-rank-scan-win] a:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
+        // A1：链接默认不画下划线（面板里链接多半是「打开」，满屏下划线很吵）；hover / focus-visible 才出现
+        '[data-rank-scan-win] a{text-decoration:none}',
+        '[data-rank-scan-win] a:hover,[data-rank-scan-win] a:focus-visible{text-decoration:underline;text-underline-offset:2px}',
+        // A1：文字动作（「新标签打开」这类）保留下划线，用这个 class 与普通链接区分
+        '.rs-link-action{text-decoration:underline;text-underline-offset:2px;cursor:pointer}',
+        // A7：输入框 / 下拉框统一 28px，与 .rs-btn 同高（内联 C.input 也走同一数值）
+        '.rs-input{height:28px;box-sizing:border-box;padding:0 6px;line-height:1.4}',
         '.rs-th-sort{border:none;background:transparent;padding:0;font:inherit;font-weight:600;cursor:pointer;color:inherit;display:inline-flex;align-items:center;gap:3px}',
         '.rs-th-sort:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
         '.rs-sort-arrow{opacity:0;color:' + T.muted + ';font-size:10px;line-height:1}',
@@ -89,7 +96,8 @@
         borderBottom: '1px solid ' + T.border, cursor: 'move', userSelect: 'none', background: T.subtle },
       title: { fontWeight: 600, fontSize: T.fs.m, marginRight: '2px' },
       body: { padding: '12px', overflow: 'auto', flex: '1 1 auto' },
-      row: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', margin: '5px 0' },
+      // A5 间距节奏：组内 4、行间 8（上下各 4 相加）、分区间 16（见 C.section）
+      row: { display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center', margin: '4px 0' },
       tabs: { display: 'flex', gap: '4px', borderBottom: '1px solid ' + T.border, marginBottom: '6px' },
       tab: (on) => ({ padding: '3px 9px', cursor: 'pointer', border: 'none', background: 'transparent',
         color: on ? T.fg : T.muted,
@@ -113,13 +121,24 @@
         background: tone === 'bad' ? T.bad : tone === 'warn' ? T.warn : T.ok }),
       handle: { position: 'absolute', right: '0', bottom: '0', width: '16px', height: '16px', cursor: 'nwse-resize',
         background: 'linear-gradient(135deg, transparent 46%, ' + T.muted + ' 46%, ' + T.muted + ' 54%, transparent 54%, transparent 70%, ' + T.muted + ' 70%, ' + T.muted + ' 78%, transparent 78%)' },
-      detail: { marginTop: '6px', padding: '6px 8px', border: '1px solid ' + T.border, borderRadius: '8px', background: T.subtle },
+      /** A2：详情不再画整圈边框（盒子套盒子），只用浅底 + 左侧 accent 色条表示「这是展开区」 */
+      detail: { marginTop: '6px', padding: '6px 8px 6px 10px', border: 'none', borderLeft: '2px solid ' + T.accent, borderRadius: T.r.s, background: T.subtle },
       // 书签（用户数据）：星标按钮与卡片
       bmOn: { padding: '0 2px', border: 'none', background: 'transparent', cursor: 'pointer', color: T.warn, fontSize: T.fs.m, lineHeight: 1 },
       bmOff: { padding: '0 2px', border: 'none', background: 'transparent', cursor: 'pointer', opacity: 0.32, fontSize: T.fs.m, lineHeight: 1 },
-      card: { margin: '7px 0', padding: '7px 9px', border: '1px solid ' + T.border, borderRadius: '8px', background: T.subtle },
+      /** A2：卡片只留 1px 边框、去掉底色（与详情同底色叠加时像一堆小盒子） */
+      card: { margin: '7px 0', padding: '7px 9px', border: '1px solid ' + T.border, borderRadius: '8px' },
       cardTitle: { fontWeight: 600, fontSize: T.fs.m },
+      /** 圆形小标签：★ 只留给状态类（待补 / 超 7 天 / 站点）与 #标签 / 夹；普通元信息走 C.meta */
       chip: { display: 'inline-block', marginRight: '4px', padding: '0 5px', borderRadius: '8px', background: T.subtle, fontSize: T.fs.s },
-      input: { padding: '3px 6px', fontSize: T.fs.s, borderRadius: T.r.s, border: '1px solid ' + T.border, background: 'transparent', color: 'inherit' },
+      /** A3：普通元信息——无背景、12px muted，用中点串联（例：「字数 17.4万字 · 收藏 141,159」） */
+      meta: { fontSize: T.fs.s, color: T.muted, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      /** A4：三层字号——分区标题 12/600 muted、条目标题 13/500、元信息 12 muted */
+      sectionLabel: { fontSize: T.fs.s, fontWeight: 600, color: T.muted },
+      itemTitle: { fontSize: T.fs.m, fontWeight: 500 },
+      /** A5：分区之间留 16px */
+      section: { marginTop: '16px' },
+      /** A7：高度与 .rs-btn 对齐为 28px（textarea 需要自己覆盖成 height:auto） */
+      input: { height: '28px', boxSizing: 'border-box', padding: '0 6px', fontSize: T.fs.s, borderRadius: T.r.s, border: '1px solid ' + T.border, background: 'transparent', color: 'inherit' },
     }
     /** 统一提示条：三种语气只差颜色，形状一致；错误用 role=alert 让读屏器打断 */
