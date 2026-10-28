@@ -449,6 +449,16 @@ export function defaultSortFor(boardId: string): string | null {
 }
 
 /**
+ * 面板表头默认激活列（纯函数）：普通榜名次升序；三江期初收藏；番茄派生榜今日涨幅。
+ * 只描述**显示方向**，真正排序仍由 host 的 effSort/compareDesc 执行。
+ */
+export function defaultSortKeyFor(boardId: string): { key: string; dir: 'ascending' | 'descending' } {
+  if (boardId.startsWith('fanqie.derived.')) return { key: 'value', dir: 'descending' }
+  if (boardId === 'qidiantu.sanjiang') return { key: 'collectBase', dir: 'descending' }
+  return { key: 'rank', dir: 'ascending' }
+}
+
+/**
  * 番茄分类 id → 中文名（纯函数、可单测）。
  * ★ 2026-10-15 使用反馈「周榜的作品分类为什么不显示」：番茄的行把分类存在 `extra.catId`（数字），
  *   而列渲染读的是 `extra.cat`（起点/起点图/刺猬猫那是文本）⇒ 番茄这边**永远显示「—」**。

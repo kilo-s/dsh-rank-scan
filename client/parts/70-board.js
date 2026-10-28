@@ -2,6 +2,52 @@
  * 70-board.js：榜单页：BoardTab（选择器、详情、操作条、本榜设置、日期回看）。依赖 20/55。不要放 Panel。
  * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
  */
+    /**
+     * 第六步（0.5.2）：榜单表头的排序 / 行键盘用的纯函数。
+     * 只消费宿主已经给出的 columns / sortOptions，不做客户端排序，也不新增排序方式。
+     */
+    const sortableCols = function (cols, sortOptions, defKey, defDir) {
+      const values = (sortOptions || []).map(function (o) { return o && o.value }).filter(function (v) { return !!v })
+      return (cols || []).filter(function (c) {
+        return c && (values.indexOf(c.key) >= 0 || (!!defKey && c.key === defKey))
+      }).map(function (c) {
+        return { key: c.key, dir: c.key === defKey ? (defDir || 'descending') : 'descending' }
+      })
+    }
+    const nextSort = function (cur, key, defKey) {
+      if (key === defKey) return ''
+      return cur === key ? '' : key
+    }
+    const normalizeSortPref = function (v) { return v === 'rank' ? '' : (v || '') }
+    /** 只给行号，详情行不参与；n 是数据行数量 */
+    const nextRowIdx = function (i, key, n) {
+      const last = Math.max(0, Number(n) - 1)
+      if (key === 'ArrowDown') return Math.min(last, i + 1)
+      if (key === 'ArrowUp') return Math.max(0, i - 1)
+      if (key === 'Home') return 0
+      if (key === 'End') return last
+      return null
+    }
+    const isRowControl = function (t) {
+      if (!t || !t.tagName) return false
+      const tag = String(t.tagName).toLowerCase()
+      if (tag === 'a' || tag === 'button' || tag === 'input' || tag === 'textarea' || tag === 'select') return true
+      if (t.isContentEditable === true) return true
+      return !!(t.closest && t.closest('a,button,input,textarea,select,[contenteditable="true"]'))
+    }
+    const copyLink = function (url) {
+      const text = url || ''
+      const fail = function () { toast('warn', '复制链接失败，请手动复制：' + (text || '—')) }
+      if (typeof navigator === 'undefined' || !navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+        fail(); return
+      }
+      try {
+        navigator.clipboard.writeText(text).then(function () { toast('success', '已复制链接') }).catch(fail)
+      } catch (e) { fail() }
+    }
+    // 离线测试缝：只暴露第六步的纯函数，不改变运行路径
+    window.__rankScanBoardTableTest = { sortableCols: sortableCols, nextSort: nextSort, nextRowIdx: nextRowIdx, normalizeSortPref: normalizeSortPref }
+
     function BoardTab(props) {
       const ov = props.ov
       /**
@@ -14,9 +60,15 @@
       const sites = (ov && ov.sites) || []
       // 收起面板会卸载 BoardTab ⇒ 站/榜选择要持久化；日期/排序按榜各记各的
       const [stSite, setStSite] = React.useState(function () { return sel.get().site })
+      const sortPref = function (board) {
+        const raw = sel.pref(board, 'sort')
+        const v = normalizeSortPref(raw)
+        if (v !== raw) sel.setPref(board, 'sort', v)
+        return v
+      }
       const [bt, setBt] = React.useState(function () { return sel.get().board })
       const [sd, setSd] = React.useState(function () { return sel.pref(sel.get().board, 'date') })
-      const [ss, setSs] = React.useState(function () { return sel.pref(sel.get().board, 'sort') })
+      const [ss, setSs] = React.useState(function () { return sortPref(sel.get().board) })
       const [data, setData] = React.useState(null)
       const [err, setErr] = React.useState(null)
       const [pick, setPick] = React.useState(null)
@@ -39,6 +91,10 @@
       // 读取序号：只有最后一次发起的请求允许写界面（防旧响应覆盖）
       const loadSeqRef = React.useRef(0)
       const catSeqRef = React.useRef(0)
+      const listRef = React.useRef(null)
+      const sortJumpRef = React.useRef(false)
+      const pickIdxRef = React.useRef(null)
+      const focusBackRef = React.useRef(null)
       const curSite = stSite || (sites[0] && sites[0].site)
       const curBoards = ((sites.filter(function (s) { return s.site === curSite })[0] || {}).boards) || []
       const curBoard = bt || (curBoards[0] && curBoards[0].boardId)
@@ -109,7 +165,7 @@
           h('select', { value: value, onChange: function (e) { onChange(e.target.value) }, style: C.input },
             options.map(function (o) { return h('option', { key: o.value, value: o.value }, o.label) })))
       }
-      const pickBoard = function (v) { sel.set({ board: v }); setBt(v); setSd(sel.pref(v, 'date')); setSs(sel.pref(v, 'sort')); setPick(null); setDayOpen(false) }
+      const pickBoard = function (v) { sel.set({ board: v }); setBt(v); setSd(sel.pref(v, 'date')); setSs(sortPref(v)); setPick(null); setDayOpen(false) }
       const pickSite = function (v) { sel.set({ site: v, board: null }); setStSite(v); setBt(null); setSd(''); setSs(''); setPick(null); setDayOpen(false) }
       const pickDate = function (v) { setSd(v); sel.setPref(curBoard, 'date', v) }
       /** 「按上架日回看…」是动作项，不是日期值：不改当前选择，只在下面展开输入行 */
@@ -118,7 +174,57 @@
         setDayOpen(false)
         pickDate(v)
       }
-      const pickSort = function (v) { setSs(v); sel.setPref(curBoard, 'sort', v) }
+      const pickSort = function (v) {
+        if (v === ss) return
+        setSs(v)
+        sel.setPref(curBoard, 'sort', v)
+        setPick(null)          // 换排序 ⇒ 收起详情，避免详情还停在旧行
+        pickIdxRef.current = null
+        sortJumpRef.current = true
+      }
+      const closeDetail = function () {
+        const idx = pickIdxRef.current
+        setPick(null)
+        if (idx != null) focusBackRef.current = idx
+      }
+      const toggleRow = function (r, i) {
+        const opening = !(pick && pick.key === r.key)
+        pickIdxRef.current = i
+        if (!opening) focusBackRef.current = null
+        setPick(opening ? r : null)
+      }
+      const onRowsKeyDown = function (e) {
+        if (!e) return
+        if (isRowControl(e.target)) return
+        const row = e.target && e.target.closest ? e.target.closest('[data-row-idx]') : null
+        if (!row || !e.currentTarget || !e.currentTarget.querySelectorAll) return
+        const rows = e.currentTarget.querySelectorAll('[data-row-idx]')
+        const i = Number(row.getAttribute('data-row-idx'))
+        const next = nextRowIdx(i, e.key, rows.length)
+        if (next == null) return
+        e.preventDefault()
+        const el = rows[next]
+        if (!el) return
+        try { el.focus({ preventScroll: true }) } catch (err) { try { el.focus() } catch (e2) {} }
+        if (el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
+      }
+      React.useEffect(function () {
+        if (!sortJumpRef.current) return
+        sortJumpRef.current = false
+        const el = listRef.current
+        if (el && el.scrollIntoView) {
+          try { el.scrollIntoView({ block: 'start' }) } catch (e) {}
+        }
+      }, [ss])
+      React.useEffect(function () {
+        if (pick || focusBackRef.current == null) return
+        const idx = focusBackRef.current
+        focusBackRef.current = null
+        const el = listRef.current && listRef.current.querySelector('[data-row-idx="' + idx + '"]')
+        if (!el) return
+        try { el.focus({ preventScroll: true }) } catch (e) { try { el.focus() } catch (e2) {} }
+        if (el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
+      }, [pick])
       /** 只保存条数（**不采集**）；另有一个明确的「保存并扫描本榜」 */
       const saveDepth = function (alsoScan) {
         const n = Math.max(1, Math.min(info.max || 100, Number(depth) || 10))
@@ -225,6 +331,7 @@
             boardId: curBoard,
             columns: prev.columns || [],
             sortOptions: prev.sortOptions || [],
+            defaultSortKey: (r && r.defaultSortKey) || null,
             rows: (r.rowsAll || []).map(function (x) { return { ...x, delta: null, days: null } }),
             dates: ds,
             dataDate: shown,
@@ -243,7 +350,7 @@
         }).catch(function (e) { setNote(null); toast('error', '直查失败：' + e) }).then(function () { setBusy(false) })
       }
       // Esc：先关详情卡（面板本身由 Panel 那层关）
-      useEscLayer(pick ? function () { setPick(null); return true } : null)
+      useEscLayer(pick ? function () { closeDetail(); return true } : null)
       /** 状态带：一行说清「你在看哪份数据、跟哪天比」 */
       const band = (function () {
         if (!data) return null
@@ -282,6 +389,12 @@
       const dateOptsShown = canDay ? dateOpts.concat([{ value: '__day', label: '按上架日回看…' }]) : dateOpts
       // 减掉正文左右 padding（20）、纵向滚动条与一点余量 ⇒ 表格不会溢出成横向滚动
       const cols = fitColumns(data && data.columns, avail - 48)
+      const defaultSort = (data && data.defaultSortKey && data.defaultSortKey.key)
+        ? data.defaultSortKey
+        : { key: 'rank', dir: 'ascending' }
+      const sortable = sortableCols(cols, sortOpts, defaultSort.key, defaultSort.dir)
+      const sortableMap = {}
+      sortable.forEach(function (c) { sortableMap[c.key] = c.dir })
       const viewDate = (data && (data._queryDate || sd)) || ''
       /* 0.4.2：本榜操作不再进「更多」——扫描/补全在操作条，条数在「本榜设置」，回看在日期行。 */
       /**
@@ -321,7 +434,7 @@
        */
       const detailCard = function (r) {
         const ex = r.extra || {}
-        return h('div', { style: { ...C.detail, marginTop: '4px' } },
+        return h('div', { style: { ...C.detail, marginTop: '4px', boxShadow: 'inset 3px 0 0 ' + T.accent } },
           h('div', { style: { fontWeight: 600 } }, dash(r.title)),
           h('div', { style: C.muted }, '作者 ' + dash(r.author) + ' · 名次 ' + dash(r.rank) + ' · 字数 ' + fmtWords(ex.wordsText || ex.wordsCnt || ex.wordNumber || ex.words)),
           h('div', { style: C.muted }, '更新 ' + fmtTime(ex.lastChapterUpdateTime)),
@@ -332,10 +445,10 @@
           h('div', { style: C.row },
             h(BookmarkStar, { bookKey: bookKeyOf(curBoard, r.key), row: r, boardId: curBoard, dataDate: data && data.dataDate }),
             h(DetailBookmarkEditor, { bookKey: bookKeyOf(curBoard, r.key) }),
-            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
+            h('button', { className: 'rs-btn is-primary', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
+            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); copyLink(r.url) } }, '复制链接'),
             h('a', { href: r.url || '#', target: '_blank', rel: 'noreferrer', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
-            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); try { navigator.clipboard.writeText(r.url || '') } catch (err) {} } }, '复制链接'),
-            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); setPick(null) } }, '关闭')),
+            h('button', { className: 'rs-btn is-ghost', style: { marginLeft: 'auto' }, onClick: function (e) { e.stopPropagation(); closeDetail() } }, '关闭')),
           ex.qidiantuUrl || ex.sourceUrl
             ? h('div', { style: C.row },
                 (ex.qidiantuUrl ? h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.qidiantuUrl) } }, '看起点图原始页') : null),
@@ -359,11 +472,17 @@
         return h('div', {
           key: r.key || ('row' + i),
           tabIndex: 0,
+          'data-row-idx': i,
+          'aria-expanded': open ? 'true' : 'false',
           style: { ...C.card, padding: '5px 8px', margin: '5px 0', cursor: 'pointer',
             borderColor: open ? T.border : undefined,
-            background: open ? T.subtle : undefined },
-          onClick: function () { setPick(open ? null : r) },
-          onKeyDown: function (e) { if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setPick(open ? null : r) } },
+            background: open ? T.subtle : undefined,
+            boxShadow: open ? 'inset 3px 0 0 ' + T.accent : undefined },
+          onClick: function () { toggleRow(r, i) },
+          onKeyDown: function (e) {
+            if (!e || isRowControl(e.target)) return
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRow(r, i) }
+          },
         },
           h('div', { style: { display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0 } },
             h('span', { style: { ...C.num, ...C.muted, flex: '0 0 auto', minWidth: '16px', textAlign: 'right' } }, dash(r.rank)),
@@ -441,29 +560,53 @@
         note ? h('div', { style: C.muted }, note) : null,
         data && data.rows && data.rows.length
           ? (cards
-              ? h('div', null, data.rows.map(function (r, i) {
+              ? h('div', { ref: listRef, onKeyDown: onRowsKeyDown }, data.rows.map(function (r, i) {
                   // 卡片行 + 展开时紧跟其后的详情卡（详情别再挂到列表末尾）
                   return h('div', { key: 'w' + (r.key || i) }, narrowRow(r, i), isOpen(r) ? detailCard(r) : null)
                 }))
-              : h('table', { style: C.table },
-              h('thead', null, h('tr', null, cols.map(function (c) { return h('th', { key: c.key, style: C.th, title: c.note || '' }, c.label) }))),
-              h('tbody', null, data.rows.flatMap(function (r, i) {
+              : h('table', { ref: listRef, style: C.table },
+              h('thead', null, h('tr', null, cols.map(function (c) {
+                const dir = sortableMap[c.key]
+                const active = (ss || defaultSort.key) === c.key
+                const shownDir = active ? (ss ? dir : defaultSort.dir) : dir
+                return h('th', {
+                  key: c.key, style: C.th, title: c.note || '',
+                  'aria-sort': active ? shownDir : undefined,
+                }, dir
+                  ? h('button', {
+                      className: 'rs-th-sort',
+                      title: active && !ss ? '当前为默认排序' : active ? '取消按 ' + c.label + ' 排序' : '按 ' + c.label + ' 排序',
+                      onClick: function (e) { e.stopPropagation(); pickSort(nextSort(ss, c.key, defaultSort.key)) },
+                    }, c.label, h('span', { className: 'rs-sort-arrow' + (active ? ' is-on' : ''), 'aria-hidden': 'true' }, shownDir === 'ascending' ? '↑' : '↓'))
+                  : c.label)
+              }))),
+              h('tbody', { onKeyDown: onRowsKeyDown }, data.rows.flatMap(function (r, i) {
+                const open = isOpen(r)
                 const tr = h('tr', {
                   key: r.key || i,
                   tabIndex: 0,
-                  style: { cursor: 'pointer' },
-                  onClick: function () { setPick(isOpen(r) ? null : r) },
-                  onKeyDown: function (e) { if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setPick(isOpen(r) ? null : r) } },
-                }, cols.map(function (c) {
-                  return h('td', { key: c.key, style: isNumCol(c.key) ? { ...C.td, ...C.num } : C.td }, cell(rowCellProps(r, c), r))
+                  'data-row-idx': i,
+                  'aria-expanded': open ? 'true' : 'false',
+                  style: { cursor: 'pointer', background: open ? T.subtle : undefined },
+                  onClick: function () { toggleRow(r, i) },
+                  onKeyDown: function (e) {
+                    if (!e || isRowControl(e.target)) return
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRow(r, i) }
+                  },
+                }, cols.map(function (c, ci) {
+                  const baseStyle = isNumCol(c.key) ? { ...C.td, ...C.num } : C.td
+                  const style = open && ci === 0 ? { ...baseStyle, boxShadow: 'inset 3px 0 0 ' + T.accent } : baseStyle
+                  return h('td', { key: c.key, style }, cell(rowCellProps(r, c), r))
                 }))
                 // 详情卡作为紧跟那一行的一行（colSpan 占满），点哪一行就在哪一行下面展开
-                return isOpen(r)
+                return open
                   ? [tr, h('tr', { key: 'd' + (r.key || i) }, h('td', { colSpan: Math.max(1, cols.length), style: { padding: '0 0 4px' } }, detailCard(r)))]
                   : [tr]
               }))))
           : h('div', { style: C.muted }, data ? dash(data.note || '没有条目') : '加载中…'),
-        h('div', { style: { ...C.muted, marginTop: '6px' } }, '列随榜变化：该站没有的字段整列不出现；有字段但这条没抓到显示「—」（批次榜不出「变化」列）。面板变窄时列会按宽度自动收起（先收作者/分类/字数这类次级列，名次/书名与该榜主指标一直在），再窄就换成卡片行；点行看详情。'))
+        h('details', { style: { ...C.muted, marginTop: '6px' } },
+          h('summary', { style: { cursor: 'pointer' } }, '列说明'),
+          h('div', { style: { marginTop: '3px' } }, '列随榜变化：该站没有的字段整列不出现；有字段但这条没抓到显示「—」（批次榜不出「变化」列）。面板变窄时列会按宽度自动收起（先收作者/分类/字数这类次级列，名次/书名与该榜主指标一直在），再窄就换成卡片行；点行看详情。')))
     }
 
     /**
