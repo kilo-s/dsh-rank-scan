@@ -10,7 +10,7 @@
 1. 点表头排序
    - 表头列 key 在当前榜 sortOptions 的 value 里时，th 内渲染 button（无边框、继承字体）；名次列对应 rank。
    - 未激活列点击后按该列排序；再点激活列回到 ''。和上方「排序」下拉共用 ss 与 sel.setPref。
-   - 激活列显示方向箭头（rank ↑，其余 ↓），th 带 aria-sort；未激活可排序列 hover/focus 显示淡色箭头。
+   - 激活列显示方向箭头（所有排序列都是 ↓），th 带 aria-sort；未激活可排序列 hover/focus 显示淡色箭头。
    - 排序切换收起详情，并把列表滚回顶部（listRef.scrollIntoView block:start）。
 2. 展开行
    - 表格行与窄屏卡片都有 aria-expanded。
@@ -31,9 +31,10 @@
 ## 口径 / 偏差
 
 - 只展示当前 fitColumns 后仍在表格里的列对应的排序入口；被宽度收起的列不生成表头，但仍可用上方排序下拉（下拉本来就保留给窄屏卡片和无对应列的排序项）。
-- 宿主 sortOptions 没有方向字段；按现有口径固定 rank 升序、其余降序。
+- 宿主 sortOptions 没有方向字段；src/index.ts 的 effSort 对包括 rank 在内的所有排序都用 compareDesc（倒序），客户端一律 descending / ↓，不设 rank 特例。
 - 行的键盘导航用 data-row-idx + 容器 onKeyDown，没有为每行建 ref 数组。
 - 55-board-cell.js 未改；通用排序箭头/focus 样式放在 10-tokens.js，已在改动文件里说明。
+- 测试缝 window.__rankScanBoardTableTest 仍常驻挂载；仓库没有统一的测试环境开关，本步不为此扩大改动。
 
 ## 测试与冒烟
 
@@ -44,9 +45,9 @@
 
 ## 截图
 
-- 900px 亮色（激活排序列 + 展开一行）：docs/screenshots/step6-board-table/step6-board-table-900-light.png
+- 900px 亮色（收藏↓ + 展开一行，展开行在 sticky 表头下方）：docs/screenshots/step6-board-table/step6-board-table-900-light.png
 - 900px 暗色同一状态：docs/screenshots/step6-board-table/step6-board-table-900-dark.png
-- 480px 暗色卡片展开 + focus 框：docs/screenshots/step6-board-table/step6-board-table-480-dark-card.png
+- 480px 真正暗色卡片展开 + 另一张 focus 框：docs/screenshots/step6-board-table/step6-board-table-480-dark-card.png
 
 ## 下一步
 

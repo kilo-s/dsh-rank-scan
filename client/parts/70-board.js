@@ -6,7 +6,7 @@
      * 第六步（0.5.2）：榜单表头的排序 / 行键盘用的纯函数。
      * 只消费宿主已经给出的 columns / sortOptions，不做客户端排序，也不新增排序方式。
      */
-    const sortDirOf = function (key) { return key === 'rank' ? 'ascending' : 'descending' }
+    const sortDirOf = function () { return 'descending' }
     const sortableCols = function (cols, sortOptions) {
       const values = (sortOptions || []).map(function (o) { return o && o.value }).filter(function (v) { return !!v })
       return (cols || []).filter(function (c) { return c && values.indexOf(c.key) >= 0 }).map(function (c) {
@@ -558,7 +558,7 @@
                 }, dir
                   ? h('button', {
                       className: 'rs-th-sort',
-                      title: active ? '取消按' + c.label + '排序' : '按 ' + c.label + ' 排序',
+                      title: active ? '取消按 ' + c.label + ' 排序' : '按 ' + c.label + ' 排序',
                       onClick: function (e) { e.stopPropagation(); pickSort(nextSort(ss, c.key)) },
                     }, c.label, h('span', { className: 'rs-sort-arrow' + (active ? ' is-on' : ''), 'aria-hidden': 'true' }, dir === 'ascending' ? '↑' : '↓'))
                   : c.label)

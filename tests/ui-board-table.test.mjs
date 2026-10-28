@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { readClientSource } from './_client-source.mjs'
 import vm from 'node:vm'
 
@@ -31,15 +32,17 @@ function loadBoardTable() {
   return sandbox.window.__rankScanBoardTableTest
 }
 
-test('sortableCols 只让 host sortOptions 里有的列可点，rank 是升序', () => {
+test('sortableCols 只让 host sortOptions 里有的列可点，所有列都倒序', () => {
   const fn = loadBoardTable()
   const cols = [{ key: 'rank', label: '名次' }, { key: 'title', label: '书名' }, { key: 'read', label: '在读' }]
   const got = fn.sortableCols(cols, [{ value: '', label: '默认' }, { value: 'rank', label: '名次' }, { value: 'read', label: '在读' }])
   assert.deepEqual(got.map((x) => x.key), ['rank', 'read'])
-  assert.equal(got[0].dir, 'ascending')
+  assert.equal(got[0].dir, 'descending')
   assert.equal(got[1].dir, 'descending')
   const derived = fn.sortableCols(cols, [{ value: '', label: '默认' }])
   assert.deepEqual(derived, [])
+  const host = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
+  assert.match(host, /const effSort = sort \|\| defaultSortFor\(boardId\)[\s\S]{0,200}compareDesc/, '宿主 effSort 必须继续使用 compareDesc；若改方向，客户端箭头也要同步')
 })
 
 test('nextSort 再点激活列回到默认', () => {
