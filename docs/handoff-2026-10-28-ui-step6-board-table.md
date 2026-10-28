@@ -2,7 +2,7 @@
 
 - 分支：ui/step6-board-table（从 v0.5.1 合并后的 main 拉出）
 - 版本：0.5.2
-- 状态：**已实现，未合并 main、未打 tag**，等验收。
+- 状态：**验收通过；本轮合并 main、tag v0.5.2。**
 - 改动文件：client/parts/70-board.js（主要）、client/parts/10-tokens.js（通用 hover/focus/排序箭头样式）、src/index.ts + src/scan/view.ts（宿主 sortOptions / defaultSortKey）；55-board-cell.js 未改。
 
 ## 做了什么
@@ -54,8 +54,10 @@
 - 900px 暗色默认态（名次 ↑ + 下拉「默认（名次）」）：docs/screenshots/step6-board-table/step6-board-table-900-dark.png
 - 480px 真正暗色卡片展开 + 另一张 focus 框：docs/screenshots/step6-board-table/step6-board-table-480-dark-card.png
 
+## 待办
+
+- 发布后由用户在本地机器执行 `dsh plugin add github:kilo-s/dsh-rank-scan#v0.5.2` 做真实安装验证（当前沙箱不能 spawn git）。
+
 ## 下一步
 
-1. 验收本分支。
-2. 通过后合并 main、打 tag v0.5.2。
-3. 第七步书签页另开分支，等验收后再发。
+第六步已验收；发版后暂停，第七步书签页等方向再开分支。

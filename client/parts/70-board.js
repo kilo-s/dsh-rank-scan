@@ -175,6 +175,7 @@
         pickDate(v)
       }
       const pickSort = function (v) {
+        if (v === ss) return
         setSs(v)
         sel.setPref(curBoard, 'sort', v)
         setPick(null)          // 换排序 ⇒ 收起详情，避免详情还停在旧行

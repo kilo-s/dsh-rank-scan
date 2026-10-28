@@ -73,6 +73,7 @@ test('nextRowIdx 覆盖上下/Home/End 与边界', () => {
 
 test('表头 aria-sort、行/卡片 aria-expanded、列说明折叠与复制 Promise 分支都在源码里', () => {
   assert.match(s, /'aria-sort': active \? shownDir : undefined/)
+  assert.match(s, /const pickSort = function \(v\) \{\n\s*if \(v === ss\) return/, '默认态再点默认列不能留下滚动标记')
   assert.match(s, /'aria-expanded': open \? 'true' : 'false'/)
   assert.match(s, /h\('details'/)
   assert.match(s, /'列说明'/)
