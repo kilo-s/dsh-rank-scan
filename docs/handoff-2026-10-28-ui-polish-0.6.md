@@ -111,6 +111,41 @@ A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipL
 - **没有**写进任何 global / local / system 配置，也**没有**写进任何脚本的默认值：实测 `git config --global --get http.sslVerify` 与 `--local` 均为空，`credential.helper` 同样为空。
 - 为什么需要它：开发机直连 GitHub 被 TLS 拦截，而本地代理口（12000/7890/7891）当时都没在监听（`dsh-git-audit.ps1` 的判断）。下次推送仍然要重新判断，**不要**把它固化成默认。
 
+## 0.6 收尾（发布前那一轮，只做展示层）
+
+| # | 事项 | 落点 | 备注 |
+|---|---|---|---|
+| 1 | 起点简介进展开详情 | `70-board.js`（`cleanDesc` + `BoardDesc`） | 只读 `extra.desc`；去 U+3000 与空行；3 行 clamp；无值整块不渲染 |
+| 2 | 补四列 | `view.ts`（`columnsFor`）、`55-board-cell.js`（`cell`）、`20-ui-kit.js`（`NUM_COL_RE`）、`70-board.js`（`CHIP_ALWAYS`） | 三江 首订/首日增量、首订榜 首V、刺猬猫 最近更新；空值「—」 |
+| 3 | 抓取范围一站一行 | `50-settings.js` | 「已选 x / y」+「⋯」菜单（全选/全不选/补齐缺失）；默认折叠；`setAll(false)` 顺手收起 |
+| 4 | 起点榜条数置灰 | `70-board.js`（`qidianFixed`/`depthLocked`） | **客户端置灰**：宿主 `catalog()` 对 `qidian.*` 仍报 `canDepth: true`（cap 20 > 10），真正的校验留待 0.7；config 里的旧值保留不动 |
+
+- `.rs-note-text` 的 `font-weight` 本来就是显式 `400`（上次已写死），这轮无需再改。
+- 范围外没碰：采集、书页解析、缓存、`bookmarks.json` schema 一律未动；没有新增任何请求。
+- 留给 0.7：概览「今日看点」、书签作品档案（简介/分类入书签）、书页多解析字段、番茄 `og:description`、缓存升版。
+
+### 修改过的旧断言（本轮）
+
+| 文件 | 断言 | 改成 |
+|---|---|---|
+| `tests/ui-actions.test.mjs` | 「设置页每站只有一个动作，平铺成『补齐缺失』」——原断言要求 `!settingsSrc.includes('h(PopMenu')` 且补齐缺失平铺成按钮 | 改成「每站三个动作收进站标题行的『⋯』菜单」：断言菜单在、三项文案在、联网提示在 |
+| `tests/usability-ui-spec.test.mjs` | 「S4 设置里的站分组可折叠」——按 `▾ 起点 · 签约榜（2）` 找组标题 | 改成站点行口径：默认 `▸ 起点 · 已选 x / y`，点一下变 `▾`；取样时要求节点自身带 `onClick`（外层包装 div 文本相同但没有处理函数） |
+| `tests/view.test.mjs` | 刺猬猫列序 `deepEqual(['rank','delta','title','author','words','collect'])` | 加「最近更新」列 ⇒ `['rank','delta','title','author','update','words','collect']` |
+
+新增断言（都在 `tests/ui-polish.test.mjs` 与 `tests/view.test.mjs`）：简介去空白 + 无值不渲染、4 个新列出现且空值「—」、数字列范围、480 中点串保住新列、站点「⋯」菜单三件事、起点条数输入框 `disabled`。
+
+### 闸门（收尾后）
+
+- `test-local`：**450 pass / 0 fail**（起始基线 445；新增 5 条）
+- `acceptance -SkipLive`：**100 pass / 0 fail**
+
+### 截图（docs/screenshots/polish-0.6/）
+
+- docs/screenshots/polish-0.6/board-900-light-desc.png（起点展开一行，简介可见）
+- docs/screenshots/polish-0.6/board-900-light-sanjiang.png（三江：首订 / 首日增量两列）
+- docs/screenshots/polish-0.6/board-480-dark-desc.png（480 暗色，起点展开一行）
+- docs/screenshots/polish-0.6/pick-900-light-ranges.png（设置 · 抓取范围：起点图展开、其余折叠、「⋯」菜单打开）
+
 ## 发布后必须人工确认的一条（暗色）
 
 > ★ 截图里的暗色是 Playwright `emulateMedia({ colorScheme: 'dark' })` 模拟出来的，**没有经过宿主真实的主题切换**。
