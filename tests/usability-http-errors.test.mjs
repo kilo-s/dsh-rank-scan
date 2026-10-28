@@ -1,9 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 import vm from 'node:vm'
 
-const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+const source = readClientSource()
 const responseFunction = source.slice(source.indexOf('    const readResponse ='), source.indexOf('    const jget ='))
 const readResponse = vm.runInNewContext(responseFunction + '\nreadResponse')
 

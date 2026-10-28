@@ -18,7 +18,7 @@ DeepSeek Harness 扫榜插件：定时 + 按需采集多站小说榜单，算变
 
 ```sh
 dsh plugin --profile desktop add github:kilo-s/dsh-rank-scan
-# 钉版本：github:kilo-s/dsh-rank-scan#v0.5.0
+# 钉版本：github:kilo-s/dsh-rank-scan#v0.5.1
 ```
 
 仓库不含编译产物，这条命令会在安装时现场构建 `lib/`。首次可能被 pnpm 拦下构建脚本（它会打印要放行的键，加进 `allowBuilds` 后重跑即可），细节见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
@@ -37,14 +37,14 @@ dsh plugin --profile desktop add "<tgz 的完整路径>"
 
 ```sh
 dsh plugin --profile desktop add dsh-rank-scan
-# 钉版本：dsh-rank-scan@0.5.0
+# 钉版本：dsh-rank-scan@0.5.1
 ```
 
 npm 上那份是 CI 从源码构建的（包内自带 `lib/`，发布带 `--provenance` 签名）——装的时候不用再编译，也不会被 pnpm 的 `allowBuilds` 拦下。面板的「检查更新」读的就是 npm 上的版本号。
 
 **验证**：重开 DSH 后左侧栏会话列表下方应出现「扫榜」入口；或访问 `http://127.0.0.1:19387/api/rank-scan/health`，返回 `{ok:true,...}` 即通。
 
-**更新**：重跑安装命令即可（链接直装取最新 `main`，registry 装取最新发布版；本版本为 **0.5.0**）；面板「设置」页底部会读 npm 上的版本号提示有没有新版，装了 [dsh-market](https://github.com/dsh-market/dsh-market) 的话还能就地更新。
+**更新**：重跑安装命令即可（链接直装取最新 `main`，registry 装取最新发布版；本版本为 **0.5.1**）；面板「设置」页底部会读 npm 上的版本号提示有没有新版，装了 [dsh-market](https://github.com/dsh-market/dsh-market) 的话还能就地更新。
 
 **卸载**：`dsh plugin --profile desktop remove dsh-rank-scan`。数据目录 `~/.dsh/data/rank-scan` 会保留，要彻底清理自行删除；脚本化卸载与 patch 安全口径见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 

@@ -1,0 +1,503 @@
+/**
+ * 70-board.js：榜单页：BoardTab（选择器、详情、操作条、本榜设置、日期回看）。依赖 20/55。不要放 Panel。
+ * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
+ */
+    function BoardTab(props) {
+      const ov = props.ov
+      /**
+       * ★ 2026-10-23：可用宽度（面板宽减去正文左右 padding 与纵向滚动条）决定两件事 ——
+       *   ① 表格装几列（fitColumns，按宽装、超了从最不重要的列丢）；
+       *   ② 太窄（<560）就整体换成卡片行，别硬留两列把右半屏空着。
+       */
+      const avail = Math.max(320, Number(props.width) || (props.narrow ? 520 : 960))
+      const cards = avail < 560
+      const sites = (ov && ov.sites) || []
+      // 收起面板会卸载 BoardTab ⇒ 站/榜选择要持久化；日期/排序按榜各记各的
+      const [stSite, setStSite] = React.useState(function () { return sel.get().site })
+      const [bt, setBt] = React.useState(function () { return sel.get().board })
+      const [sd, setSd] = React.useState(function () { return sel.pref(sel.get().board, 'date') })
+      const [ss, setSs] = React.useState(function () { return sel.pref(sel.get().board, 'sort') })
+      const [data, setData] = React.useState(null)
+      const [err, setErr] = React.useState(null)
+      const [pick, setPick] = React.useState(null)
+      const [depth, setDepth] = React.useState('')
+      const [info, setInfo] = React.useState({ max: 100, can: true, hint: '' })
+      const [busy, setBusy] = React.useState(false)
+      const [scanning, setScanning] = React.useState(false)
+      const [note, setNote] = React.useState(null)
+      const [qDate, setQDate] = React.useState('')
+      const [dayOpen, setDayOpen] = React.useState(false)
+      /**
+       * ★ Spec A/B（2026-10-24 审查）：
+       *   · loadNonce —— 即使 sd/ss 本来就是空的，「回到最新」也必须真的重发一次 GET；
+       *   · directQ   —— 直查视图是**站点历史**，不是本地快照：它有自己的元数据，
+       *                  也不能被本地快照的修订号静默替换掉。
+       */
+      const [loadNonce, setLoadNonce] = React.useState(0)
+      const [directQ, setDirectQ] = React.useState(null)
+      const skipAutoKey = React.useRef('')
+      // 读取序号：只有最后一次发起的请求允许写界面（防旧响应覆盖）
+      const loadSeqRef = React.useRef(0)
+      const catSeqRef = React.useRef(0)
+      const curSite = stSite || (sites[0] && sites[0].site)
+      const curBoards = ((sites.filter(function (s) { return s.site === curSite })[0] || {}).boards) || []
+      const curBoard = bt || (curBoards[0] && curBoards[0].boardId)
+      const isDerived = String(curBoard || '').indexOf('fanqie.derived.') === 0
+      const colKeys = ((data && data.columns) || []).map(function (c) { return c.key })
+      const sortOpts = ((data && data.sortOptions) || [{ value: '', label: '默认' }, { value: 'rank', label: '名次' }])
+        .filter(function (o) { return !o.value || o.value === 'rank' || colKeys.indexOf(o.value) >= 0 })
+      // 日期下拉只用**这个榜自己**有快照的日期（/board 回的 data.dates）
+      const allDates = (data && data.dates && data.dates.length ? data.dates : [])
+      /**
+       * ★ 2026-10-25（批次榜）：下拉换成「批」。
+       *   刺猬猫首订一期跨 7 个数据日、内容雷同 ⇒ 按日期列会重复 7 次；
+       *   起点图首订一天一批，标签写「上架日」比写数据日期准确。
+       *   选项 value 仍是**代表快照日**，宿主按它取快照（协议不变）。
+       */
+      const periods = (data && data.periods) || []
+      const batchShown = !!(data && data.batch)
+      const dateOpts = batchShown
+        ? [{ value: '', label: '最新一批' }].concat(periods.slice().reverse().map(function (p) {
+            return { value: p.date, label: (p.label || p.date) + (p.untrusted ? '（不可信）' : '') }
+          }))
+        : [{ value: '', label: '最新' }].concat(allDates.slice().reverse().map(function (d) { return { value: d, label: d } }))
+      React.useEffect(function () {
+        const my = ++catSeqRef.current
+        jget('/catalog').then(function (c) {
+          if (my !== catSeqRef.current) return   // 已经换榜了：这份回答作废
+          const v = (c.depths || {})[curBoard]
+          const b = (c.boards || []).filter(function (x) { return x.boardId === curBoard })[0] || {}
+          setDepth(v != null ? String(v) : (b.depth != null ? String(b.depth) : ''))
+          setInfo({ depth: v != null ? v : null, max: b.maxDepth || 100, can: b.canDepth !== false, hint: b.depthHint || '' })
+        }).catch(function () {})
+      }, [curBoard])
+      /**
+       * silent=true：同日重扫后的静默重读（保留详情卡与选择）。
+       * ★ 2026-10-22（并发）：每次读都领一个序号，回来时序号已经不是最新的就**丢掉** ——
+       *   否则快切榜/快改日期时，先发的旧请求后到，会把新榜的数据覆盖掉。
+       */
+      const reloadBoard = React.useCallback(function (silent) {
+        if (!curBoard) return
+        const my = ++loadSeqRef.current
+        const q = '/board?boardId=' + encodeURIComponent(curBoard) + (sd ? '&date=' + sd : '') + (ss ? '&sort=' + ss : '')
+        jget(q).then(function (d) {
+          if (my !== loadSeqRef.current) return
+          setData(d); setDirectQ(null); setErr(null); if (!silent) setPick(null)
+        })
+          // 读失败**保留现有列表**，只在上方报错（不能清空界面伪装成「没有条目」）
+          .catch(function (e) { if (my !== loadSeqRef.current) return; setErr(String(e)) })
+      }, [curBoard, sd, ss, loadNonce])
+      React.useEffect(function () {
+        const key = [curBoard, sd, ss].join('|')
+        const skip = skipAutoKey.current === key
+        skipAutoKey.current = ''
+        if (!skip) reloadBoard(false)
+      }, [reloadBoard])
+      // 同日重扫：修订号变了就静默重读一次（不动站/榜/日期/排序/详情）
+      const revRef = React.useRef(null)
+      React.useEffect(function () {
+        const rev = props.rev || ''
+        if (revRef.current === null) { revRef.current = rev; return }
+        if (rev !== revRef.current) {
+          revRef.current = rev
+          // 正在看站点历史时，本地快照变了不能把它悄悄换成「最新」（否则横幅没了、行也换了）
+          if (!directQ) reloadBoard(true)
+        }
+      }, [props.rev, reloadBoard, directQ])
+      const selXS = function (label, value, options, onChange) {
+        return h('label', { style: C.row }, h('span', { style: C.muted }, label),
+          h('select', { value: value, onChange: function (e) { onChange(e.target.value) }, style: C.input },
+            options.map(function (o) { return h('option', { key: o.value, value: o.value }, o.label) })))
+      }
+      const pickBoard = function (v) { sel.set({ board: v }); setBt(v); setSd(sel.pref(v, 'date')); setSs(sel.pref(v, 'sort')); setPick(null); setDayOpen(false) }
+      const pickSite = function (v) { sel.set({ site: v, board: null }); setStSite(v); setBt(null); setSd(''); setSs(''); setPick(null); setDayOpen(false) }
+      const pickDate = function (v) { setSd(v); sel.setPref(curBoard, 'date', v) }
+      /** 「按上架日回看…」是动作项，不是日期值：不改当前选择，只在下面展开输入行 */
+      const pickDateSel = function (v) {
+        if (v === '__day') { setDayOpen(true); return }
+        setDayOpen(false)
+        pickDate(v)
+      }
+      const pickSort = function (v) { setSs(v); sel.setPref(curBoard, 'sort', v) }
+      /** 只保存条数（**不采集**）；另有一个明确的「保存并扫描本榜」 */
+      const saveDepth = function (alsoScan) {
+        const n = Math.max(1, Math.min(info.max || 100, Number(depth) || 10))
+        setBusy(true)
+        setNote('正在保存每榜取数 ' + n + ' 条…')
+        jpost('/depth', { boardId: curBoard, depth: n })
+          .then(function (r) {
+            setNote(null)
+            toast('success', (r && r.note) || ('已保存：每榜取 ' + n + ' 条'))
+            if (!alsoScan) return null
+            setScanning(true)
+            if (props.onScanStart) props.onScanStart()
+            setNote('已保存 ' + n + ' 条，正在扫描本榜…')
+            return jpost('/scan', { boards: curBoard }).then(function (rr) {
+              const got = ((rr && rr.boards) || []).map(function (x) { return x.boardId + ' ' + x.rows + ' 条' }).join('')
+              setNote(null)
+              toast('success', '已保存并扫描：' + (got || '完成'))
+              reloadBoard(true)
+              if (props.onScanned) props.onScanned()
+            }).catch(function (e2) {
+              // ★ 保存成功、采集失败要**分开说**，否则用户会以为设置没存住、反复点
+              setNote(null)
+              if (isScanBusyError(e2)) toast('warn', '已有扫描在进行，请等它跑完')
+              else toast('error', '条数已保存，但扫描失败：' + e2 + '（可稍后重试扫描）')
+            }).then(function () { if (props.onScanEnd) props.onScanEnd() })
+          })
+          .catch(function (e) { setNote(null); toast('error', '保存失败：' + e) })
+          .then(function () { setScanning(false); setBusy(false) })
+      }
+      /** 409 = 已有扫描（host 互斥）：不是错误，用 warn 提醒等一下 */
+      const isScanBusyError = function (e) {
+        return !!(e && (e.status === 409 || e.code === 'scan_in_flight' || /409|已有扫描/.test(String(e))))
+      }
+      const toastScanError = function (e) {
+        setNote(null)
+        if (isScanBusyError(e)) { toast('warn', '已有扫描在进行，请等它跑完'); return }
+        toast('error', '扫描失败：' + e)
+      }
+      const scanBoard = function () {
+        if (props.scanBusy || busy) return
+        if (props.onScanStart) props.onScanStart()
+        setBusy(true)
+        setScanning(true)
+        setNote('正在扫描本榜…')
+        jpost('/scan', { boards: curBoard })
+          .then(function (rr) {
+            const b0 = ((rr && rr.boards) || [])[0]
+            setNote(null)
+            toast('success', b0 ? '已扫描：' + b0.boardId + ' ' + b0.rows + ' 条' : '已扫描')
+            reloadBoard(true)
+            if (props.onScanned) props.onScanned()
+          })
+          .catch(function (e) { toastScanError(e) })
+          .then(function () { if (props.onScanEnd) props.onScanEnd(); setScanning(false); setBusy(false) })
+      }
+      const doEnrich = function () {
+        setBusy(true)
+        setNote('补全中（逐本请求 + ' + fmtIntervalText() + '，可能要几十秒）…')
+        jpost('/enrich?boardId=' + encodeURIComponent(curBoard)).then(function (r) {
+          setNote(null)
+          toast('success', r && r.note ? r.note : '补全完成')
+          return reloadBoard(true)
+        }).catch(function (e) { setNote(null); toast('error', '补全失败：' + e) }).then(function () { setBusy(false) })
+      }
+      /**
+       * 按日期回看：只在**支持核对的榜**出现（能力驱动）。
+       * 首订榜的站点口径是 n-1（上架 24 小时后才结算），所以「上架日」与「数据日期」不是一回事，
+       * 这里把两者分开写，不让用户以为选的是同一个日子。
+       */
+      const queryDay = function (save) {
+        if (!qDate) { toast('warn', '先选上架日'); return }
+        // ★ 上架日 X ⇒ 数据日期 X+1（首订按 n-1 锚；适配器 contentDateFor(数据日) = 数据日-1）
+        const dDate = addDaysStr(qDate, 1)
+        if (!dDate) { toast('warn', '日期格式不对：应为 YYYY-MM-DD'); return }
+        const my = ++loadSeqRef.current
+        setBusy(true)
+        setNote((save ? '抓取' : '查看') + '上架日 ' + qDate + '（数据日期 ' + dDate + '）…')
+        jpost('/day', { boardId: curBoard, date: dDate, save: !!save }).then(function (r) {
+          if (my !== loadSeqRef.current) return null
+          if (r && (r.ok === false || r.code)) {
+            setNote(null)
+            toast('warn', '已拒绝：' + (r.error || '站点给不出这一天可核对的数据'))
+            return null
+          }
+          const shown = (r && r.date) || dDate
+          setNote(null)
+          toast('success', r && r.note ? r.note : (save ? '已抓取：上架日 ' + qDate + ' 存为数据日期 ' + dDate + ' 的快照' : '已查看（未落盘）'))
+          if (save) { setDirectQ(null); setSd(shown); sel.setPref(curBoard, 'date', shown); setLoadNonce(function (n) { return n + 1 }); return null }
+          /**
+           * ★ Spec B（2026-10-24）：直查视图是一份**独立**数据。
+           *   旧实现用 { ...prev } 合并 ⇒ 沿用上一视图的 baselineDate / counts / enrich / fallbackFrom，
+           *   于是出现「数据日期 10-19 · 对比 10-21」（基准晚于数据日）却变化列全「—」。
+           *   现在显式给全自己的元数据，没基准就明说「无可比基准」。
+           */
+          const prev = data || {}
+          const ds = (prev.dates || []).slice()
+          if (ds.indexOf(shown) < 0) ds.push(shown)
+          ds.sort()
+          // Skip only the local read caused by clearing this query's sort.
+          if (ss) skipAutoKey.current = [curBoard, sd, ''].join('|')
+          setSs('')
+          setPick(null)
+          setData({
+            boardId: curBoard,
+            columns: prev.columns || [],
+            sortOptions: prev.sortOptions || [],
+            rows: (r.rowsAll || []).map(function (x) { return { ...x, delta: null, days: null } }),
+            dates: ds,
+            dataDate: shown,
+            baselineDate: null,
+            counts: null,
+            crossPeriod: false,
+            enrich: null,
+            fallbackFrom: null,
+            requestedDate: null,
+            source: '站点直查（未落盘）',
+            note: '直查站点 ' + shown + (r.contentDate && r.contentDate !== shown ? '（站点内容日期 ' + r.contentDate + '）' : ''),
+            _queryDate: shown,
+            _contentDate: (r && r.contentDate) || null,
+          })
+          setDirectQ({ date: shown })
+        }).catch(function (e) { setNote(null); toast('error', '直查失败：' + e) }).then(function () { setBusy(false) })
+      }
+      // Esc：先关详情卡（面板本身由 Panel 那层关）
+      useEscLayer(pick ? function () { setPick(null); return true } : null)
+      /** 状态带：一行说清「你在看哪份数据、跟哪天比」 */
+      const band = (function () {
+        if (!data) return null
+        const bits = []
+        /**
+         * ★ 2026-10-25（批次榜）：这一屏是「第 479 期 / 上架日 2026-10-24」，
+         *   不是「10-25 的榜 · 对比 10-23」——批次榜不比较变化，写日期只会误导。
+         */
+        if (data.batch) {
+          const bt = data.batch
+          bits.push(bt.label || (bt.key ? String(bt.key) : '批次未知'))
+          if (bt.kind === 'issue' && bt.saleStart) bits.push('上架 ' + bt.saleStart + (bt.saleEnd && bt.saleEnd !== bt.saleStart ? ' ~ ' + bt.saleEnd : ''))
+          bits.push('共 ' + (bt.count == null ? '—' : bt.count) + ' 本')
+          if (bt.snapshotDate) bits.push('快照 ' + bt.snapshotDate)
+          bits.push('批次榜：整批换新，不比较变化')
+          return bits.join(' · ')
+        }
+        const src = data._contentDate || (data.rows && data.rows[0] && data.rows[0].extra && data.rows[0].extra.showDate) || null
+        bits.push('数据日期 ' + (data.dataDate || '—'))
+        // 首订是 n-1 口径：直查时「内容日期（上架日）」与「数据日期」必须分开写清楚
+        if (src && src !== data.dataDate) bits.push((data._queryDate ? '内容日期 ' : '源数据 ') + src)
+        /** Spec S7：首订榜整批换的是「本期上架作品」，不标清会被读成榜单竞争意义的新入榜 */
+        if (String(curBoard || '').indexOf('qidiantu.shouding') === 0) {
+          bits.push('本期上架作品' + (src ? '（上架日 ' + src + '）' : '') + ' · 首订 = 上架后首订')
+        }
+        if (data.baselineDate) {
+          const g = data.dataDate ? dayGap(data.baselineDate, data.dataDate) : null
+          bits.push('对比 ' + data.baselineDate + (g && g > 1 ? '（隔 ' + g + ' 天，变化是累计值）' : ''))
+        } else bits.push('无可比基准（不报 0）')
+        const crossed = !!(data.rows && data.rows[0] && data.rows[0].extra && data.rows[0].extra.periodChanged)
+        if (crossed) bits.push('新期：变化不可比')
+        return bits.join(' · ')
+      })()
+      const enrichMissing = data && data.enrich && data.enrich.missing > 0 ? data.enrich.missing : 0
+      const canDay = canDayQuery(curBoard)
+      const dateOptsShown = canDay ? dateOpts.concat([{ value: '__day', label: '按上架日回看…' }]) : dateOpts
+      // 减掉正文左右 padding（20）、纵向滚动条与一点余量 ⇒ 表格不会溢出成横向滚动
+      const cols = fitColumns(data && data.columns, avail - 48)
+      const viewDate = (data && (data._queryDate || sd)) || ''
+      /* 0.4.2：本榜操作不再进「更多」——扫描/补全在操作条，条数在「本榜设置」，回看在日期行。 */
+      /**
+       * ★ 2026-10-23（窄面板「作品只显示书名前面的信息，后面一大片空白」）：
+       *   以前窄的时候是把次级列**整列删掉**、再让表格 width:100% 铺满 ⇒ 每行只剩名次 + 书名，
+       *   右半张桌子全空，被删掉的指标也没有别处可看。窄的时候改成**卡片行**：
+       *   第一行 名次 · 书名 · 作者 · 星标；第二行把这一榜要看的指标做成 chip（放不下自动换行）。
+       */
+      const CHIP_SKIP = { title: 1, rank: 1, author: 1, cat: 1, subCat: 1, updated: 1, days: 1 }
+      const chipCols = ((data && data.columns) || []).filter(function (c) { return !CHIP_SKIP[c.key] }).slice(0, 6)
+      /** 该行是否正展开详情 */
+      /**
+       * ★ Spec C（2026-10-24 审查）：窄窗/装列时被收起的列必须**显式可展开**。
+       *   旧实现把列从表格里丢掉就没有任何入口（起点的分类/子分类、在榜天数、三江第 7 列起的逐日
+       *   增量只能靠拉宽面板看）。这里算出「当前视图没显示的列」，在行详情里用**同一套 cell 渲染器**
+       *   补全 —— 不截断真实字段，也不改现有列宽/收起策略。
+       */
+      const SUMMARY_COLS = { title: 1, rank: 1, author: 1, words: 1, updated: 1 }
+      const shownColKeys = (function () {
+        const m = {}
+        if (cards) {
+          m.title = 1; m.rank = 1; m.author = 1
+          chipCols.forEach(function (c) { m[c.key] = 1 })
+        } else {
+          cols.forEach(function (c) { m[c.key] = 1 })
+        }
+        return m
+      })()
+      const detailCols = ((data && data.columns) || []).filter(function (c) {
+        return !shownColKeys[c.key] && !SUMMARY_COLS[c.key]
+      })
+      const isOpen = function (r) { return !!(pick && pick.key === r.key) }
+      /**
+       * ★ 2026-10-23（点了没反应）：详情卡原来挂在**整张列表之后** ⇒ 列表一长就在视口外
+       *   （实测 820×640 面板：详情卡 top=738、可视区底 731，根本没进画面）。
+       *   现在改成「点哪一行，详情就展开在哪一行下面」。
+       */
+      const detailCard = function (r) {
+        const ex = r.extra || {}
+        return h('div', { style: { ...C.detail, marginTop: '4px' } },
+          h('div', { style: { fontWeight: 600 } }, dash(r.title)),
+          h('div', { style: C.muted }, '作者 ' + dash(r.author) + ' · 名次 ' + dash(r.rank) + ' · 字数 ' + fmtWords(ex.wordsText || ex.wordsCnt || ex.wordNumber || ex.words)),
+          h('div', { style: C.muted }, '更新 ' + fmtTime(ex.lastChapterUpdateTime)),
+          // 被当前宽度收起的列：在这里逐条列出（label + 与表格完全相同的渲染）
+          detailCols.length ? h('div', { style: { marginTop: '3px' } }, detailCols.map(function (c) {
+            return h('div', { key: 'dx-' + c.key, style: C.muted }, c.label + '：', cell(rowCellProps(r, c), r))
+          })) : null,
+          h('div', { style: C.row },
+            h(BookmarkStar, { bookKey: bookKeyOf(curBoard, r.key), row: r, boardId: curBoard, dataDate: data && data.dataDate }),
+            h(DetailBookmarkEditor, { bookKey: bookKeyOf(curBoard, r.key) }),
+            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
+            h('a', { href: r.url || '#', target: '_blank', rel: 'noreferrer', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
+            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); try { navigator.clipboard.writeText(r.url || '') } catch (err) {} } }, '复制链接'),
+            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); setPick(null) } }, '关闭')),
+          ex.qidiantuUrl || ex.sourceUrl
+            ? h('div', { style: C.row },
+                (ex.qidiantuUrl ? h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.qidiantuUrl) } }, '看起点图原始页') : null),
+                (ex.sourceUrl ? h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.sourceUrl) } }, '看原数据来源页') : null),
+                h('span', { style: C.muted }, '（数据口径以来源页为准）'))
+            : null)
+      }
+      const rowCellProps = function (r, c) {
+        return { ...c, _openLink: props.openLink, _boardId: data.boardId, _dataDate: data.dataDate, _bmKey: bookKeyOf(data.boardId, r.key) }
+      }
+      const narrowRow = function (r, i) {
+        const open = !!(pick && pick.key === r.key)
+        const ex = r.extra || {}
+        const titleText = (r.title || '') + (ex.titleSuspect || ex.titleTruncated ? ' ⚠' : '')
+        const chips = chipCols.map(function (c) {
+          const v = cell(rowCellProps(r, c), r)
+          if (v === '—' || v === null || v === undefined || v === '') return null
+          return h('span', { key: 'c' + c.key, style: C.chip, title: c.note || c.label },
+            h('span', { style: { opacity: 0.62 } }, c.label), ' ', v)
+        }).filter(Boolean)
+        return h('div', {
+          key: r.key || ('row' + i),
+          tabIndex: 0,
+          style: { ...C.card, padding: '5px 8px', margin: '5px 0', cursor: 'pointer',
+            borderColor: open ? T.border : undefined,
+            background: open ? T.subtle : undefined },
+          onClick: function () { setPick(open ? null : r) },
+          onKeyDown: function (e) { if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setPick(open ? null : r) } },
+        },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0 } },
+            h('span', { style: { ...C.num, ...C.muted, flex: '0 0 auto', minWidth: '16px', textAlign: 'right' } }, dash(r.rank)),
+            h('a', {
+              href: r.url || '#', title: '在 DSH 侧栏浏览器打开',
+              style: { color: 'inherit', fontWeight: 600, flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+              onClick: function (e) { e.preventDefault(); e.stopPropagation(); (props.openLink || function (u) { window.open(u, '_blank', 'noopener,noreferrer') })(r.url) },
+            }, titleText),
+            r.author ? h('span', { style: { ...C.muted, flex: '0 0 auto', maxWidth: '92px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: r.author }, r.author) : null,
+            h(BookmarkStar, { bookKey: bookKeyOf(data.boardId, r.key), row: r, boardId: data.boardId, dataDate: data.dataDate })),
+          chips.length ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '3px' } }, chips) : null)
+      }
+      return h('div', null,
+        h('div', { style: { ...C.row, flexWrap: 'wrap' } },
+          selXS('站', curSite || '', sites.map(function (s) { return { value: s.site, label: s.siteName } }), pickSite),
+          selXS('榜', curBoard || '', curBoards.map(function (b) { return { value: b.boardId, label: b.name } }), pickBoard),
+          isDerived ? null : selXS('日期', sd, dateOptsShown, pickDateSel),
+          selXS('排序', ss, sortOpts, pickSort)),
+        dayOpen && canDay ? h('div', { style: { ...C.row, marginTop: '2px', flexWrap: 'wrap' } },
+          h('span', { style: C.muted }, '上架日'),
+          h('input', { type: 'date', value: qDate, onChange: function (e) { setQDate(e.target.value) }, style: { ...C.input, width: 'auto' } }),
+          h('button', { className: 'rs-btn', disabled: busy || !qDate, onClick: function () { queryDay(false) }, title: '直查站点这一上架日的数据（联网，不落盘）' }, '查看'),
+          h('button', { className: 'rs-btn', disabled: busy || !qDate, onClick: function () { queryDay(true) }, title: '抓取该上架日并存为本地快照（联网）' }, '存入本地'),
+          h('button', { className: 'rs-btn is-ghost', onClick: function () { setDayOpen(false) } }, '收起'),
+          h('div', { style: { ...C.muted, flex: '1 1 100%' } }, '首订按 n-1 锚：选上架日 X ⇒ 请求数据日期 X+1（页面内容日期就是 X）；保存后快照记在 X+1 名下。站点给的日期对不上会被拒绝，不写任何文件。')) : null,
+        h('div', { style: { ...C.row, marginTop: '4px', flexWrap: 'wrap' } },
+          h('button', {
+            className: 'rs-btn',
+            disabled: props.scanBusy || busy,
+            onClick: scanBoard,
+            title: props.scanBusy ? '全局扫描进行中；请到概览点「停止本次」后再扫本榜' : '只抓当前这一榜，不动其它榜（联网）',
+          }, scanning ? '扫描本榜中…' : (props.scanBusy ? '全局扫描进行中…' : '扫描本榜（联网）')),
+          enrichMissing ? h('button', { className: 'rs-btn', disabled: busy || props.scanBusy, onClick: doEnrich, title: '补全当前榜缺失字段（联网：逐本进书页取，可能走缓存）' }, '补全缺失 ' + enrichMissing + ' 条') : null,
+          h('span', { style: C.muted }, '只抓当前这一榜；全局扫描/停止在概览')),
+        enrichMissing ? h(Banner, { tone: 'warn', live: false },
+          h('span', null, '补全未完成：还缺 ' + enrichMissing + ' 条字段'),
+          h('span', { style: C.muted }, '（榜页没给收藏/字数，要进书页取；点上面的「补全缺失」重试，或等定时续跑）')) : null,
+        h(Section, { title: '本榜设置', defaultOpen: false, summary: '每榜 ' + (depth || info.max || '—') + ' 条（上限 ' + (info.max || '—') + '）' },
+          h('div', { style: { ...C.row, flexWrap: 'wrap' } },
+            h('span', { style: C.muted }, '每榜取多少条'),
+            h('input', {
+              type: 'number', min: 1, max: info.max, value: depth, placeholder: String(info.max), disabled: !info.can || busy,
+              title: info.hint, onChange: function (e) { setDepth(e.target.value) },
+              style: { ...C.input, width: '58px' },
+            }),
+            h('span', { style: C.muted }, info.can ? '条（上限 ' + info.max + '）' : '条 · ' + info.hint),
+            h('button', { className: 'rs-btn', disabled: !info.can || busy, onClick: function () { saveDepth(false) }, title: '只保存，下次扫描生效' }, '保存'),
+            h('button', { className: 'rs-btn', disabled: !info.can || busy || props.scanBusy, onClick: function () { saveDepth(true) }, title: '保存后立刻抓一次这一榜（联网）' }, '保存并扫描本榜')),
+          info.hint ? h('div', { style: C.muted }, info.hint) : null),
+        band ? h('div', { style: { ...C.muted, marginTop: '2px' } }, band) : null,
+        viewDate ? h(Banner, { tone: 'warn' },
+          h('span', { style: { fontWeight: 600 } }, '正在查看历史：' + viewDate),
+          h('span', { style: C.muted }, data && data._queryDate ? '（直查站点，未落盘）' : '（本地快照）'),
+          /**
+           * ★ Spec A（2026-10-24）：旧实现只清 sd/ss 并 setData(null)。
+           *   sd/ss 本来就是空的时候依赖没变化 ⇒ 一次 GET 都不发，列表永久停在「加载中…」。
+           *   现在显式清直查视图 + 清本地日期偏好 + 递增 nonce ⇒ **一定**重发一次无 date 的 GET。
+           */
+          h('button', {
+            className: 'rs-btn',
+            onClick: function () {
+              setSs('')
+              setSd('')
+              sel.setPref(curBoard, 'date', '')
+              setDirectQ(null)
+              setPick(null)
+              setLoadNonce(function (n) { return n + 1 })
+            },
+          }, '回到最新')) : null,
+        data && data.fallbackFrom ? h('div', { style: C.muted }, '当天（' + data.requestedDate + '）没有快照 ⇒ 回落到 ' + data.fallbackFrom) : null,
+        data && data.source ? h('div', { style: C.muted }, '来源：' + data.source) : null,
+        err ? h('div', { style: { ...C.row, color: T.bad } },
+          h('span', null, '⚠ 读取失败：' + String(err).slice(0, 120)),
+          h('button', { className: 'rs-btn', onClick: function () { reloadBoard(false) } }, '重试')) : null,
+        note ? h('div', { style: C.muted }, note) : null,
+        data && data.rows && data.rows.length
+          ? (cards
+              ? h('div', null, data.rows.map(function (r, i) {
+                  // 卡片行 + 展开时紧跟其后的详情卡（详情别再挂到列表末尾）
+                  return h('div', { key: 'w' + (r.key || i) }, narrowRow(r, i), isOpen(r) ? detailCard(r) : null)
+                }))
+              : h('table', { style: C.table },
+              h('thead', null, h('tr', null, cols.map(function (c) { return h('th', { key: c.key, style: C.th, title: c.note || '' }, c.label) }))),
+              h('tbody', null, data.rows.flatMap(function (r, i) {
+                const tr = h('tr', {
+                  key: r.key || i,
+                  tabIndex: 0,
+                  style: { cursor: 'pointer' },
+                  onClick: function () { setPick(isOpen(r) ? null : r) },
+                  onKeyDown: function (e) { if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setPick(isOpen(r) ? null : r) } },
+                }, cols.map(function (c) {
+                  return h('td', { key: c.key, style: isNumCol(c.key) ? { ...C.td, ...C.num } : C.td }, cell(rowCellProps(r, c), r))
+                }))
+                // 详情卡作为紧跟那一行的一行（colSpan 占满），点哪一行就在哪一行下面展开
+                return isOpen(r)
+                  ? [tr, h('tr', { key: 'd' + (r.key || i) }, h('td', { colSpan: Math.max(1, cols.length), style: { padding: '0 0 4px' } }, detailCard(r)))]
+                  : [tr]
+              }))))
+          : h('div', { style: C.muted }, data ? dash(data.note || '没有条目') : '加载中…'),
+        h('div', { style: { ...C.muted, marginTop: '6px' } }, '列随榜变化：该站没有的字段整列不出现；有字段但这条没抓到显示「—」（批次榜不出「变化」列）。面板变窄时列会按宽度自动收起（先收作者/分类/字数这类次级列，名次/书名与该榜主指标一直在），再窄就换成卡片行；点行看详情。'))
+    }
+
+    /**
+     * 面板开/关的共享状态：左栏入口按钮 与 浮窗 共用。
+     * ★ 挂在模块级 SHARED 上（2026-10-15）：本会话观察到 loader 可能把 factory 跑两遍，
+     *   若 store 建在 apply 里，入口和浮窗会拿到**两个不同的 store** ⇒ 点入口面板不开（订阅不在同一份上）。
+     *   放模块级 + window 锚 ⇒ 无论几个实例都共用一份。
+     */
+    const panelOpen = SHARED.panelOpen || (SHARED.panelOpen = {
+      value: readPanelOpen(),
+      subs: new Set(),
+      set: function (v) {
+        this.value = v
+        try { localStorage.setItem(LS_OPEN, v ? '1' : '0') } catch (e) {}
+        this.subs.forEach(function (f) { try { f(v) } catch (e) {} })
+      },
+      use: function () {
+        const [o, setO] = React.useState(panelOpen.value)
+        React.useEffect(function () {
+          const f = function (v) { setO(v) }
+          panelOpen.subs.add(f)
+          return function () { panelOpen.subs.delete(f) }
+        }, [])
+        return [o, function (v) { panelOpen.set(v) }]
+      },
+    })
+
+    /**
+     * 左栏入口 occupant（sidebar.panellist 槽）。
+     * ★ 宿主契约（@deepseek-ai/dsh-client-ui-sidebar 的 PanelRow）：
+     *     <button aria-label={label} onClick={selectPanel(id)}>{ renderSlot('sidebar.panellist', { size, active }, { only: id }) }</button>
+     *   所以 occupant 必须是**只吃 size 的纯图标**：
+     *     · 自己再渲染 <button> = 按钮套按钮，内层点击还会冒泡再触发一次 selectPanel；
+     *     · 把整块 UI（页签/说明/计数）塞进图标位会把侧栏撑破；
+     *     · 无障碍名由注册项的 label 提供（宿主做 aria-label + tooltip），不是内部 id。
+     *   开关浮窗的入口在下方的「薄 main 面板」里（Q29）。
+     */

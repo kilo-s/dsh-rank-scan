@@ -1,9 +1,9 @@
 # 第四步交接：概览信息结构（0.5.0）
 
 - 分支：`ui/step4-overview`（从 0.4.2 合并后的 main 拉出）
-- 提交：`fc7dfba`（https://github.com/kilo-s/dsh-rank-scan/commit/fc7dfba296087da35009f33a792cac604687bbb2）
+- 提交：`fc7dfba` + 验收修复 `2af6f92`（https://github.com/kilo-s/dsh-rank-scan/commit/2af6f92）
 - 版本：0.5.0（package.json / package-lock / README / CHANGELOG）
-- 状态：**已实现、离线测试与验收脚本已跑；未合并 main、未打 tag**，等验收。
+- 状态：**已合并 main（`6477c16`）、tag `v0.5.0` 已推送**。
 - 前序：0.4.2 已合并 main（`6377dac`）并推送 tag `v0.4.2`。
 
 ## 做了什么

@@ -1,9 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 import vm from 'node:vm'
 
-const source=readFileSync(new URL('../client/client.js',import.meta.url),'utf8')
+const source=readClientSource()
 const block=source.slice(source.indexOf("const DRAFT_KEY ="),source.indexOf('/** 脏状态登记'))
 function load(storage){return vm.runInNewContext(block+'\nDRAFTS',{window:{},sessionStorage:{getItem:k=>storage[k]||null,setItem:(k,v)=>{storage[k]=v}}})}
 test('unsaved settings survive a fresh module evaluation and clearing stays cleared',()=>{

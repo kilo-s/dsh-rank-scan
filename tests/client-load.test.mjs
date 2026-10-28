@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
@@ -19,12 +20,11 @@ import vm from 'node:vm'
  * factory(require)（见 @deepseek-ai/dsh-client-modules：注册只登记工厂，materialize 才跑工厂体），
  * 再真的调一次 apply(ctx)，把槽位注册抓下来，验证入口 id 与 main 面板 id 对齐。
  *
- * 只测 client/client.js（入库的真源）：lib/client.js 是构建复制品，二者的字节一致性
+ * 只测 client/parts/*.js（入库的真源）：lib/client.js 是构建复制品，二者的字节一致性
  * 由 client-bundle.test.mjs 单独守。
  */
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const SOURCE = join(ROOT, 'client', 'client.js')
 /** 最小 React 桩：够跑 factory 顶层 + apply，也够直接调用纯展示组件 */
 function makeFakeReact() {
   const createElement = function (type, props) {
@@ -61,7 +61,7 @@ function makeLocalStorage(seed) {
  * 而不是变成「裸标识符 ReferenceError 被空 catch 吞掉」这种查不到的无声故障。
  */
 function loadBundle(sandboxExtras) {
-  const src = readFileSync(SOURCE, 'utf8')
+  const src = readClientSource()
   const fakeReact = makeFakeReact()
   let registration = null
   const appended = []
@@ -89,7 +89,7 @@ function loadBundle(sandboxExtras) {
   sandbox.window.__ModuleLoader__ = { load: function (r) { registration = r } }
   const context = vm.createContext(sandbox)
   // ① 脚本求值：只允许登记工厂（这一步就已经能抓「脚本级」抛错）
-  vm.runInContext(src, context, { filename: 'client/client.js' })
+  vm.runInContext(src, context, { filename: 'client/parts/*.js' })
   assert.ok(registration && typeof registration.factory === 'function', 'bundle 没有通过 window.__ModuleLoader__.load 登记工厂')
   // ② 物化：真的跑 factory(require)（宿主在第一次 import/require 时才会走到这里）
   const exportsObj = registration.factory(function (spec) {
@@ -203,7 +203,7 @@ test('★ 整行只有一个按钮：图标节点不挂点击处理器，接管�
     assert.ok(!el.props[k], '图标节点不该再挂 ' + k + '（整行只保留宿主那一个按钮，接管统一在捕获阶段）')
   }
   assert.equal(el.props['data-rank-scan-entry'], '1', '必须带行标记，捕获阶段靠它认行')
-  const src = readFileSync(SOURCE, 'utf8')
+  const src = readClientSource()
   const hooks = src.match(/addEventListener\('click', onRowActivate, true\)/g) || []
   assert.equal(hooks.length, 1, '行点击接管必须只注册一处，实际 ' + hooks.length)
   assert.match(src, /closest\('button, \[role="button"\]'\)/, '认行时按钮选择器要兼容 role=button')
@@ -234,7 +234,7 @@ test('★ 首次安装自动弹一次：标记只在**真的打开**的那一刻
   assert.equal(idle.sandbox.__rankScanShared.panelOpen.value, false, 'apply 没跑时浮窗不该已经是打开状态')
 })
 test('★ 面板本地时刻（ticket 42 显示部分）：UTC ISO 串必须按本地时刻渲染，不许再 slice(11,16)', function () {
-  const src = readFileSync(SOURCE, 'utf8')
+  const src = readClientSource()
   // 旧写法：String(hit.at).slice(11, 16) —— 取的是 UTC 的 HH:MM（东八区早 8 小时）
   assert.ok(!/slice\(11, 16\)/.test(src), '面板里仍有把 UTC ISO 串直接切片当本地时刻显示的写法')
   const start = src.indexOf('const asDate = (v) =>')

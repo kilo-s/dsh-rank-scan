@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, existsSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -15,9 +16,9 @@ import { fileURLToPath } from 'node:url'
  * 把每个修法里最容易被后续编辑改回去的那一句钉住。
  */
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const SOURCE = join(ROOT, 'client', 'client.js')
-const BUNDLE = existsSync(join(ROOT, 'lib', 'client.js')) ? join(ROOT, 'lib', 'client.js') : SOURCE
-const src = () => readFileSync(BUNDLE, 'utf8')
+const SOURCE = readClientSource()
+const BUNDLE_PATH = join(ROOT, 'lib', 'client.js')
+const src = () => (existsSync(BUNDLE_PATH) ? readFileSync(BUNDLE_PATH, 'utf8') : SOURCE)
 
 test('① 菜单相对视口定位：放不下就翻到上面、左右夹在视口里（不再被浮窗 overflow 裁掉）', () => {
   const s = src()

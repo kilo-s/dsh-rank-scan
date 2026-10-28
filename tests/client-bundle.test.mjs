@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, existsSync } from 'node:fs'
+import { readClientSource, buildClientBundle, partsDir } from './_client-source.mjs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -16,31 +17,33 @@ import { fileURLToPath } from 'node:url'
  * 所以必须有一个「真的把它当 JS 解析一遍」的测试，并且顺手守住几个结构特征。
  */
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-// 面板源在 client/client.js（入库，是唯一真源）；lib/client.js 由构建复制而来（不入库）。
+// 面板源在 client/parts/*.js（入库，是唯一真源）；lib/client.js 由构建复制而来（不入库）。
 // 优先测「真正会发货的那一份」，没有构建过时退回源文件，避免 clone 后未构建就整片红。
-const SOURCE = join(ROOT, 'client', 'client.js')
-const BUNDLE = existsSync(join(ROOT, 'lib', 'client.js')) ? join(ROOT, 'lib', 'client.js') : SOURCE
+const SOURCE = readClientSource()
+const BUNDLE_PATH = join(ROOT, 'lib', 'client.js')
+const BUNDLE_SRC = existsSync(BUNDLE_PATH) ? readFileSync(BUNDLE_PATH, 'utf8') : SOURCE
 
-test('面板源在仓库里（client/client.js）', () => {
-  assert.ok(existsSync(SOURCE), 'client/client.js 不在：面板源必须入库，否则 CI 从源码构建出的包装不上面板')
+test('面板源在仓库里（client/parts/*.js）', () => {
+  assert.ok(existsSync(partsDir), 'client/parts 不在：面板源必须入库，否则 CI 从源码构建出的包装不上面板')
+  assert.ok(SOURCE.length > 1000, 'parts 拼接结果太小，不像完整面板')
 })
 
-test('lib/client.js 与 client/client.js 内容一致（构建只是复制，不许各自漂移）', () => {
+test('lib/client.js 与 client/parts 拼接结果一致（构建不许各自漂移）', () => {
   const out = join(ROOT, 'lib', 'client.js')
   if (!existsSync(out)) return // 未构建：由 CI / 双闸门先构建后再查
-  assert.equal(readFileSync(out, 'utf8'), readFileSync(SOURCE, 'utf8'), 'lib/client.js 与面板源不一致：先跑 scripts/build.sh')
+  assert.equal(readFileSync(out, 'utf8'), buildClientBundle(), 'lib/client.js 与 parts 拼接结果不一致：先跑 scripts/build.mjs')
 })
 
 test('客户端 bundle 必须能被 JS 解析（防 edit 留下孤立 token 变成语法错误）', () => {
-  assert.ok(existsSync(BUNDLE), BUNDLE + ' 不存在')
-  const src = readFileSync(BUNDLE, 'utf8')
+  assert.ok(BUNDLE_SRC.length > 1000, 'lib/client.js 不存在或太小')
+  const src = BUNDLE_SRC
   assert.ok(src.length > 1000, 'bundle 太小，不像完整产物')
   // new Function 会真的走一遍解析（语法错误会抛 SyntaxError）
   assert.doesNotThrow(() => new Function(src), 'lib/client.js 语法错误 ⇒ 整个面板会不加载')
 })
 
 test('★ 回归：healStore 必须能把「上一代的旧 store」补成当前形状（否则书签页签报 Cannot read …reading \'q\'）', () => {
-  const src = readFileSync(BUNDLE, 'utf8')
+  const src = BUNDLE_SRC
   const start = src.indexOf('const healStore = function (s) {')
   assert.ok(start >= 0, 'healStore 不在了（书签页签的防线没了）')
   const end = src.indexOf('\n    }', start)
@@ -78,7 +81,7 @@ test('★ 回归：healStore 必须能把「上一代的旧 store」补成当前
 })
 
 test('★ 页签顺序：概览 → 榜单 → 书签 → 设置（已批准口径）', () => {
-  const src = readFileSync(BUNDLE, 'utf8')
+  const src = BUNDLE_SRC
   const order = ['ov', 'board', 'bm', 'pick'].map((k) => src.lastIndexOf("switchTab('" + k + "')"))
   order.forEach((idx, i) => assert.ok(idx >= 0, '页签 ' + ['ov', 'board', 'bm', 'pick'][i] + ' 不见了'))
   for (let i = 1; i < order.length; i++) {
@@ -87,14 +90,14 @@ test('★ 页签顺序：概览 → 榜单 → 书签 → 设置（已批准口�
 })
 
 test('★ 收藏/在读：卡片必须按站取标签，且说明数据来源', () => {
-  const src = readFileSync(BUNDLE, 'utf8')
+  const src = BUNDLE_SRC
   assert.match(src, /collectLabel/, '卡片没有读 collectLabel')
   assert.match(src, /b\.site === 'fanqie' \? '在读'/, '番茄必须显示「在读」而不是「收藏」')
   assert.match(src, /qidian-book-cache/, '缺少起点书页缓存这个来源的说明')
   assert.match(src, /来自书页刷新/, '缺少书页刷新来源的说明')
 })
 test('★ 书签卡「打开」必须与榜单页书名同路（DSH 侧栏浏览器），不是裸 target=_blank', () => {
-  const src = readFileSync(BUNDLE, 'utf8')
+  const src = BUNDLE_SRC
   // 书签页签必须拿到 openLink —— 否则又会退回新标签（使用者 2026-10-16 反馈的不一致）
   assert.match(src, /h\(BookmarksTab, \{ openLink: props\.openLink \}\)/, 'BookmarksTab 没拿到 openLink ⇒ 书签卡会退回新标签')
   assert.match(src, /\(props\.openLink \|\| function \(u\) \{ window\.open\(u, '_blank', 'noopener,noreferrer'\) \}\)\(b\.url\)/, '书签卡「打开」没有走 props.openLink')
@@ -104,14 +107,14 @@ test('★ 书签卡「打开」必须与榜单页书名同路（DSH 侧栏浏览
 })
 
 test('★ 票 27：轮询必须与「展开 + 页面可见」耦合（收起不得继续轮询）', () => {
-  const src = readFileSync(BUNDLE, 'utf8')
+  const src = BUNDLE_SRC
   assert.match(src, /document\.visibilityState/, '缺少页面可见性判断')
   assert.match(src, /visibilitychange/, '缺少可见性变化监听')
   assert.match(src, /if \(!open\) return undefined/, '收起时没有提前返回 ⇒ 20s 轮询会继续跑')
 })
 
 test('★ 跨期不可比：变化列必须显示「新期」（行上带 extra.periodChanged 时）', () => {
-  const src = readFileSync(BUNDLE, 'utf8')
+  const src = BUNDLE_SRC
   // 判定必须排在 deltaGroup/数值判定**之前**，否则又会被 '＋ 新' / '—' 抢走
   // 三元式与 if/return 都算数（2026-10-17 给变化列配上色后改成了 if 分支，判定顺序不变）
   assert.match(src, /ex\.periodChanged === true(\)\s*\?\s*'新期'|\)\s*return\s*'新期')/, '变化列缺少「新期」分支')
@@ -122,7 +125,7 @@ test('★ 跨期不可比：变化列必须显示「新期」（行上带 extra.
 })
 
 test('lib/client.js 关键结构特征还在（槽位注册 / 面板开合 / 站点判断）', () => {
-  const src = readFileSync(BUNDLE, 'utf8')
+  const src = BUNDLE_SRC
   assert.match(src, /window\.__ModuleLoader__\.load/, '缺少 ModuleLoader 注册')
   assert.match(src, /shell\.overlay/, '缺少 shell.overlay 槽位注册（面板浮窗挂不上）')
   assert.match(src, /sidebar\.panellist/, '缺少左栏入口槽位')
@@ -133,13 +136,13 @@ test('lib/client.js 关键结构特征还在（槽位注册 / 面板开合 / 站
   assert.match(src, /typeof ctx === 'string'/, 'openLink 缺少单参数兼容分支')
 })
 test('★ 回归：番茄「在读变化」读 valueDelta，绝不退回名次差', () => {
-  const src = readFileSync(SOURCE, 'utf8')
+  const src = SOURCE
   assert.ok(src.indexOf('extra.valueDelta') >= 0 || src.indexOf('ex.valueDelta') >= 0, '在读变化必须读 valueDelta（我方按天的在读差）')
   assert.ok(src.indexOf("if (k === 'readDelta') return ex.delta") < 0, '旧写法（读 ex.delta）会把名次差当在读变化显示，必须已移除')
 })
 
 test('★ 补全未完成在面板上可见（2026-10-16 补全持久化）', () => {
-  const src = readFileSync(SOURCE, 'utf8')
+  const src = SOURCE
   assert.ok(src.indexOf('补全未完成') >= 0, '面板要标出「补全未完成」，别让裸行静默')
   assert.ok(src.indexOf('data.enrich') >= 0, '面板要消费宿主下发的 enrich 状态')
   assert.ok(src.indexOf('extra.showDate') >= 0, '起点图首订的源数据日期要显示出来')

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { readClientSource } from './_client-source.mjs'
 import vm from 'node:vm'
 
 /**
@@ -10,7 +11,7 @@ import vm from 'node:vm'
  *   · 网格 auto-fit + minmax；空态文案；无变化不渲染分组筛选
  *   · 小尾巴 A：单榜扫描置位 Panel 忙态，409 走 warn；B：输入用 C.input
  */
-const s = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+const s = readClientSource()
 const overviewSrc = s.slice(s.indexOf('function Overview'), s.indexOf('function SettingsTab'))
 const boardSrc = s.slice(s.indexOf('function BoardTab'), s.indexOf('function Panel(props)'))
 
@@ -35,7 +36,7 @@ function loadComponents() {
   sandbox.window = sandbox
   sandbox.globalThis = sandbox
   vm.createContext(sandbox)
-  vm.runInContext(s, sandbox, { filename: 'client/client.js' })
+  vm.runInContext(s, sandbox, { filename: 'client/parts/*.js' })
   return reg.factory((name) => { if (name === 'react') return React; throw new Error('unexpected require: ' + name) })
 }
 

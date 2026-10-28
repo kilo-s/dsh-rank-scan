@@ -12,7 +12,7 @@ src/scan/*.ts         纯逻辑（可单测）：derive 派生榜 / diff 变化�
                       schedule 定时判据 / store 落盘 / files 复制与导出 / fontmap 字体映射 /
                       update 与 update-check 更新通道 / guard 来源与日期校验 / bounded-fetch 超时
 src/sites/*.ts        站点适配器：qidian-mobile / qidiantu / ciweimao / fanqie / sfacg
-client/client.js      面板 bundle 的**源**（手写，不经 tsc；只 require('react')）
+client/parts/*.js   面板 bundle 的**源**（按文件名排序拼接；手写，不经 tsc；只 require('react')）
 lib/                  tsc 产物 + 复制过来的面板 bundle（**不进仓库**：注释会被复制、sourcemap 带绝对路径）
 tests/*.test.mjs      离线测试（node:test，零依赖，不联网）
 tests/fixtures/       站点响应快照，供解析器回归
@@ -23,14 +23,14 @@ scripts/              构建、测试、安装、卸载、patch 救援（repair-
 
 ```bash
 npm install        # 只为拿 typescript / @types/node（运行期零依赖；装完会自动跑一次 prepare=构建）
-npm run build      # = node scripts/build.mjs：tsc 编 host + 把 client/client.js 复制成 lib/client.js
+npm run build      # = node scripts/build.mjs：tsc 编 host + 把 client/parts/*.js 按名拼成 lib/client.js
 ```
 
 - 构建入口**必须是纯 Node**（`scripts/build.mjs`）：Windows 上没有可用的 bash，而 git 直装（`dsh plugin add github:…`）要靠 package.json 的 `prepare` 在**用户机器上**跑构建。
 - `prepare` 同时意味着「本地 npm install 会自动构建一次」；`prepack` 保证打包前一定是最新产物。
 
 - `lib/` **不入库**：编译产物会把源码注释复制一份，sourcemap 还带构建机的绝对路径；同时产物与源码会各自漂移。
-- **面板 bundle 的源是 `client/client.js`**（入库），构建时被**复制**到 `lib/client.js` —— 它是手写的，不编译、不打包；所以「clone → `npm run build`」能产出与发布包一致的 `lib/`。
+- **面板 bundle 的源是 `client/parts/*.js`**（入库），构建时按文件名排序**拼接**到 `lib/client.js` —— 它是手写的，不编译、不打包；所以「clone → `npm run build`」能产出与发布包一致的 `lib/`。
 - **可以 clone / 仓库链接直装**（`dsh plugin add github:kilo-s/dsh-rank-scan`）：仓库不含 `lib/`，靠 `prepare` 在安装时现场构建。
 - pnpm 默认拦截依赖的构建脚本 ⇒ **直装首次会被拦住**（不是不能装）：`dsh` 会打印需要放行的确切键，加进 `~/.dsh/profiles/<profile>/pnpm-workspace.yaml` 的 `allowBuilds` 后**重跑同一条命令**即可。
 - 对外分发共三种形态：仓库链接直装、Release 附件里的 tgz（`.github/workflows/build.yml` 打 tag 时从源码构建）、`npm pack`。
@@ -62,7 +62,7 @@ node tests/diff.test.mjs              # 单个文件
 
 ## 面板与宿主路由
 
-面板是**手写 bundle**（源在 `client/client.js`，构建复制为 `lib/client.js`；`window.__ModuleLoader__.load({ id, factory })` 形态），注册到 `shell.overlay`，入口挂在 `sidebar.panellist`。宿主侧路由用 `ctx.inject(['webServer'], ...)` 注册 `/api/rank-scan` 前缀。
+面板是**手写 bundle**（源在 `client/parts/*.js`，构建拼接为 `lib/client.js`；`window.__ModuleLoader__.load({ id, factory })` 形态），注册到 `shell.overlay`，入口挂在 `sidebar.panellist`。宿主侧路由用 `ctx.inject(['webServer'], ...)` 注册 `/api/rank-scan` 前缀。
 
 三条踩过的坑：
 
