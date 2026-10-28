@@ -43,6 +43,68 @@
           h('button', { className: 'rs-btn is-primary', disabled: busy || !loaded, onClick: save }, busy ? '保存中…' : '保存')))
     }
 
+    /* ------------------------------------------------------------------
+     * C3 / C4 的纯函数：排序与分批。只吃数组、不碰 React 状态，便于单测。
+     * ------------------------------------------------------------------ */
+    /** 排序偏好的 localStorage 键（C3 口径；改键名等于抹掉用户偏好） */
+    const BM_SORT_KEY = 'rank-scan-panel:bm:sort:v1'
+    /** 分批大小：超过就分批渲染（不做窗口化、不做真分页） */
+    const BM_PAGE = 50
+    const BM_SORT_OPTIONS = [
+      { value: 'added', label: '最近加入' },
+      { value: 'updated', label: '最近更新' },
+      { value: 'collect', label: '收藏或在读' },
+      { value: 'firstSeen', label: '首次发现' },
+      { value: 'title', label: '书名' },
+    ]
+    const bmTimeOf = function (v) {
+      const t = Date.parse(String(v || ''))
+      return Number.isFinite(t) ? t : null
+    }
+    const bmNumOf = function (v) { return typeof v === 'number' && Number.isFinite(v) ? v : null }
+    /** 比较器工厂：**null 一律排最后**（两边都缺时保持原有相对顺序） */
+    const bmCmp = function (dir, get) {
+      return function (a, b) {
+        const x = get(a)
+        const y = get(b)
+        if (x == null && y == null) return 0
+        if (x == null) return 1
+        if (y == null) return -1
+        if (x === y) return 0
+        const r = x < y ? -1 : 1
+        return dir === 'asc' ? r : -r
+      }
+    }
+    /**
+     * 书签排序（纯函数）。
+     *   · 'added'（默认）= 最近加入 = **host 原顺序**，不重排
+     *   · 'updated' = capturedAt ↓；'collect' = 收藏/在读 ↓；'firstSeen' = 首次发现日 ↓；'title' = 书名 ↑
+     *   · 缺值一律排最后，不假装「最新」
+     */
+    const sortBookmarks = function (list, key) {
+      const arr = (list || []).slice()
+      const k = key || 'added'
+      if (k === 'updated') return arr.sort(bmCmp('desc', function (b) { return bmTimeOf(b.capturedAt) }))
+      if (k === 'collect') return arr.sort(bmCmp('desc', function (b) { return bmNumOf(b.collect) }))
+      if (k === 'firstSeen') return arr.sort(bmCmp('desc', function (b) { return bmTimeOf(b.firstSeen && b.firstSeen.dataDate) }))
+      if (k === 'title') return arr.sort(bmCmp('asc', function (b) { const s = String(b.label || b.title || ''); return s ? s : null }))
+      return arr
+    }
+    /**
+     * 分批（纯函数）：只渲染前 n 条。
+     *   ★ keepKey（正在编辑的那条）即使落在第 n 条之外也**必须**渲染 —— 否则一保存就
+     *     因为「编辑中的卡片被裁掉」让草稿凭空消失。
+     */
+    const bmBatch = function (list, n, keepKey) {
+      const all = list || []
+      const shown = all.slice(0, Math.max(0, Number(n) || 0))
+      const missing = keepKey && !shown.some(function (b) { return b.bookKey === keepKey })
+        ? all.filter(function (b) { return b.bookKey === keepKey })
+        : []
+      const rows = missing.length ? shown.concat(missing) : shown
+      return { rows: rows, total: all.length, hasMore: all.length > shown.length }
+    }
+
     /**
      * 「我的书签」：**默认读，按需编辑**。
      *   · 紧凑卡：书名/作者/站 + 核心指标 + 数据截止 + 备注摘要/标签/夹
@@ -83,6 +145,13 @@
       const [exportOpen, setExportOpen] = React.useState(false)
       const [scope, setScope] = React.useState('filtered')
       const [exporting, setExporting] = React.useState(false)
+      // C3 排序 / C4 分批：都只在客户端做；排序偏好落 localStorage（与服务端筛选互不影响）
+      const sortS = React.useState(function () { try { return localStorage.getItem(BM_SORT_KEY) || 'added' } catch (e) { return 'added' } })
+      const sortKey = sortS[0]
+      const setSortKey = sortS[1]
+      const pageS = React.useState(BM_PAGE)
+      const pageCount = pageS[0]
+      const setPageCount = pageS[1]
       const fmtS = React.useState(function () { try { return localStorage.getItem('rank-scan-panel:export:fmt:v1') || 'csv' } catch (e) { return 'csv' } })
       const fmt = fmtS[0]
       const setFmt = fmtS[1]
@@ -102,6 +171,13 @@
       }
       const flt = healStore(store).filters
       React.useEffect(function () { load() }, [flt.q, flt.site, flt.folder, flt.tag])
+      /** C4：筛选或排序一变就回到第一批（别停在「已显示 200 条」却又换了筛选） */
+      React.useEffect(function () { setPageCount(BM_PAGE) }, [flt.q, flt.site, flt.folder, flt.tag, sortKey])
+      /** 排序切换：同时记住偏好（读不到 localStorage 的环境静默跳过） */
+      const setSort = function (v) {
+        setSortKey(v)
+        try { localStorage.setItem(BM_SORT_KEY, v) } catch (e) {}
+      }
       React.useEffect(function () {
         if (!undo) return undefined
         const t = setTimeout(function () { setUndo(null) }, 8000)
@@ -113,6 +189,9 @@
       const f = flt
       const setF = function (patch) { healStore(store); store.filters = { ...store.filters, ...patch }; bump() }
       const list = (store.list && store.list.bookmarks) || []
+      /** C3：只对当前（host 已筛选的）结果排序；C4：只渲染前 pageCount 条 + 正在编辑的那条 */
+      const sorted = sortBookmarks(list, sortKey)
+      const batch = bmBatch(sorted, pageCount, editKey)
       const sites = []
       list.forEach(function (b) { if (sites.indexOf(b.site) < 0) sites.push(b.site) })
       const dirtyOf = function (b) {
@@ -210,7 +289,8 @@
         setExMsg('导出中…')
         const keysP = scope === 'all'
           ? jget('/bookmarks').then(function (r) { return ((r && r.bookmarks) || []).map(function (x) { return x.bookKey }) })
-          : Promise.resolve(scope === 'selected' ? sel.slice() : list.map(function (b) { return b.bookKey }))
+          // C3：导出「当前筛选」按**当前排序**的顺序（不是 host 原顺序）
+          : Promise.resolve(scope === 'selected' ? sel.slice() : sorted.map(function (b) { return b.bookKey }))
         keysP.then(function (keys) {
           if (!keys || !keys.length) { setExMsg('这个范围没有可导出的条目'); return null }
           try {
@@ -251,6 +331,8 @@
             h('option', { value: '' }, '全部站'), sites.map(function (s) { return h('option', { key: s, value: s }, siteLabel(s)) })),
           h('select', { style: C.input, value: f.folder, onChange: function (e) { setF({ folder: e.target.value }) } },
             h('option', { value: '' }, '全部夹'), (store.folders || []).map(function (x) { return h('option', { key: x, value: x }, x) })),
+          h('select', { style: C.input, value: sortKey, title: '只改列表顺序：不影响筛选，也不改变选择集', onChange: function (e) { setSort(e.target.value) } },
+            BM_SORT_OPTIONS.map(function (o) { return h('option', { key: o.value, value: o.value }, '排序：' + o.label) })),
           h('button', { className: filtersOpen ? 'rs-btn is-on' : 'rs-btn', onClick: function () { setFiltersOpen(!filtersOpen) }, 'aria-expanded': filtersOpen ? 'true' : 'false' }, '筛选'),
           h(PopMenu, { label: '更多', items: moreItems, width: 200 })),
         filtersOpen ? h('div', { style: { ...C.row, padding: '4px 6px', border: '1px solid ' + T.border, borderRadius: '6px' } },
@@ -275,7 +357,7 @@
           h('div', { style: C.muted }, '继续编辑：刚才写的内容还在。放弃并切换：只丢当前这条的未保存改动。')) : null,
         h('div', { style: C.muted }, (store.list === null ? '加载中…' : '共 ' + list.length + ' 条' + (store.total && store.total !== list.length ? '（全部 ' + store.total + ' 条，已按筛选）' : '') + '　·　不含回收站')),
         store.health && store.health.error ? h('div', { style: { ...C.muted, color: T.bad } }, '⚠ ' + store.health.error) : null,
-        selectMode ? h('div', { style: { ...C.row, padding: '4px 6px', border: '1px solid ' + T.border, borderRadius: '6px', background: T.subtle } },
+        selectMode ? h('div', { style: { position: 'sticky', top: 0, zIndex: 5, ...C.row, padding: '4px 6px', border: '1px solid ' + T.border, borderRadius: '6px', background: T.surface, boxShadow: T.shadowBar } },
           h('span', null, '已选 ' + sel.length + ' 条'),
           h('button', { className: 'rs-btn', onClick: function () { setSel(list.map(function (b) { return b.bookKey })) } }, '全选当前筛选（' + list.length + '）'),
           h('button', { className: 'rs-btn', disabled: !sel.length, onClick: function () { setSel([]) } }, '取消选择'),
@@ -297,35 +379,87 @@
             h('button', { className: 'rs-btn', onClick: function () { jpost('/bookmark/open-folder', { path: String(dest || '').trim() || undefined }).then(function (r) { setExMsg('已打开 ' + ((r && r.opened) || '')) }).catch(function (e) { setExMsg('打不开：' + e) }) } }, '打开文件夹'),
             h('button', { className: 'rs-btn', onClick: function () { setExportOpen(false) } }, '收起')),
           exMsg ? h('div', { style: C.muted }, String(exMsg).slice(0, 140)) : null) : null,
-        list.length === 0 ? h('div', { style: C.muted }, store.list === null ? '' : (f.q || f.site || f.folder || f.tag ? '没有符合筛选条件的书签' : '还没有书签：在「榜单」里点书名旁的 ☆ 就能加')) : null,
-        list.map(function (b) {
+        list.length === 0 ? h('div', { style: C.row }, store.list === null ? null
+          : h('span', { style: C.muted }, (f.q || f.site || f.folder || f.tag) ? '没有符合筛选条件的书签' : '还没有书签：在「榜单」里点书名旁的 ☆ 就能加'),
+          (store.list !== null && (f.q || f.site || f.folder || f.tag))
+            ? h('button', { className: 'rs-btn', onClick: function () { setF({ q: '', site: '', folder: '', tag: '' }) } }, '清除筛选')
+            : null) : null,
+        batch.rows.map(function (b) {
           const lab = b.collectLabel || (b.site === 'fanqie' ? '在读' : '收藏')
           const editing = editKey === b.bookKey
           const noteText = String(b.note || '').replace(/\s+/g, ' ').trim()
           const metricText = metricChipText(b.metric, b.collect, lab)
           const oldMetric = b.metric && b.metric.value != null && b.metric.name === lab && b.metric.value !== b.collect ? b.metric.value : null
-          return h('div', { key: b.bookKey, style: { ...C.card, padding: '6px 8px' } },
-            h('div', { style: C.row },
+          /**
+           * C1：卡片最多三行（900 与 480 同一套，靠 nowrap + 省略，不写 480 特判）
+           *   ① 书名（itemTitle）+ 作者 + 右侧站点 chip
+           *   ② C.meta 中点串（收藏/在读 · 其他指标 · 截止）；只有状态类（超 7 天 / 待补）还用 chip
+           *   ③ 备注（没有就是淡色「＋ 备注」文字）+ #标签 / 夹，右侧外露「打开」「编辑」与「更多」
+           */
+          const metaBits = [
+            b.collect == null
+              ? h('span', { title: collectTitle(b, lab) }, lab + ' —')
+              : h('span', { title: collectTitle(b, lab) }, lab + ' ' + fmtRead(b.collect)),
+          ]
+          if (metricText) metaBits.push(h('span', null, metricText))
+          if (b.capturedAt) metaBits.push(h('span', { title: '这张卡的数据截止到这一天' }, '截止 ' + mdOf(b.capturedAt) + (b.ageDays != null ? '（' + b.ageDays + ' 天前）' : '')))
+          const metaLine = []
+          metaBits.forEach(function (x, k) {
+            if (k) metaLine.push(h('span', { key: 'ms' + k, style: { opacity: 0.6 } }, ' · '))
+            metaLine.push(x)
+          })
+          return h('div', {
+            key: b.bookKey,
+            style: { ...C.card, padding: '6px 8px', cursor: selectMode ? 'pointer' : undefined },
+            /* C6：批量选择时点卡片空白处即勾选（按钮 / 链接 / 输入框不算空白） */
+            onClick: function (e) {
+              if (!selectMode) return
+              const t = e && e.target
+              if (t && t.closest && t.closest('button,a,input,select,textarea,label')) return
+              toggleSel(b.bookKey)
+            },
+          },
+            /* ① 标题行 */
+            h('div', { style: { ...C.row, flexWrap: 'nowrap', marginTop: 0 } },
               selectMode ? h('input', { type: 'checkbox', style: { margin: '0 2px', flex: '0 0 auto' }, checked: sel.indexOf(b.bookKey) >= 0, onChange: function () { toggleSel(b.bookKey) } }) : null,
-              h('span', { style: C.cardTitle }, b.label),
-              b.author ? h('span', { style: C.muted }, b.author) : null,
-              h('span', { style: C.chip }, siteLabel(b.site)),
-              b.collect == null
-                ? h('span', { style: { ...C.chip, opacity: 0.55 }, title: collectTitle(b, lab) }, lab + ' —')
-                : h('span', { style: C.chip, title: collectTitle(b, lab) }, lab + ' ' + fmtRead(b.collect)),
-              oldMetric != null ? h('span', { style: { ...C.chip, opacity: 0.8 }, title: '书签记录：最近一次自动更新时该榜的' + lab + '（与上面的实时值不是同一时点）' }, '书签记录 ' + fmtRead(oldMetric)) : null,
-              metricText ? h('span', { style: C.chip }, metricText) : null,
-              b.capturedAt ? h('span', { style: C.muted, title: '这张卡的数据截止到这一天' }, '截止 ' + mdOf(b.capturedAt) + (b.ageDays != null ? '（' + b.ageDays + ' 天前）' : '')) : null,
-              b.ageDays != null && b.ageDays >= 7 ? h('span', { style: { ...C.chip, color: T.warn }, title: '超过 7 天没有变新：点「更新本书数据」试试；仍不变则这个来源可能取不到数了' }, '数据已 ' + b.ageDays + ' 天未更新') : null,
-              b.valueFrom === 'manual' ? h('span', { style: C.chip }, '待补') : null),
-            h('div', { style: C.row },
-              h('button', {
-                className: 'rs-btn', style: { borderStyle: 'dashed', textAlign: 'left', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-                title: noteText ? '编辑备注' : '加备注',
-                onClick: function () { startEdit(b) },
-              }, noteText ? noteText.slice(0, 60) : '＋ 备注'),
-              (b.tags || []).map(function (t) { return h('span', { key: 't' + t, style: C.chip }, '#' + t) }),
-              (b.folders || []).map(function (x) { return h('span', { key: 'f' + x, style: C.chip }, '夹 ' + x) })),
+              h('span', { style: { ...C.itemTitle, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: b.label }, b.label),
+              b.author ? h('span', { style: { ...C.muted, flex: '0 0 auto', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: b.author }, b.author) : null,
+              h('span', { style: { ...C.chip, marginLeft: 'auto', marginRight: 0, flex: '0 0 auto' } }, siteLabel(b.site))),
+            /* ② 元信息行：中点串；状态类才留 chip */
+            h('div', { style: { ...C.meta, display: 'flex', alignItems: 'center', overflow: 'hidden', marginTop: '2px' } },
+              metaLine,
+              b.ageDays != null && b.ageDays >= 7 ? h('span', { style: { ...C.chip, color: T.warn, flex: '0 0 auto', margin: '0 0 0 4px' }, title: '超过 7 天没有变新：点「更新本书数据」试试；仍不变则这个来源可能取不到数了' }, '数据已 ' + b.ageDays + ' 天未更新') : null,
+              b.valueFrom === 'manual' ? h('span', { style: { ...C.chip, flex: '0 0 auto', margin: '0 0 0 4px' } }, '待补') : null),
+            /* ③ 备注 + 标签/夹（左） · 操作（右） */
+            h('div', { style: { ...C.row, flexWrap: 'nowrap', marginTop: '2px' } },
+              noteText
+                ? h('button', {
+                    className: 'rs-link-action',
+                    style: { border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', font: 'inherit', color: 'inherit', flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: T.fs.s, textAlign: 'left' },
+                    title: '编辑备注',
+                    onClick: function (e) { e.preventDefault(); startEdit(b) },
+                  }, noteText)
+                : h('button', {
+                    className: 'rs-btn is-ghost',
+                    style: { color: T.muted, flex: '0 0 auto' },
+                    title: '加备注',
+                    onClick: function (e) { e.preventDefault(); startEdit(b) },
+                  }, '＋ 备注'),
+              (b.tags || []).map(function (t) { return h('span', { key: 't' + t, style: { ...C.chip, flex: '0 0 auto' } }, '#' + t) }),
+              (b.folders || []).map(function (x) { return h('span', { key: 'f' + x, style: { ...C.chip, flex: '0 0 auto' } }, '夹 ' + x) }),
+              h('span', { style: { marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '4px', flex: '0 0 auto' } },
+                h('a', {
+                  href: b.url || '#', className: 'rs-btn is-ghost',
+                  style: { color: 'inherit', textDecoration: 'none' }, title: '在 DSH 侧栏浏览器打开',
+                  onClick: function (e) { e.preventDefault(); (props.openLink || function (u) { window.open(u, '_blank', 'noopener,noreferrer') })(b.url) },
+                }, '打开'),
+                h('button', { className: 'rs-btn is-ghost', onClick: function () { startEdit(b) }, title: '编辑备注/夹' }, '编辑'),
+                h(PopMenu, { label: '更多', width: 190, items: [
+                  { label: '更新本书数据（联网）', onClick: function () { doRefresh([b.bookKey]) }, title: '按书页取一次最新读数' },
+                  { label: detailKey === b.bookKey ? '收起详情' : '查看详情', onClick: function () { setDetailKey(detailKey === b.bookKey ? null : b.bookKey) } },
+                  { sep: true },
+                  { label: '删除', onClick: function () { doRemove(b) } },
+                ] }))),
             editing ? h('div', { style: { ...C.detail, marginTop: '4px' } },
               h('div', { style: C.row },
                 h('span', { style: C.muted }, '备注'),
@@ -350,16 +484,8 @@
                       h('button', { className: 'rs-btn', onClick: function () { setDiscardAsk(false) } }, '继续编辑'))
                   : null,
                 editErr ? h('span', { style: { color: T.bad } }, editErr) : null)) : null,
-            h('div', { style: C.row },
-              h('a', { href: b.url || '#', style: { color: 'inherit', padding: '3px 8px' }, title: '在 DSH 侧栏浏览器打开', onClick: function (e) { e.preventDefault(); (props.openLink || function (u) { window.open(u, '_blank', 'noopener,noreferrer') })(b.url) } }, '打开'),
-              h(PopMenu, { label: '更多', width: 190, items: [
-                { label: '编辑备注/夹', onClick: function () { startEdit(b) } },
-                { label: '更新本书数据（联网）', onClick: function () { doRefresh([b.bookKey]) }, title: '按书页取一次最新读数' },
-                { label: detailKey === b.bookKey ? '收起详情' : '查看详情', onClick: function () { setDetailKey(detailKey === b.bookKey ? null : b.bookKey) } },
-                { sep: true },
-                { label: '删除', onClick: function () { doRemove(b) } },
-              ] })),
             detailKey === b.bookKey ? h('div', { style: { ...C.detail, marginTop: '4px' } },
+              oldMetric != null ? h('div', { style: C.muted }, '旧读数（书签记录）：' + lab + ' ' + fmtRead(oldMetric) + ' —— 最近一次自动更新时的值，与上面的实时值不是同一时点') : null,
               b.firstSeen
                 ? h('div', { style: C.muted }, '首次发现：' + boardLabel(b.firstSeen.boardId) + ' 第 ' + (b.firstSeen.rank == null ? '—' : b.firstSeen.rank) + ' 名（' + b.firstSeen.dataDate + '）')
                 : h('div', { style: C.muted }, '手动添加 · 无榜单来源'),
@@ -369,6 +495,10 @@
                 : null,
               h('div', { style: C.muted }, '备注与夹只由你改：任何自动更新都不会覆盖。')) : null)
         }),
+        /* C4：分批的底部计数；全选与导出「当前筛选」仍按**全量筛选结果**，不是这里的已渲染条数 */
+        batch.hasMore ? h('div', { style: { ...C.row, marginTop: '4px' } },
+          h('span', { style: C.meta }, '已显示 ' + batch.rows.length + ' / ' + batch.total),
+          h('button', { className: 'rs-btn', onClick: function () { setPageCount(pageCount + BM_PAGE) } }, '再显示 ' + BM_PAGE + ' 条')) : null,
         undo ? h(Banner, { tone: 'warn' },
           h('span', null, '已删除「' + undo.label + '」'),
           h('button', { className: 'rs-btn', onClick: doUndo }, '撤销'),
