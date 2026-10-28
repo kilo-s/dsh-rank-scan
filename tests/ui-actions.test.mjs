@@ -48,10 +48,14 @@ test('补全缺失只在操作条出现一次，Banner 只说明不带按钮', (
   assert.ok(!banner.includes('onClick'), 'Banner 里不许再放补全按钮')
 })
 
-test('设置页每站只有一个动作，平铺成「补齐缺失」', () => {
+test('设置页每站动作收进站标题行的「⋯」菜单（0.6 收尾改口径）', () => {
   assert.ok(settingsStart > 0 && versionStart > settingsStart, '找不到 SettingsTab 区块')
-  assert.ok(!settingsSrc.includes('h(PopMenu'), '设置页不许再有只含一项的 PopMenu')
-  assert.match(settingsSrc, /'补齐缺失'/, '同行的 is-ghost 按钮')
+  // ★ 0.6 收尾：原来要求「不许有 PopMenu、补齐缺失平铺」；现在三个站级动作都收进「⋯」，
+  //   所以断言改成「菜单在、三件事都在菜单里、仍在设置层」。
+  assert.ok(settingsSrc.includes("h(PopMenu, { label: '⋯'"), '站标题行右侧要有「⋯」菜单')
+  assert.match(settingsSrc, /'补齐缺失（联网）'/, '补齐缺失进菜单（文案带联网）')
+  assert.match(settingsSrc, /'全选这一站（' \+ total \+ '）'/, '全选进菜单')
+  assert.match(settingsSrc, /'全不选这一站'/, '全不选进菜单')
   assert.ok(settingsSrc.includes('（联网：逐本 1 请求'), '补齐缺失的 title 要说明联网')
 })
 

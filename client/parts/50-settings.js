@@ -202,6 +202,8 @@
         const ids = cat.boards.filter(function (b) { return b.site === site }).map(function (b) { return b.boardId })
         setPicked(on ? picked.concat(ids.filter(function (i) { return picked.indexOf(i) < 0 })) : picked.filter(function (i) { return ids.indexOf(i) < 0 }))
         setBarNote('')
+        // 0.6 收尾：全不选之后这一站没有可看的勾选 ⇒ 顺手收起（展开态留着只是空壳）
+        if (!on) { const nx = Object.assign({}, closedGroups); nx[site] = false; setClosedGroups(nx) }
       }
       /**
        * ★ Spec S4「恢复默认」：只改**草稿**，并说清将新增/移除多少 —— 保存后才生效。
@@ -220,9 +222,15 @@
         setPicked(def)
         setBarNote('已恢复默认抓取：将新增 ' + add.length + ' 个、移除 ' + del.length + ' 个（点「保存设置」才落盘）')
       }
-      const toggleGroup = function (key) {
+      /**
+       * 0.6 收尾：抓取范围改成「一站一行」——
+       *   · 行内显示「站点 · 已选 x / y」，右侧「⋯」菜单放 全选 / 全不选 / 补齐缺失；
+       *   · 分类勾选**默认折叠**（closedGroups 里没有记录 = 收起），点站点行才展开。
+       */
+      const siteOpen = function (s) { return closedGroups[s] === true }
+      const toggleGroup = function (s) {
         const nx = Object.assign({}, closedGroups)
-        nx[key] = !nx[key]
+        nx[s] = !nx[s]
         setClosedGroups(nx)
       }
       /** 动作后只刷新起点缓存计数；不重跑 load（否则会把未保存草稿写成「已恢复未保存的改动」） */
@@ -401,28 +409,34 @@
       return h('div', null,
         h(Section, { title: '抓取范围（' + picked.length + ' 个榜）', defaultOpen: true },
           h('div', { style: C.muted }, '勾选 = 抓什么；改动进草稿，点下面的「保存设置」才落盘（下次扫描生效）。抓到的榜就会显示。'),
-          h('div', { style: C.row }, sites.map(function (s) {
-            return h('span', { key: s, style: { ...C.row, margin: 0 } },
-              h('span', { style: C.muted }, siteNameOf(s) + ' ' + pickedOf(s) + '/' + siteTotal(s)),
-              h('button', { className: 'rs-btn is-ghost', onClick: function () { setAll(s, true) } }, '全选'),
-              h('button', { className: 'rs-btn is-ghost', onClick: function () { setAll(s, false) } }, '全不选'),
-              h('button', { className: 'rs-btn is-ghost', disabled: busy, onClick: function () { enrichSite(s) }, title: '把该站已勾选的榜逐个补全（联网：逐本 1 请求，很慢）' }, '补齐缺失'))
-          })),
-          groups.map(function (g) {
-            const derived = g.items.length > 0 && String(g.items[0].boardId).indexOf('fanqie.derived.') === 0
-            const gkey = g.site + '|' + g.group
-            const closed = !!closedGroups[gkey]
-            // Spec 4.4：站分组可折叠（20 个榜全铺开时找不到想改的那个）
-            return h('div', { key: gkey },
-              h('div', { style: { ...C.siteBar, cursor: 'pointer' }, onClick: function () { toggleGroup(gkey) }, title: '点一下折叠/展开这一组' },
-                (closed ? '▸ ' : '▾ ') + g.siteName + ' · ' + g.group + '（' + g.items.length + '）'),
-              derived ? h('div', { style: { ...C.muted, margin: '0 0 4px 2px' } }, '本地派生榜：不发请求，总是显示；不计入「未显示 N 个」。') : null,
-              closed ? null : h('table', { style: C.table },
-                h('tbody', null, g.items.map(function (b) {
-                  return h('tr', { key: b.boardId },
-                    h('td', { style: { ...C.td, width: '22px' } }, h('input', { type: 'checkbox', checked: has(b.boardId), onChange: function (e) { toggle(b.boardId, e.target.checked) } })),
-                    h('td', { style: C.td }, b.label))
-                }))))
+          sites.map(function (s) {
+            const open = siteOpen(s)
+            const sel = pickedOf(s)
+            const total = siteTotal(s)
+            const mine = groups.filter(function (g) { return g.site === s })
+            return h('div', { key: 'site-' + s },
+              h('div', { style: { ...C.siteBar, cursor: 'pointer' }, onClick: function () { toggleGroup(s) }, title: open ? '收起这一站' : '展开这一站，勾选要抓的榜' },
+                h('span', null, (open ? '▾ ' : '▸ ') + siteNameOf(s) + ' · 已选 ' + sel + ' / ' + total),
+                // 菜单容器拦住冒泡：点「⋯」与菜单项都不该把站点行折叠/展开
+                h('span', { style: { marginLeft: 'auto', display: 'flex', alignItems: 'center' }, onClick: function (e) { if (e && e.stopPropagation) e.stopPropagation() } },
+                  h(PopMenu, { label: '⋯', width: 210, items: [
+                    { label: '全选这一站（' + total + '）', onClick: function () { setAll(s, true) } },
+                    { label: '全不选这一站', onClick: function () { setAll(s, false) } },
+                    { sep: true },
+                    { label: '补齐缺失（联网）', onClick: function () { enrichSite(s) }, disabled: busy, title: '把该站已勾选的榜逐个补全（联网：逐本 1 请求，很慢）' },
+                  ] }))),
+              open ? h('div', null, mine.map(function (g) {
+                const derived = g.items.length > 0 && String(g.items[0].boardId).indexOf('fanqie.derived.') === 0
+                return h('div', { key: g.site + '|' + g.group },
+                  h('div', { style: { ...C.sectionLabel, marginTop: '4px' } }, g.group + '（' + g.items.length + '）'),
+                  derived ? h('div', { style: { ...C.muted, margin: '0 0 4px 2px' } }, '本地派生榜：不发请求，总是显示；不计入「未显示 N 个」。') : null,
+                  h('table', { style: C.table },
+                    h('tbody', null, g.items.map(function (b) {
+                      return h('tr', { key: b.boardId },
+                        h('td', { style: { ...C.td, width: '22px' } }, h('input', { type: 'checkbox', checked: has(b.boardId), onChange: function (e) { toggle(b.boardId, e.target.checked) } })),
+                        h('td', { style: C.td }, b.label))
+                    }))))
+              })) : null)
           }),
         ),
         h(Section, { title: '扫描计划', defaultOpen: false, summary: (tOn ? '已开启' : '已关闭') + ' · 兜底 ' + (tFall || '') + ' · ' + (tLast && tLast.wired ? '自动扫描已生效' : '自动扫描未生效') },
@@ -574,8 +588,9 @@
           ? '当前 ' + chk.current + '：未发布到 npm，请用 Release 附件或仓库链接更新'
           : '当前 ' + chk.current + '（' + (chk.reason || '更新检查不可用') + '）' + (chk.latest ? '；registry 最新 ' + chk.latest : '')
       const canClick = !!(chk && (chk.canUpdateInPlace || chk.action === 'refresh' || chk.action === 'restart'))
-      return h('div', { style: { ...C.card, margin: '8px 0', padding: '7px 9px' } },
-        h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '版本'),
+      // D：版本块在「关于」分组里，别再来一层边框（盒子套盒子）；只留一条分区标题
+      return h('div', { style: { ...C.card, border: 'none', background: 'transparent', margin: '8px 0', padding: 0 } },
+        h('div', { style: { ...C.sectionLabel, marginBottom: '4px' } }, '版本'),
         h('div', { style: C.muted }, line),
         (info && info.name && info.version) ? h('div', { style: C.muted }, info.name + '　v' + info.version) : null,
         h('div', { style: C.row },

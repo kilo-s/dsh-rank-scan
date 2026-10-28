@@ -1,6 +1,6 @@
 {
   "name": "dsh-rank-scan",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "DSH 扫榜插件：多站小说榜单采集 + 本地变化分析 + 面板；零运行时依赖",
   "type": "module",
   "main": "./lib/index.js",

@@ -43,8 +43,9 @@
     }
     /** 概览区块小标题：标题 + 右侧计数 + 可选操作；innerRef 供数字卡 scrollIntoView 用 */
     function SectionHeader(props) {
-      return h('div', { ref: props.innerRef, style: { display: 'flex', alignItems: 'baseline', gap: '8px', minWidth: 0, margin: props.first ? '8px 0 4px' : '12px 0 6px' } },
-        h('div', { style: { fontWeight: 600, fontSize: T.fs.m, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, props.title),
+      // D：分区标题统一走 C.sectionLabel（12/600/muted），分区间距改成 16（A5 的节奏）
+      return h('div', { ref: props.innerRef, style: { display: 'flex', alignItems: 'baseline', gap: '8px', minWidth: 0, margin: props.first ? '8px 0 4px' : '16px 0 6px' } },
+        h('div', { style: { ...C.sectionLabel, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, props.title),
         h('div', { style: { marginLeft: 'auto', display: 'flex', alignItems: 'baseline', gap: '6px', flex: '0 0 auto' } },
           props.count != null && props.count !== '' ? h('span', { style: C.muted }, '（' + props.count + '）') : null,
           props.action || null))
@@ -385,7 +386,7 @@
         shownEntries.length ? (chgNarrow
           ? h('div', null, shownBySite.map(function (g) {
               return h('div', { key: 'nc-' + g.site },
-                h('div', { style: { ...C.muted, marginTop: '6px', fontWeight: 600 } }, g.siteName + ' · ' + g.items.length + ' 条'),
+                h('div', { style: { ...C.sectionLabel, marginTop: '8px' } }, g.siteName + ' · ' + g.items.length + ' 条'),
                 g.items.map(function (e, i) {
                   return h('div', {
                     key: 'nci-' + g.site + i,
@@ -408,7 +409,7 @@
               h('thead', null, h('tr', null, ['分组', '榜', '书名', '变化'].map(function (t) { return h('th', { key: t, style: C.th }, t) }))),
               h('tbody', null, shownBySite.flatMap(function (g) {
                 const head = h('tr', { key: 'ch-' + g.site },
-                  h('td', { style: { ...C.td, paddingTop: '7px', fontWeight: 600, color: T.muted }, colSpan: 4 },
+                  h('td', { style: { ...C.td, paddingTop: '8px', ...C.sectionLabel }, colSpan: 4 },
                     g.siteName + ' · ' + g.items.length + ' 条'))
                 const body = g.items.map(function (e, i) {
                   return h('tr', {
@@ -443,7 +444,7 @@
             const sameTime = times.length > 0 && times.every(function (t) { return t === times[0] })
             const headTime = sameTime ? times[0] : ''
             const head = h('tr', { key: 'h-' + s.site },
-              h('td', { style: { ...C.td, paddingTop: '7px', fontWeight: 600 }, colSpan: hasNoteCol && !chgNarrow ? 4 : 3 },
+              h('td', { style: { ...C.td, paddingTop: '8px', ...C.sectionLabel }, colSpan: hasNoteCol && !chgNarrow ? 4 : 3 },
                 h('span', { style: C.dot(okN === s.boards.length ? 'ok' : 'bad') }),
                 ' ' + s.siteName,
                 h('span', { style: C.muted }, '  ' + s.boards.length + ' 个榜 · 已采集 ' + okN + (headTime ? ' · 抓取 ' + headTime : ''))))

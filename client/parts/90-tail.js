@@ -105,7 +105,13 @@
   // 测试缝：宿主只消费 name/inject/apply；多挂纯函数与组件给离线测试用（对运行无影响）
   return { name: 'dsh-rank-scan', inject: inject, apply: apply, __test: {
     metricChipText: metricChipText,
-    helpers: { revOf: revOf, statusText: statusText, scanLabel: scanLabel, pollDelay: pollDelay, canDayQuery: canDayQuery, fitColumns: fitColumns, colPrio: colPrio, mdOf: mdOf, boardLabel: boardLabel, rememberBoardNames: rememberBoardNames },
+    // 0.6.0（C3/C4）：书签排序与分批的纯函数，供离线测试直接调用
+    sortBookmarks: sortBookmarks,
+    bmBatch: bmBatch,
+    bmPage: BM_PAGE,
+    bmSortKey: BM_SORT_KEY,
+    bmSortOptions: BM_SORT_OPTIONS,
+    helpers: { cell: cell, metaDot: metaDot, cleanDesc: cleanDesc, fmtStamp: fmtStamp, revOf: revOf, statusText: statusText, scanLabel: scanLabel, pollDelay: pollDelay, canDayQuery: canDayQuery, fitColumns: fitColumns, colPrio: colPrio, mdOf: mdOf, boardLabel: boardLabel, rememberBoardNames: rememberBoardNames },
     components: { Overview: Overview, BoardTab: BoardTab, BookmarksTab: BookmarksTab, SettingsTab: SettingsTab, PopMenu: PopMenu, Panel: Panel, ToastHost: ToastHost, StatCard: StatCard, SectionHeader: SectionHeader },
     nextPlanOf: nextPlanOf,
     toast: toast, toastStore: toastStore, lastNote: lastNote, settingsDiff: settingsDiff,

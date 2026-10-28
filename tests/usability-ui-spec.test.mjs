@@ -416,7 +416,7 @@ test('S4 宿主没给默认集时明确拒绝，不自造一套默认', async ()
   assert.match(textOf(tree), /没有提供默认抓取集/)
 })
 
-test('S4 设置里的站分组可折叠', async () => {
+test('S4 设置里的站点行可折叠，且默认折叠（0.6 收尾改口径）', async () => {
   const { mod, mount } = load({
     '/catalog': CATALOG,
     '/timer-plan': { ok: true, plan: { now: '06:00', today: '2026-10-22', enabled: true, waiting: [], due: [], fallback: [] } },
@@ -425,10 +425,13 @@ test('S4 设置里的站分组可折叠', async () => {
   const app = mount(mod.__test.components.SettingsTab, { ov: BASE_OV, onSaved() {} })
   let tree = await app.flush()
   tree = app.act(() => openSection(tree, '抓取范围'))
-  const groupHead = nodesOf(tree, (n) => n.type === 'div' && textOf(n).trim() === '▾ 起点 · 签约榜（2）')[0]
-  assert.ok(groupHead, '组标题要能点')
-  tree = app.act(() => groupHead.props.onClick({ preventDefault() {}, stopPropagation() {}, target: {} }))
-  assert.match(textOf(tree), /▸ 起点 · 签约榜（2）/, '点过之后收起')
+  // ★ 0.6 收尾：标题行从「▾ 起点 · 签约榜（2）」改成「▸ 起点 · 已选 x / y」，并且**默认收起**
+  assert.match(textOf(tree), /▸ 起点 · 已选/, '站点行默认折叠，并显示已选 / 总数')
+  // 取**最内层**那个可点的站点标题（外层包装 div 的文本也以同样的字开头，但它没有 onClick）
+  const siteHead = nodesOf(tree, (n) => n.type === 'div' && /^▸ 起点 · 已选/.test(textOf(n).trim()) && typeof n.props.onClick === 'function')[0]
+  assert.ok(siteHead, '站点标题要能点')
+  tree = app.act(() => siteHead.props.onClick({ preventDefault() {}, stopPropagation() {}, target: {} }))
+  assert.match(textOf(tree), /▾ 起点 · 已选/, '点过之后展开')
 })
 
 test('自动补全开关在「数据与性能」组，不再挤在抓取范围里', async () => {

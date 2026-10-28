@@ -2,6 +2,20 @@
  * 55-board-cell.js：榜单表格单元格 cell、榜名记忆与 boardLabel。依赖 10/20。不要放 BoardTab 本体。
  * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
  */
+    /**
+     * Unix 秒 → 「MM-DD HH:mm」（东八区固定偏移）。
+     * 只用于**确定是时间戳**的列（三江「日期」）；拿不到合理时间戳一律「—」，绝不把裸数字放出去。
+     */
+    const fmtStamp = function (sec) {
+      const n = Number(sec)
+      if (!isFinite(n) || n < 1e9) return '—'
+      const d = new Date(n * 1000)
+      if (isNaN(d.getTime())) return '—'
+      // ★ 固定 +8h 再按 UTC 读：不受运行环境时区影响（数据源本来就是北京时间）
+      const t = new Date(d.getTime() + 8 * 3600 * 1000)
+      const p2 = function (x) { return (x < 10 ? '0' : '') + x }
+      return p2(t.getUTCMonth() + 1) + '-' + p2(t.getUTCDate()) + ' ' + p2(t.getUTCHours()) + ':' + p2(t.getUTCMinutes())
+    }
     function cell(c, r) {
       const k = c.key
       const ex = r.extra || {}
@@ -17,10 +31,12 @@
         if (ex.periodChanged === true) return '新期'
         if (r.deltaGroup === 'new') return '＋ 新'
         if (r.deltaGroup === 'rebound') return '回榜'
-        if (r.delta === null || r.delta === undefined) return '—'
+        // B2：「算不出」也是弱信息，用 muted；只有真涨跌与「＋新」用全色
+        if (r.delta === null || r.delta === undefined) return h('span', { style: C.muted }, '—')
         if (r.delta > 0) return h('span', { style: C.up }, '↑ ' + r.delta)
         if (r.delta < 0) return h('span', { style: C.down }, '↓ ' + Math.abs(r.delta))
-        return '0'
+        // B2：持平仍然是「0」（语义不变），只是不再抢眼
+        return h('span', { style: C.muted }, '0')
       }
       if (k === 'read') return fmtRead(ex.read !== undefined ? ex.read : r.value)
       if (k === 'value') return fmtRead(r.value)
@@ -66,6 +82,12 @@
       }
       // 派生榜「本期累计」（自然周内：今日在读 − 期首在读）；期中入池算不出来 ⇒ 「—」
       if (k === 'periodDelta') return ex.periodDelta == null ? '—' : (ex.periodDelta > 0 ? '+' : '') + ex.periodDelta
+      // 0.6 收尾补列：都已在快照里，只是之前没有列。空值一律「—」，不补 0
+      if (k === 'shouding') return dash(ex.shouding)
+      // ★ 2026-10-29 口径修正：三江这一列是「日期」（Unix 秒时间戳），不是「首日增量」⇒ 显示成 MM-DD HH:mm
+      if (k === 'firstDay') return fmtStamp(ex.firstDay)
+      if (k === 'firstV') return dash(ex.firstV)
+      if (k === 'update') return dash(ex.update)
       if (k === 'collect') return fmtRead(ex.collect)
       if (k === 'collectBase') return fmtRead(ex.collectBase)
       if (k === 'fans') return fmtRead(ex.fans)

@@ -96,7 +96,8 @@
      * ★ 2026-10-17（易用性 P0）：哪些列算「数字列」—— 只有它们套 C.num（不折行 + 等宽数字）。
      *   书名/作者/分类这类文本列仍允许换行，否则长书名会把整张表撑宽。
      */
-    const NUM_COL_RE = /^(rank|delta|words|collect|collectBase|value|ratio|fans|read|readDelta|periodTotal|periodDelta|score|days|buyNumRaw|daily\d*|pday\d*)$/
+    // 0.6 收尾：新增的「首订」是数字列（右对齐 + 等宽）；「上架」是时间戳列，按文本左对齐
+    const NUM_COL_RE = /^(rank|delta|words|collect|collectBase|value|ratio|fans|read|readDelta|periodTotal|periodDelta|score|days|buyNumRaw|shouding|daily\d*|pday\d*)$/
     const isNumCol = (key) => NUM_COL_RE.test(String(key || ''))
     const dash = (v) => (v === null || v === undefined || v === '' ? '—' : v)
     /**

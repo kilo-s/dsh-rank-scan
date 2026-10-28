@@ -157,6 +157,8 @@
         }).catch(function () {})
       }
       return h('button', {
+        // B3：class 让样式表决定「未收藏的星什么时候出现」（行 hover / focus / 展开时）
+        className: 'rs-star' + (on ? ' is-on' : ' is-off'),
         style: on ? C.bmOn : C.bmOff,
         title: busy ? '提交中…' : (on ? '已在书签里（点一下移除）' : '加入书签'),
         onClick: click,

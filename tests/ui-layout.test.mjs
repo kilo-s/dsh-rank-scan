@@ -45,7 +45,9 @@ test('② 列按可用宽度装（不再「要拉到很大才显示全」），�
   assert.ok(s.includes('const cards = avail < 560'), '只有真的很窄才换卡片行')
   const i = s.indexOf('const narrowRow = function (r, i)')
   assert.ok(i > 0, '卡片行渲染必须在')
-  const body = s.slice(i, i + 2600)
+  // ★ 0.6.0：卡片行加了展开态的整段 style（含一段解释「为什么不能写 : undefined」的注释），
+  //   正文变长 ⇒ 取样窗口从 2600 放宽到 4200。断言内容不变：卡片行仍要能打书签、仍要能显示指标。
+  const body = s.slice(i, i + 4200)
   assert.ok(body.includes('chipCols'), '卡片行要把该榜的指标做成 chip（否则被收起的列就没处看了）')
   assert.ok(body.includes('BookmarkStar'), '卡片行也要能打书签')
 })

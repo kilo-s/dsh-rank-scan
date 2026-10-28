@@ -210,11 +210,20 @@ export function columnsFor(meta: BoardMeta, flags: ColumnFlags = { hasBaseline: 
       { key: 'collect', label: '收藏', note: '起点图口径（该站自己的统计，期数式）——与起点作品页的收藏同名不同源，实测差 0.3%~7%，别混用' },
       { key: 'ratio', label: '收订比' },
       { key: 'fans', label: '粉丝' },
+      // 0.6 收尾补列：站点「首V时刻」列，一直在快照里（extra.firstV），之前没有列
+      { key: 'firstV', label: '首V', note: '起点图「首V时刻」列（站方原样文本）；首订要等首V后 24h 才结算' },
     )
   }
   if (qidiantu && meta.boardId === 'qidiantu.sanjiang') {
     // ★ 列序（使用者 2026-10-15）：**字数紧跟在「分类」后面**（三江源里没有字数字段，值取自起点书页）
     cols.push({ key: 'words', label: '字数', note: '三江源里没有字数字段，取自起点书页（走书页缓存）' })
+    // 0.6 收尾补列：三江页第 6/7 列（首订 / 日期）一直在快照里（extra.shouding / extra.firstDay），之前没有列
+    // ★ 2026-10-29 口径修正：extra.firstDay 存的**不是**「首日增量」，是站点表头写的「日期」列，
+    //   实测是 Unix 秒时间戳（= 该书上架/首V 时刻）。列名与显示都按时间戳处理，不参与数字右对齐。
+    cols.push(
+      { key: 'shouding', label: '首订', note: '三江页「首订」列（起点图口径；站点多数行不给值 ⇒ 显示「—」），与收藏增量不同源' },
+      { key: 'firstDay', label: '上架', note: '三江页「日期」列：Unix 秒时间戳（= 上架/首V 时刻，与首订榜「首V时刻」同行同分），显示 MM-DD HH:mm（东八区）；未给值 ⇒ 「—」' },
+    )
     cols.push({ key: 'collectBase', label: '期初收藏' }, { key: 'dailyDelta', label: '今日增量', note: '今天那天的收藏增量；未到的天「—」' })
     // ★ 每日增量拆成 7 列（2026-10-15 使用反馈）：原先 7 天的值挤在一个单元格里，读不出来。
     //   列头用「第N天」，具体日期由宿主在 extra.daily 里给（期首日=周日，每周日滚一期）。
@@ -260,7 +269,11 @@ export function columnsFor(meta: BoardMeta, flags: ColumnFlags = { hasBaseline: 
   if (sfacg) cols.push({ key: 'score', label: '评分', note: '榜页只有前 2 名有（首页装饰值）；其余行「—」' }, { key: 'words', label: '字数', note: '书页补全（首页榜仅前 2 名有）' }, { key: 'collect', label: '收藏', note: '书页补全（首页榜仅前 2 名有）' })
   // 刺猬猫榜单页没有任何数值：字数/收藏要走书页（面板「补全本榜」）
   // 列顺序统一（2026-10-15 使用者）：全站一致为「字数 → 收藏」，与起点/菠萝包同序（此处原来反着写）
-  if (cw && meta.boardId !== 'ciweimao.buy.latest') cols.push({ key: 'words', label: '字数', note: '榜单页无此字段；「补全本榜」进书页补' }, { key: 'collect', label: '收藏', note: '榜单页无此字段；「补全本榜」进书页补' })
+  if (cw && meta.boardId !== 'ciweimao.buy.latest') {
+    // 0.6 收尾补列：榜单页「最近更新」文本一直在快照里（extra.update），之前没有列
+    cols.push({ key: 'update', label: '最近更新', note: '榜单页「最近更新」文本（站方原样，不是精确时间戳）' })
+    cols.push({ key: 'words', label: '字数', note: '榜单页无此字段；「补全本榜」进书页补' }, { key: 'collect', label: '收藏', note: '榜单页无此字段；「补全本榜」进书页补' })
+  }
   // 「在榜天数」只在真有历史时占列（派生榜另用「在池天数」）
   if (!derived && flags.hasHistory) cols.push({ key: 'days', label: '在榜天数' })
   return cols

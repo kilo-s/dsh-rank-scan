@@ -45,6 +45,54 @@
         navigator.clipboard.writeText(text).then(function () { toast('success', '已复制链接') }).catch(fail)
       } catch (e) { fail() }
     }
+    /**
+     * 0.6 收尾：榜单行简介（起点榜单页 pageContext 里自带 desc，落盘在 extra.desc）。
+     * 纯函数便于单测：去掉每行首尾空白（含全角空格 U+3000）与空行，段落之间保留单个换行。
+     * 空值/只有空白 ⇒ 返回 '' ⇒ 调用方**什么都不渲染**（不显示「—」）。
+     */
+    const cleanDesc = function (raw) {
+      if (raw == null) return ''
+      const lines = String(raw).replace(/\u3000/g, ' ').split(/\r?\n/).map(function (x) { return x.trim() }).filter(function (x) { return !!x })
+      return lines.join('\n')
+    }
+    /**
+     * 简介块：默认 3 行（-webkit-line-clamp），**真的被截断时**才给「展开 / 收起」。没有简介就不渲染。
+     * ★ 2026-10-29：换成「实测溢出」判断（scrollHeight > clientHeight），窗口尺寸变化时重新量 ——
+     *   原来按字数猜（>60 字就给按钮），900 宽下简介只占两行、根本没截断也照样出按钮。
+     */
+    function BoardDesc(props) {
+      const [open, setOpen] = React.useState(false)
+      const [over, setOver] = React.useState(false)
+      const textRef = React.useRef(null)
+      const text = cleanDesc(props.text)
+      React.useEffect(function () {
+        if (!text) return undefined
+        const measure = function () {
+          const el = textRef.current
+          if (!el) return
+          // 收起态才量得出「被截断」；展开态下 scrollHeight == clientHeight
+          setOver(el.scrollHeight - el.clientHeight > 1)
+        }
+        measure()
+        // 字体/宽度变化都会改变行数：窗口 resize 与面板宽度变化都重量一次
+        if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('resize', measure)
+        return function () {
+          if (typeof window !== 'undefined' && window.removeEventListener) window.removeEventListener('resize', measure)
+        }
+      }, [text, open])
+      if (!text) return null
+      return h('div', { style: { marginTop: '4px' } },
+        h('div', {
+          ref: textRef,
+          style: open
+            ? { ...C.muted, whiteSpace: 'pre-line', lineHeight: 1.5 }
+            : { ...C.muted, whiteSpace: 'pre-line', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' },
+        }, text),
+        (over || open)
+          ? h('button', { className: 'rs-btn is-ghost', style: { marginTop: '2px' }, onClick: function (e) { if (e && e.stopPropagation) e.stopPropagation(); setOpen(!open) } }, open ? '收起简介' : '展开简介')
+          : null)
+    }
+
     // 离线测试缝：只暴露第六步的纯函数，不改变运行路径
     window.__rankScanBoardTableTest = { sortableCols: sortableCols, nextSort: nextSort, nextRowIdx: nextRowIdx, normalizeSortPref: normalizeSortPref }
 
@@ -160,9 +208,15 @@
           if (!directQ) reloadBoard(true)
         }
       }, [props.rev, reloadBoard, directQ])
-      const selXS = function (label, value, options, onChange) {
-        return h('label', { style: C.row }, h('span', { style: C.muted }, label),
-          h('select', { value: value, onChange: function (e) { onChange(e.target.value) }, style: C.input },
+      /**
+       * B4：站 / 榜 / 日期 / 排序改成「小标签在上、控件在下」的网格单元。
+       *   旧实现是 label + select 横排一行 ⇒ 480 宽时「排序」被挤到下一行，看着像掉了一格。
+       *   span=2 给榜（榜名最长），其余各占一格；窄屏时自动变成一行两个。
+       */
+      const selXS = function (label, value, options, onChange, span) {
+        return h('label', { style: { display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0, gridColumn: span ? 'span ' + span : undefined } },
+          h('span', { style: C.sectionLabel }, label),
+          h('select', { value: value, onChange: function (e) { onChange(e.target.value) }, style: { ...C.input, width: '100%' } },
             options.map(function (o) { return h('option', { key: o.value, value: o.value }, o.label) })))
       }
       const pickBoard = function (v) { sel.set({ board: v }); setBt(v); setSd(sel.pref(v, 'date')); setSs(sortPref(v)); setPick(null); setDayOpen(false) }
@@ -404,7 +458,17 @@
        *   第一行 名次 · 书名 · 作者 · 星标；第二行把这一榜要看的指标做成 chip（放不下自动换行）。
        */
       const CHIP_SKIP = { title: 1, rank: 1, author: 1, cat: 1, subCat: 1, updated: 1, days: 1 }
-      const chipCols = ((data && data.columns) || []).filter(function (c) { return !CHIP_SKIP[c.key] }).slice(0, 6)
+      /**
+       * 0.6 收尾：卡片第二行的中点串除了「按列序前 6 个」，还要**保证新补的四列在**里
+       *   （它们在列序里靠后，光靠 slice(0,6) 会被切掉）；空值仍由渲染处跳过。
+       */
+      const CHIP_ALWAYS = { shouding: 1, firstDay: 1, firstV: 1, update: 1 }
+      const chipCols = (function () {
+        const all = ((data && data.columns) || []).filter(function (c) { return !CHIP_SKIP[c.key] })
+        const head = all.slice(0, 6)
+        const extra = all.filter(function (c) { return CHIP_ALWAYS[c.key] && head.indexOf(c) < 0 })
+        return head.concat(extra)
+      })()
       /** 该行是否正展开详情 */
       /**
        * ★ Spec C（2026-10-24 审查）：窄窗/装列时被收起的列必须**显式可展开**。
@@ -426,6 +490,16 @@
       const detailCols = ((data && data.columns) || []).filter(function (c) {
         return !shownColKeys[c.key] && !SUMMARY_COLS[c.key]
       })
+      /**
+       * 0.6 收尾（修假设置）：起点移动端榜单是**站点单页固定 20 条**，depth 对它不生效
+       *   （适配器写死 BOARD_PAGE_ROWS = 20，而 catalog 仍报 canDepth:true）。
+       *   这里按 boardId **客户端置灰**并写清原因；config 里的旧值保留不动（只是不再允许修改）。
+       *   宿主的 catalog 校验留待 0.7（见交接）。
+       */
+      const qidianFixed = /^qidian\./.test(String(curBoard || ''))
+      const fixedDepth = qidianFixed ? 20 : null
+      const depthLocked = qidianFixed || info.can === false
+      const depthNote = qidianFixed ? '站点固定 20 条（移动端单页 20 条，站点分页接口在反爬后）' : info.hint
       const isOpen = function (r) { return !!(pick && pick.key === r.key) }
       /**
        * ★ 2026-10-23（点了没反应）：详情卡原来挂在**整张列表之后** ⇒ 列表一长就在视口外
@@ -434,21 +508,32 @@
        */
       const detailCard = function (r) {
         const ex = r.extra || {}
-        return h('div', { style: { ...C.detail, marginTop: '4px', boxShadow: 'inset 3px 0 0 ' + T.accent } },
+        return h('div', { style: { ...C.detail, marginTop: '4px' } },
           h('div', { style: { fontWeight: 600 } }, dash(r.title)),
           h('div', { style: C.muted }, '作者 ' + dash(r.author) + ' · 名次 ' + dash(r.rank) + ' · 字数 ' + fmtWords(ex.wordsText || ex.wordsCnt || ex.wordNumber || ex.words)),
-          h('div', { style: C.muted }, '更新 ' + fmtTime(ex.lastChapterUpdateTime)),
+          // 「更新」只有番茄榜单页给（lastChapterUpdateTime）；没这个字段的榜整行不渲染，不显示「更新 —」
+          ex.lastChapterUpdateTime != null && Number(ex.lastChapterUpdateTime) > 0
+            ? h('div', { style: C.muted }, '更新 ' + fmtTime(ex.lastChapterUpdateTime))
+            : null,
+          // 简介：只有真有 desc 的行才渲染（没有就整块不出现，不显示「—」）
+          h(BoardDesc, { text: ex.desc }),
           // 被当前宽度收起的列：在这里逐条列出（label + 与表格完全相同的渲染）
           detailCols.length ? h('div', { style: { marginTop: '3px' } }, detailCols.map(function (c) {
             return h('div', { key: 'dx-' + c.key, style: C.muted }, c.label + '：', cell(rowCellProps(r, c), r))
           })) : null,
-          h('div', { style: C.row },
+          /**
+           * 0.6.0 修：星标原来与备注表单挤在同一个 C.row 里，会「悬」在表单盒子外面左侧；
+           *   现在星标与表单进同一列（星标贴左、表单占满其余宽度），表单本身也不再自套底色盒子。
+           */
+          h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: '6px', marginTop: '4px' } },
             h(BookmarkStar, { bookKey: bookKeyOf(curBoard, r.key), row: r, boardId: curBoard, dataDate: data && data.dataDate }),
-            h(DetailBookmarkEditor, { bookKey: bookKeyOf(curBoard, r.key) }),
-            h('button', { className: 'rs-btn is-primary', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
-            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); copyLink(r.url) } }, '复制链接'),
-            h('a', { href: r.url || '#', target: '_blank', rel: 'noreferrer', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
-            h('button', { className: 'rs-btn is-ghost', style: { marginLeft: 'auto' }, onClick: function (e) { e.stopPropagation(); closeDetail() } }, '关闭')),
+            h('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' } },
+              h(DetailBookmarkEditor, { bookKey: bookKeyOf(curBoard, r.key) }),
+              h('div', { style: { ...C.row, marginTop: '2px' } },
+                h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
+                h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); copyLink(r.url) } }, '复制链接'),
+                h('a', { href: r.url || '#', target: '_blank', rel: 'noreferrer', className: 'rs-link-action', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
+                h('button', { className: 'rs-btn is-ghost', style: { marginLeft: 'auto' }, onClick: function (e) { e.stopPropagation(); closeDetail() } }, '关闭')))),
           ex.qidiantuUrl || ex.sourceUrl
             ? h('div', { style: C.row },
                 (ex.qidiantuUrl ? h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.qidiantuUrl) } }, '看起点图原始页') : null),
@@ -463,21 +548,36 @@
         const open = !!(pick && pick.key === r.key)
         const ex = r.extra || {}
         const titleText = (r.title || '') + (ex.titleSuspect || ex.titleTruncated ? ' ⚠' : '')
+        /**
+         * B7：卡片第二行不再是一堆带底色的 chip，改成「终点串 + 中点分隔」的元信息；
+         *   涨跌仍由 cell 自己带色（C.up / C.down），所以颜色语义没丢。
+         */
         const chips = chipCols.map(function (c) {
           const v = cell(rowCellProps(r, c), r)
           if (v === '—' || v === null || v === undefined || v === '') return null
-          return h('span', { key: 'c' + c.key, style: C.chip, title: c.note || c.label },
-            h('span', { style: { opacity: 0.62 } }, c.label), ' ', v)
+          return h('span', { key: 'c' + c.key, style: { whiteSpace: 'nowrap' }, title: c.note || c.label },
+            h('span', null, c.label + ' '), v)
         }).filter(Boolean)
+        const metaLine = []
+        chips.forEach(function (b, k) {
+          if (k) metaLine.push(metaDot('sep' + k))
+          metaLine.push(b)
+        })
         return h('div', {
           key: r.key || ('row' + i),
           tabIndex: 0,
           'data-row-idx': i,
           'aria-expanded': open ? 'true' : 'false',
-          style: { ...C.card, padding: '5px 8px', margin: '5px 0', cursor: 'pointer',
-            borderColor: open ? T.border : undefined,
-            background: open ? T.subtle : undefined,
-            boxShadow: open ? 'inset 3px 0 0 ' + T.accent : undefined },
+          /**
+           * ★ 0.6.0 修（暗色「亮白粗边框」的真因）：以前写的是
+           *     borderColor: open ? T.border : undefined
+           *   React 会把 undefined 落成 style.borderColor = ''，这一下会把 C.card 的
+           *   border 长写整条清空，边框退回 currentColor —— 暗色下就是近白色的一圈亮边
+           *   （看着像焦点环，其实不是）。现在只在需要时整体替换 style，绝不把颜色设成空串。
+           */
+          style: open
+            ? { ...C.card, padding: '5px 8px', margin: '5px 0', cursor: 'pointer', background: T.subtle, boxShadow: 'inset 3px 0 0 ' + T.accent }
+            : { ...C.card, padding: '5px 8px', margin: '5px 0', cursor: 'pointer' },
           onClick: function () { toggleRow(r, i) },
           onKeyDown: function (e) {
             if (!e || isRowControl(e.target)) return
@@ -493,14 +593,14 @@
             }, titleText),
             r.author ? h('span', { style: { ...C.muted, flex: '0 0 auto', maxWidth: '92px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: r.author }, r.author) : null,
             h(BookmarkStar, { bookKey: bookKeyOf(data.boardId, r.key), row: r, boardId: data.boardId, dataDate: data.dataDate })),
-          chips.length ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '3px' } }, chips) : null)
+          chips.length ? h('div', { style: { ...C.meta, display: 'flex', flexWrap: 'nowrap', overflow: 'hidden', marginTop: '2px' } }, metaLine) : null)
       }
       return h('div', null,
-        h('div', { style: { ...C.row, flexWrap: 'wrap' } },
-          selXS('站', curSite || '', sites.map(function (s) { return { value: s.site, label: s.siteName } }), pickSite),
-          selXS('榜', curBoard || '', curBoards.map(function (b) { return { value: b.boardId, label: b.name } }), pickBoard),
-          isDerived ? null : selXS('日期', sd, dateOptsShown, pickDateSel),
-          selXS('排序', ss, sortOpts, pickSort)),
+        h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '8px', alignItems: 'end', margin: '4px 0' } },
+          selXS('站', curSite || '', sites.map(function (s) { return { value: s.site, label: s.siteName } }), pickSite, 1),
+          selXS('榜', curBoard || '', curBoards.map(function (b) { return { value: b.boardId, label: b.name } }), pickBoard, 2),
+          isDerived ? null : selXS('日期', sd, dateOptsShown, pickDateSel, 1),
+          selXS('排序', ss, sortOpts, pickSort, 1)),
         dayOpen && canDay ? h('div', { style: { ...C.row, marginTop: '2px', flexWrap: 'wrap' } },
           h('span', { style: C.muted }, '上架日'),
           h('input', { type: 'date', value: qDate, onChange: function (e) { setQDate(e.target.value) }, style: { ...C.input, width: 'auto' } }),
@@ -516,23 +616,24 @@
             title: props.scanBusy ? '全局扫描进行中；请到概览点「停止本次」后再扫本榜' : '只抓当前这一榜，不动其它榜（联网）',
           }, scanning ? '扫描本榜中…' : (props.scanBusy ? '全局扫描进行中…' : '扫描本榜（联网）')),
           enrichMissing ? h('button', { className: 'rs-btn', disabled: busy || props.scanBusy, onClick: doEnrich, title: '补全当前榜缺失字段（联网：逐本进书页取，可能走缓存）' }, '补全缺失 ' + enrichMissing + ' 条') : null,
-          h('span', { style: C.muted }, '只抓当前这一榜；全局扫描/停止在概览')),
+          h('span', { style: { ...C.meta, flex: '1 1 auto' } }, '只抓当前这一榜；全局扫描/停止在概览')),
         enrichMissing ? h(Banner, { tone: 'warn', live: false },
           h('span', null, '补全未完成：还缺 ' + enrichMissing + ' 条字段'),
           h('span', { style: C.muted }, '（榜页没给收藏/字数，要进书页取；点上面的「补全缺失」重试，或等定时续跑）')) : null,
-        h(Section, { title: '本榜设置', defaultOpen: false, summary: '每榜 ' + (depth || info.max || '—') + ' 条（上限 ' + (info.max || '—') + '）' },
+        h(Section, { title: '本榜设置', defaultOpen: false, summary: '每榜 ' + (fixedDepth != null ? fixedDepth : (depth || info.max || '—')) + ' 条' + (fixedDepth != null ? '（站点固定）' : '（上限 ' + (info.max || '—') + '）') },
           h('div', { style: { ...C.row, flexWrap: 'wrap' } },
             h('span', { style: C.muted }, '每榜取多少条'),
             h('input', {
-              type: 'number', min: 1, max: info.max, value: depth, placeholder: String(info.max), disabled: !info.can || busy,
-              title: info.hint, onChange: function (e) { setDepth(e.target.value) },
+              type: 'number', min: 1, max: info.max, value: fixedDepth != null ? String(fixedDepth) : depth,
+              placeholder: String(fixedDepth != null ? fixedDepth : info.max), disabled: depthLocked || busy,
+              title: depthNote, onChange: function (e) { setDepth(e.target.value) },
               style: { ...C.input, width: '58px' },
             }),
-            h('span', { style: C.muted }, info.can ? '条（上限 ' + info.max + '）' : '条 · ' + info.hint),
-            h('button', { className: 'rs-btn', disabled: !info.can || busy, onClick: function () { saveDepth(false) }, title: '只保存，下次扫描生效' }, '保存'),
-            h('button', { className: 'rs-btn', disabled: !info.can || busy || props.scanBusy, onClick: function () { saveDepth(true) }, title: '保存后立刻抓一次这一榜（联网）' }, '保存并扫描本榜')),
-          info.hint ? h('div', { style: C.muted }, info.hint) : null),
-        band ? h('div', { style: { ...C.muted, marginTop: '2px' } }, band) : null,
+            h('span', { style: C.muted }, depthLocked ? '条 · ' + depthNote : '条（上限 ' + info.max + '）'),
+            h('button', { className: 'rs-btn', disabled: depthLocked || busy, onClick: function () { saveDepth(false) }, title: depthLocked ? depthNote : '只保存，下次扫描生效' }, '保存'),
+            h('button', { className: 'rs-btn', disabled: depthLocked || busy || props.scanBusy, onClick: function () { saveDepth(true) }, title: depthLocked ? depthNote : '保存后立刻抓一次这一榜（联网）' }, '保存并扫描本榜')),
+          !depthLocked && info.hint ? h('div', { style: C.muted }, info.hint) : null),
+        band ? h('div', { style: { ...C.sectionLabel, whiteSpace: 'normal', marginTop: '8px', marginBottom: '8px' } }, band) : null,
         viewDate ? h(Banner, { tone: 'warn' },
           h('span', { style: { fontWeight: 600 } }, '正在查看历史：' + viewDate),
           h('span', { style: C.muted }, data && data._queryDate ? '（直查站点，未落盘）' : '（本地快照）'),
@@ -569,15 +670,17 @@
                 const dir = sortableMap[c.key]
                 const active = (ss || defaultSort.key) === c.key
                 const shownDir = active ? (ss ? dir : defaultSort.dir) : dir
+                const numCol = isNumCol(c.key)
+                const arrow = h('span', { className: 'rs-sort-arrow' + (active ? ' is-on' : ''), 'aria-hidden': 'true' }, shownDir === 'ascending' ? '↑' : '↓')
                 return h('th', {
-                  key: c.key, style: C.th, title: c.note || '',
+                  key: c.key, style: numCol ? { ...C.th, textAlign: 'right' } : C.th, title: c.note || '',
                   'aria-sort': active ? shownDir : undefined,
                 }, dir
                   ? h('button', {
-                      className: 'rs-th-sort',
+                      className: 'rs-th-sort' + (numCol ? ' is-num' : ''),
                       title: active && !ss ? '当前为默认排序' : active ? '取消按 ' + c.label + ' 排序' : '按 ' + c.label + ' 排序',
                       onClick: function (e) { e.stopPropagation(); pickSort(nextSort(ss, c.key, defaultSort.key)) },
-                    }, c.label, h('span', { className: 'rs-sort-arrow' + (active ? ' is-on' : ''), 'aria-hidden': 'true' }, shownDir === 'ascending' ? '↑' : '↓'))
+                    }, numCol ? [arrow, c.label] : [c.label, arrow])
                   : c.label)
               }))),
               h('tbody', { onKeyDown: onRowsKeyDown }, data.rows.flatMap(function (r, i) {
@@ -587,14 +690,14 @@
                   tabIndex: 0,
                   'data-row-idx': i,
                   'aria-expanded': open ? 'true' : 'false',
-                  style: { cursor: 'pointer', background: open ? T.subtle : undefined },
+                  style: open ? { cursor: 'pointer', background: T.subtle } : { cursor: 'pointer' },
                   onClick: function () { toggleRow(r, i) },
                   onKeyDown: function (e) {
                     if (!e || isRowControl(e.target)) return
                     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRow(r, i) }
                   },
                 }, cols.map(function (c, ci) {
-                  const baseStyle = isNumCol(c.key) ? { ...C.td, ...C.num } : C.td
+                  const baseStyle = isNumCol(c.key) ? { ...C.td, ...C.num, textAlign: 'right' } : C.td
                   const style = open && ci === 0 ? { ...baseStyle, boxShadow: 'inset 3px 0 0 ' + T.accent } : baseStyle
                   return h('td', { key: c.key, style }, cell(rowCellProps(r, c), r))
                 }))
