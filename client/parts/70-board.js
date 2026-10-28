@@ -45,6 +45,33 @@
         navigator.clipboard.writeText(text).then(function () { toast('success', '已复制链接') }).catch(fail)
       } catch (e) { fail() }
     }
+    /**
+     * 0.6 收尾：榜单行简介（起点榜单页 pageContext 里自带 desc，落盘在 extra.desc）。
+     * 纯函数便于单测：去掉每行首尾空白（含全角空格 U+3000）与空行，段落之间保留单个换行。
+     * 空值/只有空白 ⇒ 返回 '' ⇒ 调用方**什么都不渲染**（不显示「—」）。
+     */
+    const cleanDesc = function (raw) {
+      if (raw == null) return ''
+      const lines = String(raw).replace(/\u3000/g, ' ').split(/\r?\n/).map(function (x) { return x.trim() }).filter(function (x) { return !!x })
+      return lines.join('\n')
+    }
+    /** 简介块：默认 3 行（-webkit-line-clamp），超出给「展开 / 收起」。没有简介就不渲染。 */
+    function BoardDesc(props) {
+      const [open, setOpen] = React.useState(false)
+      const text = cleanDesc(props.text)
+      if (!text) return null
+      const long = text.length > 60 || text.indexOf('\n') >= 0
+      return h('div', { style: { marginTop: '4px' } },
+        h('div', {
+          style: open
+            ? { ...C.muted, whiteSpace: 'pre-line', lineHeight: 1.5 }
+            : { ...C.muted, whiteSpace: 'pre-line', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' },
+        }, text),
+        long
+          ? h('button', { className: 'rs-btn is-ghost', style: { marginTop: '2px' }, onClick: function (e) { if (e && e.stopPropagation) e.stopPropagation(); setOpen(!open) } }, open ? '收起简介' : '展开简介')
+          : null)
+    }
+
     // 离线测试缝：只暴露第六步的纯函数，不改变运行路径
     window.__rankScanBoardTableTest = { sortableCols: sortableCols, nextSort: nextSort, nextRowIdx: nextRowIdx, normalizeSortPref: normalizeSortPref }
 
@@ -444,6 +471,8 @@
           h('div', { style: { fontWeight: 600 } }, dash(r.title)),
           h('div', { style: C.muted }, '作者 ' + dash(r.author) + ' · 名次 ' + dash(r.rank) + ' · 字数 ' + fmtWords(ex.wordsText || ex.wordsCnt || ex.wordNumber || ex.words)),
           h('div', { style: C.muted }, '更新 ' + fmtTime(ex.lastChapterUpdateTime)),
+          // 简介：只有真有 desc 的行才渲染（没有就整块不出现，不显示「—」）
+          h(BoardDesc, { text: ex.desc }),
           // 被当前宽度收起的列：在这里逐条列出（label + 与表格完全相同的渲染）
           detailCols.length ? h('div', { style: { marginTop: '3px' } }, detailCols.map(function (c) {
             return h('div', { key: 'dx-' + c.key, style: C.muted }, c.label + '：', cell(rowCellProps(r, c), r))

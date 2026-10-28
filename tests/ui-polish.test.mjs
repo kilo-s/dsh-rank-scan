@@ -282,3 +282,25 @@ test('回归：卡片状态样式不许写 xxx: cond ? a : undefined（会把 C.
   const rowBody = S.slice(i2, i2 + 600)
   assert.ok(!/background:\s*open\s*\?\s*T\.subtle\s*:\s*undefined/.test(rowBody), '表格行也不许用 background: … : undefined')
 })
+
+// ---------------------------------------------------------------- 0.6 收尾（0.7 前）
+test('起点简介：去全角空格与空行；没有简介时整块不渲染（不显示「—」）', () => {
+  const cleanDesc = load().__test.helpers.cleanDesc
+  assert.equal(typeof cleanDesc, 'function', 'cleanDesc 必须是纯函数')
+  assert.equal(cleanDesc('\u3000\u3000最近不知怎么回事，灵气复苏了？\n\n不对！'), '最近不知怎么回事，灵气复苏了？\n不对！', '去掉首尾全角空格与空行')
+  assert.equal(cleanDesc('  第一段  \n \n 第二段  '), '第一段\n第二段', '压掉空行、去每行首尾空白')
+  assert.equal(cleanDesc(null), '', 'null ⇒ 空串')
+  assert.equal(cleanDesc(''), '', '空串 ⇒ 空串')
+  assert.equal(cleanDesc('\u3000 \n \n '), '', '只有空白 ⇒ 空串（调用方不得渲染「—」）')
+  // 组件结构：无值时提前 return null；默认 3 行 clamp + 展开/收起
+  const i = S.indexOf('function BoardDesc(props)')
+  assert.ok(i > 0, '找不到 BoardDesc')
+  const body = S.slice(i, i + 1400)
+  assert.ok(body.includes('if (!text) return null'), '没有简介时必须整块返回 null')
+  assert.ok(body.includes('WebkitLineClamp: 3'), '默认最多 3 行')
+  assert.ok(body.includes("'展开简介'") && body.includes("'收起简介'"), '要有展开/收起')
+  // 详情卡里必须挂上（宽表与窄卡片共用同一个 detailCard）
+  const d = S.indexOf('const detailCard = function (r)')
+  assert.ok(d > 0, '找不到 detailCard')
+  assert.ok(S.slice(d, d + 1200).includes('h(BoardDesc, { text: ex.desc })'), '详情卡必须渲染简介块')
+})

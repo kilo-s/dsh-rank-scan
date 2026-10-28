@@ -111,7 +111,7 @@
     bmPage: BM_PAGE,
     bmSortKey: BM_SORT_KEY,
     bmSortOptions: BM_SORT_OPTIONS,
-    helpers: { cell: cell, metaDot: metaDot, revOf: revOf, statusText: statusText, scanLabel: scanLabel, pollDelay: pollDelay, canDayQuery: canDayQuery, fitColumns: fitColumns, colPrio: colPrio, mdOf: mdOf, boardLabel: boardLabel, rememberBoardNames: rememberBoardNames },
+    helpers: { cell: cell, metaDot: metaDot, cleanDesc: cleanDesc, revOf: revOf, statusText: statusText, scanLabel: scanLabel, pollDelay: pollDelay, canDayQuery: canDayQuery, fitColumns: fitColumns, colPrio: colPrio, mdOf: mdOf, boardLabel: boardLabel, rememberBoardNames: rememberBoardNames },
     components: { Overview: Overview, BoardTab: BoardTab, BookmarksTab: BookmarksTab, SettingsTab: SettingsTab, PopMenu: PopMenu, Panel: Panel, ToastHost: ToastHost, StatCard: StatCard, SectionHeader: SectionHeader },
     nextPlanOf: nextPlanOf,
     toast: toast, toastStore: toastStore, lastNote: lastNote, settingsDiff: settingsDiff,
