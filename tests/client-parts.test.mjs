@@ -25,6 +25,13 @@ test('除 00/90 外单个 part 不超过 900 行', () => {
   }
 })
 
+test('每个 part 以换行符结尾（否则构建标记会粘到上一行）', () => {
+  for (const f of files) {
+    const src = readFileSync(join(partsDir, f), 'utf8')
+    assert.ok(src.endsWith('\n'), f + ' 缺少末尾换行')
+  }
+})
+
 test('拼接结果通过 new Function 语法检查', () => {
   assert.doesNotThrow(() => new Function(readClientSource()), 'parts 拼接后有语法错误')
 })

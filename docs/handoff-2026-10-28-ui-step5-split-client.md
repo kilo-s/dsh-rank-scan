@@ -52,7 +52,11 @@
 - 用 `git archive HEAD` 导出干净树 + `npm ci`（会跑 package.json 的 prepare → build.mjs）跑通：lib/client.js 产物存在，sha256 `39874FA7…4F854B5`；在该干净树里 client-bundle 12/0、client-load 6/0。
 - 仍建议在有 DSH 桌面权限/可 spawn git 的环境补一次真正的 `dsh plugin add`。
 
+## 待办
+
+- 发版后由用户在本机跑 `dsh plugin add github:kilo-s/dsh-rank-scan#v0.5.1` 做真实直装验证；代理沙箱不能 spawn git，已用 git archive + npm ci 替代验收。
+
 ## 下一步
 
-1. 验收两个 commit 与切分表。
+1. 验收两个 commit 与切分表。（已完成）
 2. 通过后合并 main、打 tag v0.5.1。
