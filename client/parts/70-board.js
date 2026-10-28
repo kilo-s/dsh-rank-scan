@@ -437,7 +437,17 @@
        *   第一行 名次 · 书名 · 作者 · 星标；第二行把这一榜要看的指标做成 chip（放不下自动换行）。
        */
       const CHIP_SKIP = { title: 1, rank: 1, author: 1, cat: 1, subCat: 1, updated: 1, days: 1 }
-      const chipCols = ((data && data.columns) || []).filter(function (c) { return !CHIP_SKIP[c.key] }).slice(0, 6)
+      /**
+       * 0.6 收尾：卡片第二行的中点串除了「按列序前 6 个」，还要**保证新补的四列在**里
+       *   （它们在列序里靠后，光靠 slice(0,6) 会被切掉）；空值仍由渲染处跳过。
+       */
+      const CHIP_ALWAYS = { shouding: 1, firstDay: 1, firstV: 1, update: 1 }
+      const chipCols = (function () {
+        const all = ((data && data.columns) || []).filter(function (c) { return !CHIP_SKIP[c.key] })
+        const head = all.slice(0, 6)
+        const extra = all.filter(function (c) { return CHIP_ALWAYS[c.key] && head.indexOf(c) < 0 })
+        return head.concat(extra)
+      })()
       /** 该行是否正展开详情 */
       /**
        * ★ Spec C（2026-10-24 审查）：窄窗/装列时被收起的列必须**显式可展开**。

@@ -304,3 +304,22 @@ test('起点简介：去全角空格与空行；没有简介时整块不渲染�
   assert.ok(d > 0, '找不到 detailCard')
   assert.ok(S.slice(d, d + 1200).includes('h(BoardDesc, { text: ex.desc })'), '详情卡必须渲染简介块')
 })
+
+test('0.6 收尾补列：空值显示「—」、数字列右对齐、480 卡片中点串带上新列', () => {
+  const mod = load()
+  const cell = mod.__test.helpers.cell
+  // 空值一律「—」，不补 0
+  for (const key of ['shouding', 'firstDay', 'firstV', 'update']) {
+    assert.equal(cell({ key: key }, { extra: {} }), '—', key + ' 空值必须是「—」，不许补 0')
+  }
+  assert.equal(cell({ key: 'shouding' }, { extra: { shouding: 2168 } }), 2168, '首订有值时原样显示')
+  assert.equal(cell({ key: 'firstDay' }, { extra: { firstDay: 1148 } }), '+1148', '首日增量带 + 号')
+  assert.equal(cell({ key: 'firstV' }, { extra: { firstV: '12:13' } }), '12:13')
+  assert.equal(cell({ key: 'update' }, { extra: { update: '10-28 12:00' } }), '10-28 12:00')
+  // 数字列（右对齐 + 等宽）：首订 / 首日增量在 NUM_COL_RE 里
+  const re = S.match(/const NUM_COL_RE = \/([^/]+)\//)
+  assert.ok(re, '找不到 NUM_COL_RE')
+  assert.ok(re[1].includes('shouding') && re[1].includes('firstDay'), '首订/首日增量要算数字列（右对齐）')
+  // 480 宽卡片：新列必须进中点串（列序靠后，不能只靠 slice(0,6)）
+  assert.ok(S.includes('const CHIP_ALWAYS = { shouding: 1, firstDay: 1, firstV: 1, update: 1 }'), '中点串要专门保住新补的四列')
+})

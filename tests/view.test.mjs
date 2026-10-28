@@ -49,7 +49,8 @@ test('列随榜：刺猬猫带收藏/字数（榜单页无值，靠书页补全�
   const cw = columnsFor(boardMeta('ciweimao.no-vip-click.week')).map((c) => c.key)
   // 榜单页本身没有数值字段 ⇒ 收藏/字数列留给「补全本榜」填（无历史 ⇒ 无在榜天数列）
   // 列顺序统一（2026-10-15 使用者）：全站「字数 → 收藏」
-  assert.deepEqual(cw, ['rank', 'delta', 'title', 'author', 'words', 'collect'], '刺猬猫核心列 + 字数/收藏（字数在前）')
+  // ★ 0.6 收尾：新增「最近更新」列（网站页给的 extra.update），列序统一为「最近更新 → 字数 → 收藏」
+  assert.deepEqual(cw, ['rank', 'delta', 'title', 'author', 'update', 'words', 'collect'], '刺猬猫核心列 + 最近更新 + 字数/收藏（字数在前）')
   const sc = columnsFor(boardMeta('sfacg.new.click')).map((c) => c.key)
   assert.ok(sc.includes('score') && sc.includes('words') && sc.includes('collect'))
   // 2026-10-15 使用者：首页榜没有作者，但书页 <title> 里有 ⇒ 补全后能填上，列要给
@@ -301,4 +302,21 @@ test('补全续跑判定：跨日作废 / 已补齐 / 再试 / 当日放弃', ()
   assert.equal(p({ pendingDate: '2026-10-15', latestDate: '2026-10-16' }), 'clear', '待办是昨天的 ⇒ 跨日作废')
   assert.equal(p({ enrichable: false }), 'clear', '该榜不支持补全 ⇒ 清掉')
   assert.equal(enrichAttemptPolicy({ pendingDate: null, latestDate: '2026-10-16', missing: 0, tried: 0, maxTries: 3, enrichable: true }).action, 'stale', '没有待办且不缺字段 ⇒ 无需动作')
+})
+
+test('0.6 收尾补列：三江有首订/首日增量，首订榜有首V，刺猬猫两个榜有最近更新', () => {
+  const sj = columnsFor(boardMeta('qidiantu.sanjiang'))
+  const sjKeys = sj.map((c) => c.key)
+  assert.ok(sjKeys.includes('shouding'), '三江要有「首订」列（数据在 extra.shouding）')
+  assert.ok(sjKeys.includes('firstDay'), '三江要有「首日增量」列（数据在 extra.firstDay）')
+  assert.match(sj.filter((c) => c.key === 'shouding')[0].note || '', /三江页/, '列说明要写清来源')
+  const sd = columnsFor(boardMeta('qidiantu.shouding'))
+  const sdKeys = sd.map((c) => c.key)
+  assert.ok(sdKeys.includes('firstV'), '首订榜要有「首V」列（数据在 extra.firstV）')
+  assert.match(sd.filter((c) => c.key === 'firstV')[0].note || '', /首V时刻/, '列说明要写清来源')
+  for (const id of ['ciweimao.no-vip-click.week', 'ciweimao.yp_new.week']) {
+    const cw = columnsFor(boardMeta(id))
+    assert.ok(cw.map((c) => c.key).includes('update'), id + ' 要有「最近更新」列')
+  }
+  assert.ok(!columnsFor(boardMeta('qidiantu.sanjiang')).map((c) => c.key).includes('update'), '三江不该有「最近更新」')
 })

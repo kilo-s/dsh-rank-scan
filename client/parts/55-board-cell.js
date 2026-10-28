@@ -68,6 +68,11 @@
       }
       // 派生榜「本期累计」（自然周内：今日在读 − 期首在读）；期中入池算不出来 ⇒ 「—」
       if (k === 'periodDelta') return ex.periodDelta == null ? '—' : (ex.periodDelta > 0 ? '+' : '') + ex.periodDelta
+      // 0.6 收尾补列：都已在快照里，只是之前没有列。空值一律「—」，不补 0
+      if (k === 'shouding') return dash(ex.shouding)
+      if (k === 'firstDay') return ex.firstDay == null ? '—' : (ex.firstDay > 0 ? '+' + ex.firstDay : String(ex.firstDay))
+      if (k === 'firstV') return dash(ex.firstV)
+      if (k === 'update') return dash(ex.update)
       if (k === 'collect') return fmtRead(ex.collect)
       if (k === 'collectBase') return fmtRead(ex.collectBase)
       if (k === 'fans') return fmtRead(ex.fans)
