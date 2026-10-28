@@ -574,8 +574,9 @@
           ? '当前 ' + chk.current + '：未发布到 npm，请用 Release 附件或仓库链接更新'
           : '当前 ' + chk.current + '（' + (chk.reason || '更新检查不可用') + '）' + (chk.latest ? '；registry 最新 ' + chk.latest : '')
       const canClick = !!(chk && (chk.canUpdateInPlace || chk.action === 'refresh' || chk.action === 'restart'))
-      return h('div', { style: { ...C.card, margin: '8px 0', padding: '7px 9px' } },
-        h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '版本'),
+      // D：版本块在「关于」分组里，别再来一层边框（盒子套盒子）；只留一条分区标题
+      return h('div', { style: { ...C.card, border: 'none', background: 'transparent', margin: '8px 0', padding: 0 } },
+        h('div', { style: { ...C.sectionLabel, marginBottom: '4px' } }, '版本'),
         h('div', { style: C.muted }, line),
         (info && info.name && info.version) ? h('div', { style: C.muted }, info.name + '　v' + info.version) : null,
         h('div', { style: C.row },
