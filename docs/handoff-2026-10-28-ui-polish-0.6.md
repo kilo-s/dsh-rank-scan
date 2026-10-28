@@ -116,7 +116,7 @@ A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipL
 | # | 事项 | 落点 | 备注 |
 |---|---|---|---|
 | 1 | 起点简介进展开详情 | `70-board.js`（`cleanDesc` + `BoardDesc`） | 只读 `extra.desc`；去 U+3000 与空行；3 行 clamp；无值整块不渲染 |
-| 2 | 补四列 | `view.ts`（`columnsFor`）、`55-board-cell.js`（`cell`）、`20-ui-kit.js`（`NUM_COL_RE`）、`70-board.js`（`CHIP_ALWAYS`） | 三江 首订/首日增量、首订榜 首V、刺猬猫 最近更新；空值「—」 |
+| 2 | 补四列 | `view.ts`（`columnsFor`）、`55-board-cell.js`（`cell`/`fmtStamp`）、`20-ui-kit.js`（`NUM_COL_RE`）、`70-board.js`（`CHIP_ALWAYS`） | 三江 首订/上架、首订榜 首V、刺猬猫 最近更新；空值「—」 |
 | 3 | 抓取范围一站一行 | `50-settings.js` | 「已选 x / y」+「⋯」菜单（全选/全不选/补齐缺失）；默认折叠；`setAll(false)` 顺手收起 |
 | 4 | 起点榜条数置灰 | `70-board.js`（`qidianFixed`/`depthLocked`） | **客户端置灰**：宿主 `catalog()` 对 `qidian.*` 仍报 `canDepth: true`（cap 20 > 10），真正的校验留待 0.7；config 里的旧值保留不动 |
 
@@ -136,7 +136,7 @@ A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipL
 
 ### 闸门（收尾后）
 
-- `test-local`：**450 pass / 0 fail**（起始基线 445；新增 5 条）
+- `test-local`：**453 pass / 0 fail**（起始基线 445；新增 8 条）
 - `acceptance -SkipLive`：**100 pass / 0 fail**
 
 ### 截图（docs/screenshots/polish-0.6/）
@@ -145,6 +145,15 @@ A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipL
 - docs/screenshots/polish-0.6/board-900-light-sanjiang.png（三江：首订 / 首日增量两列）
 - docs/screenshots/polish-0.6/board-480-dark-desc.png（480 暗色，起点展开一行）
 - docs/screenshots/polish-0.6/pick-900-light-ranges.png（设置 · 抓取范围：起点图展开、其余折叠、「⋯」菜单打开）
+
+### 发布前口径更正（2026-10-29）
+
+- 三江第二列**不是**「首日增量」：`qidiantu.ts` 取的是 `cells[6]`，站点表头写的是**「日期」**，值是 Unix 秒时间戳（`1793000228` = 2026-10-26 15:37 东八区）。交叉验证：「我的转职是小游戏玩家」在三江是 `1793074419`（2026-10-27 12:13）、在首订榜 `firstV` 是 `12:13` —— 同一时刻 ⇒ 就是上架/首V 时间。
+  - 处理：列名改「上架」，显示 `MM-DD HH:mm`（固定 +8h 换算，不受运行时区影响），不加 `+`，不参与数字右对齐；`NUM_COL_RE` 里移除 `firstDay`。断言：这一列渲染结果不得是 `>1e9` 的裸数字。
+  - 三江页真正的「每日收藏增量」在 `extra.daily[]`（7 天）+ `extra.totalDelta`，**没有**「首日增量」这个字段。
+- 同批核对无误：`extra.shouding` = 真实首订数（大话华娱 3362、不许没收我的仙籍！817、我的转职是小游戏玩家 851，与首订榜同名同值）；`extra.firstV` = `12:13` 这类时刻文本（不是时间戳）。
+- 另修两处小问题：详情卡「更新 —」（起点没有 `lastChapterUpdateTime`）整行不渲染；「展开简介」改为**实测溢出**（`scrollHeight > clientHeight`，resize 重量）才出现，900 宽两行简介不再出按钮。
+- **已知未修（0.6 之前就这样）**：三江「今日增量」整列是「—」。原因是 `cell` 读 `ex.dailyDelta`，而三江行只有 `extra.daily[]` / `extra.totalDelta`，v0.5.2 的代码同样如此 ⇒ 与你说的「0.6 之前也一样」相符；真正的值是「第 N 天」那几列 + 期累计。
 
 ## 发布后必须人工确认的一条（暗色）
 

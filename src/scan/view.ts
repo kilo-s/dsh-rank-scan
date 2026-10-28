@@ -217,10 +217,12 @@ export function columnsFor(meta: BoardMeta, flags: ColumnFlags = { hasBaseline: 
   if (qidiantu && meta.boardId === 'qidiantu.sanjiang') {
     // ★ 列序（使用者 2026-10-15）：**字数紧跟在「分类」后面**（三江源里没有字数字段，值取自起点书页）
     cols.push({ key: 'words', label: '字数', note: '三江源里没有字数字段，取自起点书页（走书页缓存）' })
-    // 0.6 收尾补列：三江页第 6/7 列（首订 / 首日增量）一直在快照里（extra.shouding / extra.firstDay），之前没有列
+    // 0.6 收尾补列：三江页第 6/7 列（首订 / 日期）一直在快照里（extra.shouding / extra.firstDay），之前没有列
+    // ★ 2026-10-29 口径修正：extra.firstDay 存的**不是**「首日增量」，是站点表头写的「日期」列，
+    //   实测是 Unix 秒时间戳（= 该书上架/首V 时刻）。列名与显示都按时间戳处理，不参与数字右对齐。
     cols.push(
       { key: 'shouding', label: '首订', note: '三江页「首订」列（起点图口径；站点多数行不给值 ⇒ 显示「—」），与收藏增量不同源' },
-      { key: 'firstDay', label: '首日增量', note: '三江页「初始」下的首日收藏增量（期首那天）；未给值 ⇒ 「—」' },
+      { key: 'firstDay', label: '上架', note: '三江页「日期」列：Unix 秒时间戳（= 上架/首V 时刻，与首订榜「首V时刻」同行同分），显示 MM-DD HH:mm（东八区）；未给值 ⇒ 「—」' },
     )
     cols.push({ key: 'collectBase', label: '期初收藏' }, { key: 'dailyDelta', label: '今日增量', note: '今天那天的收藏增量；未到的天「—」' })
     // ★ 每日增量拆成 7 列（2026-10-15 使用反馈）：原先 7 天的值挤在一个单元格里，读不出来。

@@ -295,7 +295,7 @@ test('起点简介：去全角空格与空行；没有简介时整块不渲染�
   // 组件结构：无值时提前 return null；默认 3 行 clamp + 展开/收起
   const i = S.indexOf('function BoardDesc(props)')
   assert.ok(i > 0, '找不到 BoardDesc')
-  const body = S.slice(i, i + 1400)
+  const body = S.slice(i, i + 2200)
   assert.ok(body.includes('if (!text) return null'), '没有简介时必须整块返回 null')
   assert.ok(body.includes('WebkitLineClamp: 3'), '默认最多 3 行')
   assert.ok(body.includes("'展开简介'") && body.includes("'收起简介'"), '要有展开/收起')
@@ -313,13 +313,15 @@ test('0.6 收尾补列：空值显示「—」、数字列右对齐、480 卡片
     assert.equal(cell({ key: key }, { extra: {} }), '—', key + ' 空值必须是「—」，不许补 0')
   }
   assert.equal(cell({ key: 'shouding' }, { extra: { shouding: 2168 } }), 2168, '首订有值时原样显示')
-  assert.equal(cell({ key: 'firstDay' }, { extra: { firstDay: 1148 } }), '+1148', '首日增量带 + 号')
+  // ★ 0.6 修正：这一列是时间戳（站点「日期」列），不再是「+1148」那种增量
+  assert.equal(cell({ key: 'firstDay' }, { extra: { firstDay: 1793000228 } }), '10-26 15:37', '时间戳列显示 MM-DD HH:mm')
   assert.equal(cell({ key: 'firstV' }, { extra: { firstV: '12:13' } }), '12:13')
   assert.equal(cell({ key: 'update' }, { extra: { update: '10-28 12:00' } }), '10-28 12:00')
   // 数字列（右对齐 + 等宽）：首订 / 首日增量在 NUM_COL_RE 里
   const re = S.match(/const NUM_COL_RE = \/([^/]+)\//)
   assert.ok(re, '找不到 NUM_COL_RE')
-  assert.ok(re[1].includes('shouding') && re[1].includes('firstDay'), '首订/首日增量要算数字列（右对齐）')
+  assert.ok(re[1].includes('shouding'), '首订要算数字列（右对齐）')
+  assert.ok(!re[1].includes('firstDay'), '「上架」是时间戳，不是数字列')
   // 480 宽卡片：新列必须进中点串（列序靠后，不能只靠 slice(0,6)）
   assert.ok(S.includes('const CHIP_ALWAYS = { shouding: 1, firstDay: 1, firstV: 1, update: 1 }'), '中点串要专门保住新补的四列')
 })
@@ -343,4 +345,44 @@ test('修假设置：起点榜条数输入框置灰，并说明「站点固定 2
   assert.ok(body.includes("'条 · ' + depthNote"), '置灰时要写清原因（不能只留一个灰框）')
   assert.ok(S.includes('站点固定 20 条（移动端单页 20 条，站点分页接口在反爬后）'), '要有「站点固定 20 条」提示')
   assert.ok(body.includes("disabled: depthLocked || busy"), '保存按钮同样置灰（改了也不生效）')
+})
+
+test('0.6 修正：三江那列是 Unix 秒时间戳 ⇒ 显示成 MM-DD HH:mm，绝不放裸数字', () => {
+  const mod = load()
+  const { cell, fmtStamp } = mod.__test.helpers
+  assert.equal(typeof fmtStamp, 'function', 'fmtStamp 必须是纯函数')
+  // 真实数据（2026-10-28 快照 qidiantu.sanjiang「大话华娱」）
+  assert.equal(fmtStamp(1793000228), '10-26 15:37', '东八区 MM-DD HH:mm')
+  assert.equal(fmtStamp(1793074419), '10-27 12:13')
+  assert.equal(fmtStamp(null), '—')
+  assert.equal(fmtStamp(0), '—', '0 不是时间戳 ⇒ 「—」')
+  assert.equal(fmtStamp(999999999), '—', '小于 1e9 的整数不是时间戳 ⇒ 「—」')
+  const shown = cell({ key: 'firstDay' }, { extra: { firstDay: 1793000228 } })
+  assert.equal(shown, '10-26 15:37', '单元格不得直接显示裸时间戳')
+  assert.ok(!/^\d{10}$/.test(String(shown)), '这一列不允许出现 10 位裸数字')
+  // 断言口径：这一列渲染出来的任何值都不许是 >1e9 的裸数字
+  for (const v of [1793000228, 1793008856, 1793074419]) {
+    const out = Number(cell({ key: 'firstDay' }, { extra: { firstDay: v } }))
+    assert.ok(!(isFinite(out) && out > 1e9), '渲染结果不得是 >1e9 的裸数字：' + out)
+  }
+  // 「上架」按文本走，不进数字右对齐那一组
+  const re = S.match(/const NUM_COL_RE = \/([^/]+)\//)
+  assert.ok(re && !re[1].includes('firstDay'), '时间戳列不参与数字右对齐')
+})
+
+test('0.6 修正：详情卡的「更新」行只在有 lastChapterUpdateTime 时渲染', () => {
+  const i = S.indexOf("'更新 ' + fmtTime(ex.lastChapterUpdateTime)")
+  assert.ok(i > 0, '找不到「更新」行')
+  const around = S.slice(i - 260, i + 40)
+  assert.ok(around.includes('ex.lastChapterUpdateTime != null && Number(ex.lastChapterUpdateTime) > 0'), '没有这个字段的榜整行不渲染（不许显示「更新 —」）')
+})
+
+test('0.6 修正：「展开简介」只在真的被截断时出现（实测溢出 + resize 重量）', () => {
+  const i = S.indexOf('function BoardDesc(props)')
+  const body = S.slice(i, i + 1800)
+  assert.ok(body.includes('scrollHeight - el.clientHeight > 1'), '要用实测溢出判断，不是按字数猜')
+  assert.ok(body.includes("window.addEventListener('resize', measure)"), '窗口尺寸变化要重量')
+  assert.ok(body.includes('const textRef = React.useRef(null)') && body.includes('ref: textRef'), '要量真实渲染后的盒子')
+  assert.ok(body.includes('(over || open)'), '收起态溢出或有溢出时才给按钮；展开态保留「收起」')
+  assert.ok(!body.includes('text.length > 60'), '旧的按字数阈值判断必须移除')
 })

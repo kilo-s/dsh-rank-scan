@@ -310,6 +310,11 @@ test('0.6 收尾补列：三江有首订/首日增量，首订榜有首V，刺�
   assert.ok(sjKeys.includes('shouding'), '三江要有「首订」列（数据在 extra.shouding）')
   assert.ok(sjKeys.includes('firstDay'), '三江要有「首日增量」列（数据在 extra.firstDay）')
   assert.match(sj.filter((c) => c.key === 'shouding')[0].note || '', /三江页/, '列说明要写清来源')
+  // ★ 2026-10-29 口径修正：extra.firstDay 是站点「日期」列（Unix 秒时间戳），不是「首日增量」
+  const fd = sj.filter((c) => c.key === 'firstDay')[0]
+  assert.equal(fd.label, '上架', '这一列叫「上架」，不叫「首日增量」')
+  assert.match(fd.note || '', /时间戳/, '列说明要写明是时间戳')
+  assert.match(fd.note || '', /日期/, '列说明要交代站点这一列表头是「日期」')
   const sd = columnsFor(boardMeta('qidiantu.shouding'))
   const sdKeys = sd.map((c) => c.key)
   assert.ok(sdKeys.includes('firstV'), '首订榜要有「首V」列（数据在 extra.firstV）')

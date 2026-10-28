@@ -55,19 +55,40 @@
       const lines = String(raw).replace(/\u3000/g, ' ').split(/\r?\n/).map(function (x) { return x.trim() }).filter(function (x) { return !!x })
       return lines.join('\n')
     }
-    /** 简介块：默认 3 行（-webkit-line-clamp），超出给「展开 / 收起」。没有简介就不渲染。 */
+    /**
+     * 简介块：默认 3 行（-webkit-line-clamp），**真的被截断时**才给「展开 / 收起」。没有简介就不渲染。
+     * ★ 2026-10-29：换成「实测溢出」判断（scrollHeight > clientHeight），窗口尺寸变化时重新量 ——
+     *   原来按字数猜（>60 字就给按钮），900 宽下简介只占两行、根本没截断也照样出按钮。
+     */
     function BoardDesc(props) {
       const [open, setOpen] = React.useState(false)
+      const [over, setOver] = React.useState(false)
+      const textRef = React.useRef(null)
       const text = cleanDesc(props.text)
+      React.useEffect(function () {
+        if (!text) return undefined
+        const measure = function () {
+          const el = textRef.current
+          if (!el) return
+          // 收起态才量得出「被截断」；展开态下 scrollHeight == clientHeight
+          setOver(el.scrollHeight - el.clientHeight > 1)
+        }
+        measure()
+        // 字体/宽度变化都会改变行数：窗口 resize 与面板宽度变化都重量一次
+        if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('resize', measure)
+        return function () {
+          if (typeof window !== 'undefined' && window.removeEventListener) window.removeEventListener('resize', measure)
+        }
+      }, [text, open])
       if (!text) return null
-      const long = text.length > 60 || text.indexOf('\n') >= 0
       return h('div', { style: { marginTop: '4px' } },
         h('div', {
+          ref: textRef,
           style: open
             ? { ...C.muted, whiteSpace: 'pre-line', lineHeight: 1.5 }
             : { ...C.muted, whiteSpace: 'pre-line', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' },
         }, text),
-        long
+        (over || open)
           ? h('button', { className: 'rs-btn is-ghost', style: { marginTop: '2px' }, onClick: function (e) { if (e && e.stopPropagation) e.stopPropagation(); setOpen(!open) } }, open ? '收起简介' : '展开简介')
           : null)
     }
@@ -490,7 +511,10 @@
         return h('div', { style: { ...C.detail, marginTop: '4px' } },
           h('div', { style: { fontWeight: 600 } }, dash(r.title)),
           h('div', { style: C.muted }, '作者 ' + dash(r.author) + ' · 名次 ' + dash(r.rank) + ' · 字数 ' + fmtWords(ex.wordsText || ex.wordsCnt || ex.wordNumber || ex.words)),
-          h('div', { style: C.muted }, '更新 ' + fmtTime(ex.lastChapterUpdateTime)),
+          // 「更新」只有番茄榜单页给（lastChapterUpdateTime）；没这个字段的榜整行不渲染，不显示「更新 —」
+          ex.lastChapterUpdateTime != null && Number(ex.lastChapterUpdateTime) > 0
+            ? h('div', { style: C.muted }, '更新 ' + fmtTime(ex.lastChapterUpdateTime))
+            : null,
           // 简介：只有真有 desc 的行才渲染（没有就整块不出现，不显示「—」）
           h(BoardDesc, { text: ex.desc }),
           // 被当前宽度收起的列：在这里逐条列出（label + 与表格完全相同的渲染）
