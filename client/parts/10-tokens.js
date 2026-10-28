@@ -80,6 +80,15 @@
         '.rs-input{height:28px;box-sizing:border-box;padding:0 6px;line-height:1.4}',
         '.rs-th-sort{border:none;background:transparent;padding:0;font:inherit;font-weight:600;cursor:pointer;color:inherit;display:inline-flex;align-items:center;gap:3px}',
         '.rs-th-sort:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
+        // B1：数字列表头也右对齐（排序按钮铺满 th 并靠右，箭头在文字左侧）
+        '.rs-th-sort.is-num{width:100%;justify-content:flex-end}',
+        // B3：星标——已收藏常显；未收藏只在行 hover / 行内 focus / 行已展开时出现（暗色下不再是一排灰点）
+        '.rs-star.is-off{opacity:.32}',
+        '[data-rank-scan-win] tbody tr .rs-star.is-off{opacity:0}',
+        '[data-rank-scan-win] tbody tr:hover .rs-star.is-off{opacity:.32}',
+        '[data-rank-scan-win] tbody tr:focus-within .rs-star.is-off{opacity:.32}',
+        '[data-rank-scan-win] tr[aria-expanded="true"] .rs-star.is-off{opacity:.32}',
+        '@media (hover:none){[data-rank-scan-win] tbody tr .rs-star.is-off{opacity:.32}}',
         '.rs-sort-arrow{opacity:0;color:' + T.muted + ';font-size:10px;line-height:1}',
         '.rs-th-sort:hover .rs-sort-arrow,.rs-th-sort:focus-visible .rs-sort-arrow{opacity:1}',
         '.rs-sort-arrow.is-on{opacity:1;color:' + T.accent + ';font-weight:600}',
@@ -125,7 +134,8 @@
       detail: { marginTop: '6px', padding: '6px 8px 6px 10px', border: 'none', borderLeft: '2px solid ' + T.accent, borderRadius: T.r.s, background: T.subtle },
       // 书签（用户数据）：星标按钮与卡片
       bmOn: { padding: '0 2px', border: 'none', background: 'transparent', cursor: 'pointer', color: T.warn, fontSize: T.fs.m, lineHeight: 1 },
-      bmOff: { padding: '0 2px', border: 'none', background: 'transparent', cursor: 'pointer', opacity: 0.32, fontSize: T.fs.m, lineHeight: 1 },
+      /** 未收藏：透明度交给样式表（B3：只在行 hover / 行内 focus / 已展开时露出），这里不再写死 */
+      bmOff: { padding: '0 2px', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: T.fs.m, lineHeight: 1 },
       /** A2：卡片只留 1px 边框、去掉底色（与详情同底色叠加时像一堆小盒子） */
       card: { margin: '7px 0', padding: '7px 9px', border: '1px solid ' + T.border, borderRadius: '8px' },
       cardTitle: { fontWeight: 600, fontSize: T.fs.m },

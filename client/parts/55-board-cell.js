@@ -17,10 +17,12 @@
         if (ex.periodChanged === true) return '新期'
         if (r.deltaGroup === 'new') return '＋ 新'
         if (r.deltaGroup === 'rebound') return '回榜'
-        if (r.delta === null || r.delta === undefined) return '—'
+        // B2：「算不出」也是弱信息，用 muted；只有真涨跌与「＋新」用全色
+        if (r.delta === null || r.delta === undefined) return h('span', { style: C.muted }, '—')
         if (r.delta > 0) return h('span', { style: C.up }, '↑ ' + r.delta)
         if (r.delta < 0) return h('span', { style: C.down }, '↓ ' + Math.abs(r.delta))
-        return '0'
+        // B2：持平仍然是「0」（语义不变），只是不再抢眼
+        return h('span', { style: C.muted }, '0')
       }
       if (k === 'read') return fmtRead(ex.read !== undefined ? ex.read : r.value)
       if (k === 'value') return fmtRead(r.value)

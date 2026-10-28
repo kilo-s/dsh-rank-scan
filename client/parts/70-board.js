@@ -160,9 +160,15 @@
           if (!directQ) reloadBoard(true)
         }
       }, [props.rev, reloadBoard, directQ])
-      const selXS = function (label, value, options, onChange) {
-        return h('label', { style: C.row }, h('span', { style: C.muted }, label),
-          h('select', { value: value, onChange: function (e) { onChange(e.target.value) }, style: C.input },
+      /**
+       * B4：站 / 榜 / 日期 / 排序改成「小标签在上、控件在下」的网格单元。
+       *   旧实现是 label + select 横排一行 ⇒ 480 宽时「排序」被挤到下一行，看着像掉了一格。
+       *   span=2 给榜（榜名最长），其余各占一格；窄屏时自动变成一行两个。
+       */
+      const selXS = function (label, value, options, onChange, span) {
+        return h('label', { style: { display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0, gridColumn: span ? 'span ' + span : undefined } },
+          h('span', { style: C.sectionLabel }, label),
+          h('select', { value: value, onChange: function (e) { onChange(e.target.value) }, style: { ...C.input, width: '100%' } },
             options.map(function (o) { return h('option', { key: o.value, value: o.value }, o.label) })))
       }
       const pickBoard = function (v) { sel.set({ board: v }); setBt(v); setSd(sel.pref(v, 'date')); setSs(sortPref(v)); setPick(null); setDayOpen(false) }
@@ -463,12 +469,21 @@
         const open = !!(pick && pick.key === r.key)
         const ex = r.extra || {}
         const titleText = (r.title || '') + (ex.titleSuspect || ex.titleTruncated ? ' ⚠' : '')
+        /**
+         * B7：卡片第二行不再是一堆带底色的 chip，改成「终点串 + 中点分隔」的元信息；
+         *   涨跌仍由 cell 自己带色（C.up / C.down），所以颜色语义没丢。
+         */
         const chips = chipCols.map(function (c) {
           const v = cell(rowCellProps(r, c), r)
           if (v === '—' || v === null || v === undefined || v === '') return null
-          return h('span', { key: 'c' + c.key, style: C.chip, title: c.note || c.label },
-            h('span', { style: { opacity: 0.62 } }, c.label), ' ', v)
+          return h('span', { key: 'c' + c.key, style: { whiteSpace: 'nowrap' }, title: c.note || c.label },
+            h('span', null, c.label + ' '), v)
         }).filter(Boolean)
+        const metaLine = []
+        chips.forEach(function (b, k) {
+          if (k) metaLine.push(h('span', { key: 'sep' + k, style: { opacity: 0.6 } }, ' · '))
+          metaLine.push(b)
+        })
         return h('div', {
           key: r.key || ('row' + i),
           tabIndex: 0,
@@ -493,14 +508,14 @@
             }, titleText),
             r.author ? h('span', { style: { ...C.muted, flex: '0 0 auto', maxWidth: '92px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: r.author }, r.author) : null,
             h(BookmarkStar, { bookKey: bookKeyOf(data.boardId, r.key), row: r, boardId: data.boardId, dataDate: data.dataDate })),
-          chips.length ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '3px' } }, chips) : null)
+          chips.length ? h('div', { style: { ...C.meta, display: 'flex', flexWrap: 'nowrap', overflow: 'hidden', marginTop: '2px' } }, metaLine) : null)
       }
       return h('div', null,
-        h('div', { style: { ...C.row, flexWrap: 'wrap' } },
-          selXS('站', curSite || '', sites.map(function (s) { return { value: s.site, label: s.siteName } }), pickSite),
-          selXS('榜', curBoard || '', curBoards.map(function (b) { return { value: b.boardId, label: b.name } }), pickBoard),
-          isDerived ? null : selXS('日期', sd, dateOptsShown, pickDateSel),
-          selXS('排序', ss, sortOpts, pickSort)),
+        h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '8px', alignItems: 'end', margin: '4px 0' } },
+          selXS('站', curSite || '', sites.map(function (s) { return { value: s.site, label: s.siteName } }), pickSite, 1),
+          selXS('榜', curBoard || '', curBoards.map(function (b) { return { value: b.boardId, label: b.name } }), pickBoard, 2),
+          isDerived ? null : selXS('日期', sd, dateOptsShown, pickDateSel, 1),
+          selXS('排序', ss, sortOpts, pickSort, 1)),
         dayOpen && canDay ? h('div', { style: { ...C.row, marginTop: '2px', flexWrap: 'wrap' } },
           h('span', { style: C.muted }, '上架日'),
           h('input', { type: 'date', value: qDate, onChange: function (e) { setQDate(e.target.value) }, style: { ...C.input, width: 'auto' } }),
@@ -516,7 +531,7 @@
             title: props.scanBusy ? '全局扫描进行中；请到概览点「停止本次」后再扫本榜' : '只抓当前这一榜，不动其它榜（联网）',
           }, scanning ? '扫描本榜中…' : (props.scanBusy ? '全局扫描进行中…' : '扫描本榜（联网）')),
           enrichMissing ? h('button', { className: 'rs-btn', disabled: busy || props.scanBusy, onClick: doEnrich, title: '补全当前榜缺失字段（联网：逐本进书页取，可能走缓存）' }, '补全缺失 ' + enrichMissing + ' 条') : null,
-          h('span', { style: C.muted }, '只抓当前这一榜；全局扫描/停止在概览')),
+          h('span', { style: { ...C.meta, flex: '1 1 auto' } }, '只抓当前这一榜；全局扫描/停止在概览')),
         enrichMissing ? h(Banner, { tone: 'warn', live: false },
           h('span', null, '补全未完成：还缺 ' + enrichMissing + ' 条字段'),
           h('span', { style: C.muted }, '（榜页没给收藏/字数，要进书页取；点上面的「补全缺失」重试，或等定时续跑）')) : null,
@@ -532,7 +547,7 @@
             h('button', { className: 'rs-btn', disabled: !info.can || busy, onClick: function () { saveDepth(false) }, title: '只保存，下次扫描生效' }, '保存'),
             h('button', { className: 'rs-btn', disabled: !info.can || busy || props.scanBusy, onClick: function () { saveDepth(true) }, title: '保存后立刻抓一次这一榜（联网）' }, '保存并扫描本榜')),
           info.hint ? h('div', { style: C.muted }, info.hint) : null),
-        band ? h('div', { style: { ...C.muted, marginTop: '2px' } }, band) : null,
+        band ? h('div', { style: { ...C.sectionLabel, whiteSpace: 'normal', marginTop: '8px', marginBottom: '8px' } }, band) : null,
         viewDate ? h(Banner, { tone: 'warn' },
           h('span', { style: { fontWeight: 600 } }, '正在查看历史：' + viewDate),
           h('span', { style: C.muted }, data && data._queryDate ? '（直查站点，未落盘）' : '（本地快照）'),
@@ -569,15 +584,17 @@
                 const dir = sortableMap[c.key]
                 const active = (ss || defaultSort.key) === c.key
                 const shownDir = active ? (ss ? dir : defaultSort.dir) : dir
+                const numCol = isNumCol(c.key)
+                const arrow = h('span', { className: 'rs-sort-arrow' + (active ? ' is-on' : ''), 'aria-hidden': 'true' }, shownDir === 'ascending' ? '↑' : '↓')
                 return h('th', {
-                  key: c.key, style: C.th, title: c.note || '',
+                  key: c.key, style: numCol ? { ...C.th, textAlign: 'right' } : C.th, title: c.note || '',
                   'aria-sort': active ? shownDir : undefined,
                 }, dir
                   ? h('button', {
-                      className: 'rs-th-sort',
+                      className: 'rs-th-sort' + (numCol ? ' is-num' : ''),
                       title: active && !ss ? '当前为默认排序' : active ? '取消按 ' + c.label + ' 排序' : '按 ' + c.label + ' 排序',
                       onClick: function (e) { e.stopPropagation(); pickSort(nextSort(ss, c.key, defaultSort.key)) },
-                    }, c.label, h('span', { className: 'rs-sort-arrow' + (active ? ' is-on' : ''), 'aria-hidden': 'true' }, shownDir === 'ascending' ? '↑' : '↓'))
+                    }, numCol ? [arrow, c.label] : [c.label, arrow])
                   : c.label)
               }))),
               h('tbody', { onKeyDown: onRowsKeyDown }, data.rows.flatMap(function (r, i) {
@@ -594,7 +611,7 @@
                     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRow(r, i) }
                   },
                 }, cols.map(function (c, ci) {
-                  const baseStyle = isNumCol(c.key) ? { ...C.td, ...C.num } : C.td
+                  const baseStyle = isNumCol(c.key) ? { ...C.td, ...C.num, textAlign: 'right' } : C.td
                   const style = open && ci === 0 ? { ...baseStyle, boxShadow: 'inset 3px 0 0 ' + T.accent } : baseStyle
                   return h('td', { key: c.key, style }, cell(rowCellProps(r, c), r))
                 }))
