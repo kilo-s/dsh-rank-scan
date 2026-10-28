@@ -966,20 +966,20 @@ function directRoutes(board) {
 }
 
 test('Spec A：非默认排序直查保留历史；主动改排序后退出直查', async () => {
-  const board = boardFixture({ sortOptions: [{ value: '', label: '默认' }, { value: 'rank', label: '名次' }] })
+  const board = boardFixture({ sortOptions: [{ value: '', label: '默认（名次）' }, { value: 'value', label: '首订' }] })
   const { mod, mount, calls, sandbox } = loadInteractive({ routes: directRoutes(board) })
   const app = mount(mod.__test.components.BoardTab, { ov: OV_QD, width: 900, rev: 'r1' })
   let tree = await app.flush()
   const sort = () => nodesOf(tree, n => n.type === 'select')[3]
-  tree = app.act(() => sort().props.onChange({ target: { value: 'rank' } }))
+  tree = app.act(() => sort().props.onChange({ target: { value: 'value' } }))
   tree = await app.flush(); tree = await app.flush()
-  assert.match(calls.filter(c => c.url.includes('/board')).at(-1).url, /sort=rank/)
+  assert.match(calls.filter(c => c.url.includes('/board')).at(-1).url, /sort=value/)
   const before = calls.filter(c => c.url.includes('/board')).length
   tree = await openDayView(app, '2026-10-20'); tree = await app.flush()
   assert.match(textOf(tree), /直查边界书/)
   assert.match(textOf(tree), /正在查看历史：2026-10-21/)
   assert.equal(calls.filter(c => c.url.includes('/board')).length, before, '内部清排序不应启动本地读取')
-  tree = app.act(() => sort().props.onChange({ target: { value: 'rank' } }))
+  tree = app.act(() => sort().props.onChange({ target: { value: 'value' } }))
   tree = await app.flush(); tree = await app.flush()
   assert.match(textOf(tree), /最新书/)
   assert.doesNotMatch(textOf(tree), /直查边界书/)
@@ -987,7 +987,7 @@ test('Spec A：非默认排序直查保留历史；主动改排序后退出直�
   click(tree, '查看'); tree = await app.flush(); tree = await app.flush()
   click(tree, '回到最新'); tree = await app.flush(); tree = await app.flush()
   const saved = JSON.parse(sandbox.localStorage.getItem('rank-scan-panel:sel:v1'))
-  assert.equal(saved.sorts['qidiantu.shouding'], 'rank', '回到最新保留按榜排序记忆')
+  assert.equal(saved.sorts['qidiantu.shouding'], 'value', '回到最新保留按榜排序记忆')
 })
 
 test('Spec A：同日重复存入本地也重读，并保持上架日 n-1 换算', async () => {

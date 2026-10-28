@@ -23,7 +23,7 @@ import { CATEGORIES as QIDIAN_CATEGORIES } from './sites/qidian-mobile.js'
 import { QIDIANTU_BOARDS, periodStartOf } from './sites/qidiantu.js'
 import { deriveFanqieViews } from './scan/derive.js'
 import { decodePua, hasPua, learnPair, loadFontMap, saveFontMap } from './scan/fontmap.js'
-import { applyColumnPolicy, batchKeyOf, batchKindOf, batchLabelOf, boardMeta, columnsFor, compareDesc, defaultSortFor, enrichAttemptPolicy, enrichMissingCount, groupBySite, groupChanges, isBatchBoard, isEnrichableBoard, saleRangeOf, shouldShowDays, usesRankDelta, withFanqieCat } from './scan/view.js'
+import { applyColumnPolicy, batchKeyOf, batchKindOf, batchLabelOf, boardMeta, columnsFor, compareDesc, defaultSortFor, defaultSortKeyFor, enrichAttemptPolicy, enrichMissingCount, groupBySite, groupChanges, isBatchBoard, isEnrichableBoard, saleRangeOf, shouldShowDays, usesRankDelta, withFanqieCat } from './scan/view.js'
 import { BookmarkService, BookmarkStore } from './scan/bookmark.js'
 import { displayLabel, extractTags, parseBookInput, urlFor, type SiteId } from './scan/bookmark-parse.js'
 import { decodeIfPua } from './scan/fontmap.js'
@@ -1649,7 +1649,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       ]
     }
     const main = mainLabelOf(boardId, meta)
-    const opts = [{ value: '', label: '默认（名次）' }, { value: 'rank', label: '名次' }]
+    const opts = [{ value: '', label: '默认（名次）' }]
     // 列名口径：番茄主指标列叫 read（不是 value），排序值必须对上列 key 才不会被客户端过滤掉
     const mainKey = meta.site === 'fanqie' && !boardId.startsWith('fanqie.derived.') ? 'read' : 'value'
     if (meta.metric === 'value') opts.push({ value: mainKey, label: main })
@@ -1662,7 +1662,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     // ★ 兜底过滤（2026-10-15）：排序项必须对应**该榜真实存在的列**，
     //   否则列被口径改掉后（比如三江去掉「已结算天数」），下拉里还残留一个按不存在字段排的项。
     const keys = new Set(applyColumnPolicy(columnsFor(meta, { hasBaseline: flags.hasHistory, hasHistory: flags.hasHistory }), boardId).map((c) => c.key))
-    return opts.filter((o) => !o.value || o.value === 'rank' || keys.has(o.value))
+    return opts.filter((o) => !o.value || keys.has(o.value))
   }
 
   /**
@@ -1703,8 +1703,10 @@ export function apply(ctx: PluginCtx, config: any): void {
   }
 
   async function panelBoard(boardId: string, dateArg?: string, sort?: string, limit = 0) {
+    const wantedSort = sort === 'rank' ? undefined : sort
     const { st, dates, latest } = panelCtx()
     const meta = boardMeta(boardId)
+    const defaultSortKey = defaultSortKeyFor(boardId)
     const store = new FileStore(root)
     /**
      * ★ 日期下拉按**该榜自己有快照的日期**过滤（2026-10-15 使用反馈）：
@@ -1731,7 +1733,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     // 使用者 2026-10-15 点名起点图不要这一列 ⇒ 改成按榜查精简索引里有没有它更早的记录。
     if (!latest) {
       const colsNone = applyColumnPolicy(columnsFor(meta, { hasBaseline: false, hasHistory: false }), boardId)
-      return { boardId, meta, columns: colsNone, dataDate: null, dates: [], rows: [], note: '还没有任何快照：先点「立刻扫一次」' }
+      return { boardId, meta, columns: colsNone, dataDate: null, dates: [], rows: [], defaultSortKey, note: '还没有任何快照：先点「立刻扫一次」' }
     }
     // 到这里 latest 一定非空 ⇒ 把日期收窄成非空的本地量（TS 不会因为 latest 非空就收窄 useDate）
     const date = useDate as string
@@ -1759,12 +1761,13 @@ export function apply(ctx: PluginCtx, config: any): void {
       let rows = (v ? v.rows : []).map((r: any) => ({ ...r, days: r.extra && r.extra.inPoolDays != null ? r.extra.inPoolDays : null }))
       // ★ 派生榜必须**自己**应用排序（2026-10-15 发现「按在读排序没反应」）：
       //   这个分支 return 在通用排序代码**之前**，所以 sort 参数到这里就丢了。
-      const derivedSort = sort || defaultSortFor(boardId)
+      const derivedSort = wantedSort || defaultSortFor(boardId)
       if (derivedSort) rows = rows.slice().sort((a: any, b: any) => compareDesc(num(sortVal(a, derivedSort)), num(sortVal(b, derivedSort))))
       return {
         boardId,
         meta: { ...meta, mainLabel: mainLabelOf(boardId, meta) },
         columns,
+        defaultSortKey,
         sortOptions: sortOptionsFor(boardId, meta, { hasHistory }),
         depth: (st.depths || {})[boardId] ?? 30,
         dataDate: latest,
@@ -1790,7 +1793,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         fallbackFrom = older
       }
     }
-    if (!snap) return { boardId, meta, columns, dataDate: useDate, dates: shownDates, rows: [], note: '该榜在这天没有快照（也没找到更早的可用快照）' }
+    if (!snap) return { boardId, meta, columns, dataDate: useDate, dates: shownDates, rows: [], defaultSortKey, note: '该榜在这天没有快照（也没找到更早的可用快照）' }
     const effDate = fallbackFrom || date
     /**
      * ★ 2026-10-25（批次榜）：这一屏属于哪一批。面板据此把「数据日期 / 对比 YYYY-MM-DD」
@@ -1829,6 +1832,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       return {
         boardId,
         meta: { ...meta, mainLabel: mainLabelOf(boardId, meta) },
+        defaultSortKey,
         sortOptions: sortOptionsFor(boardId, meta, { hasHistory }),
         depth: (st.depths || {})[boardId] ?? (meta.site === 'fanqie' ? 30 : 10),
         columns,
@@ -2030,7 +2034,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     // ★ 排序一律**倒序**（使用者 2026-10-15：按字数/收藏/首订排序要「最大的在前」）：
     //   num() 把缺失值统一成 +Infinity ⇒ 倒序时缺失值会被排到最后（不是最前），这正合口径。
     // ★ 该榜有自己的「默认排序」时，未显式选排序也按它排（使用者 2026-10-15：三江默认按期初收藏）
-    const effSort = sort || defaultSortFor(boardId)
+    const effSort = wantedSort || defaultSortFor(boardId)
     if (effSort) rows = rows.slice().sort((a: any, b: any) => compareDesc(num(sortVal(a, effSort)), num(sortVal(b, effSort))))
     if (limit > 0) rows = rows.slice(0, limit)
     /**
@@ -2064,6 +2068,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     return {
       boardId,
       meta: { ...meta, mainLabel: mainLabelOf(boardId, meta) },
+      defaultSortKey,
       sortOptions: sortOptionsFor(boardId, meta, { hasHistory }),
       depth: (st.depths || {})[boardId] ?? (meta.site === 'fanqie' ? 30 : 10),
       columns,
@@ -3340,6 +3345,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             }
             return send(200, {
               ok: true, boardId, date, saved: !!body.save, contentDate: verdict.contentDate, expected: verdict.expected,
+              defaultSortKey: defaultSortKeyFor(boardId),
               rowsAll: res.rows,
               count: res.rows.length,
               note: (body.save ? '已抓取并存入本地快照' : '直查站点该日期（未落盘）') + (verdict.contentDate ? '；内容日期 ' + verdict.contentDate : ''),

@@ -32,24 +32,32 @@ function loadBoardTable() {
   return sandbox.window.__rankScanBoardTableTest
 }
 
-test('sortableCols 只让 host sortOptions 里有的列可点，所有列都倒序', () => {
+test('sortableCols 默认列 + host sortOptions 列都可点，默认列方向由宿主默认项决定', () => {
   const fn = loadBoardTable()
   const cols = [{ key: 'rank', label: '名次' }, { key: 'title', label: '书名' }, { key: 'read', label: '在读' }]
-  const got = fn.sortableCols(cols, [{ value: '', label: '默认' }, { value: 'rank', label: '名次' }, { value: 'read', label: '在读' }])
+  const got = fn.sortableCols(cols, [{ value: '', label: '默认（名次）' }, { value: 'read', label: '在读' }], 'rank', 'ascending')
   assert.deepEqual(got.map((x) => x.key), ['rank', 'read'])
-  assert.equal(got[0].dir, 'descending')
+  assert.equal(got[0].dir, 'ascending')
   assert.equal(got[1].dir, 'descending')
-  const derived = fn.sortableCols(cols, [{ value: '', label: '默认' }])
-  assert.deepEqual(derived, [])
+  const derived = fn.sortableCols([{ key: 'value' }, { key: 'read' }], [{ value: '', label: '默认（今日涨幅）' }, { value: 'value', label: '今日涨幅' }], 'value', 'descending')
+  assert.deepEqual(derived.map((x) => x.key), ['value'])
+  assert.equal(derived[0].dir, 'descending')
   const host = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
-  assert.match(host, /const effSort = sort \|\| defaultSortFor\(boardId\)[\s\S]{0,200}compareDesc/, '宿主 effSort 必须继续使用 compareDesc；若改方向，客户端箭头也要同步')
+  assert.match(host, /const wantedSort = sort === 'rank' \? undefined : sort/, 'sort=rank 必须视同未指定')
+  assert.match(host, /const effSort = wantedSort \|\| defaultSortFor\(boardId\)[\s\S]{0,200}compareDesc/, '宿主 effSort 必须继续使用 compareDesc')
 })
 
-test('nextSort 再点激活列回到默认', () => {
+test('nextSort 覆盖默认列、派生榜 value 重叠与旧偏好归一', () => {
   const fn = loadBoardTable()
-  assert.equal(fn.nextSort('', 'read'), 'read')
-  assert.equal(fn.nextSort('read', 'read'), '')
-  assert.equal(fn.nextSort('read', 'rank'), 'rank')
+  assert.equal(fn.nextSort('', 'read', 'rank'), 'read')
+  assert.equal(fn.nextSort('read', 'read', 'rank'), '')
+  assert.equal(fn.nextSort('', 'rank', 'rank'), '')
+  assert.equal(fn.nextSort('periodDelta', 'rank', 'rank'), '')
+  assert.equal(fn.nextSort('', 'value', 'value'), '')
+  assert.equal(fn.nextSort('read', 'value', 'value'), '')
+  assert.equal(fn.normalizeSortPref('rank'), '')
+  assert.equal(fn.normalizeSortPref('read'), 'read')
+  assert.equal(fn.normalizeSortPref(null), '')
 })
 
 test('nextRowIdx 覆盖上下/Home/End 与边界', () => {
@@ -64,7 +72,7 @@ test('nextRowIdx 覆盖上下/Home/End 与边界', () => {
 })
 
 test('表头 aria-sort、行/卡片 aria-expanded、列说明折叠与复制 Promise 分支都在源码里', () => {
-  assert.match(s, /'aria-sort': active \? dir : undefined/)
+  assert.match(s, /'aria-sort': active \? shownDir : undefined/)
   assert.match(s, /'aria-expanded': open \? 'true' : 'false'/)
   assert.match(s, /h\('details'/)
   assert.match(s, /'列说明'/)

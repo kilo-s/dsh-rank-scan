@@ -6,14 +6,19 @@
      * 第六步（0.5.2）：榜单表头的排序 / 行键盘用的纯函数。
      * 只消费宿主已经给出的 columns / sortOptions，不做客户端排序，也不新增排序方式。
      */
-    const sortDirOf = function () { return 'descending' }
-    const sortableCols = function (cols, sortOptions) {
+    const sortableCols = function (cols, sortOptions, defKey, defDir) {
       const values = (sortOptions || []).map(function (o) { return o && o.value }).filter(function (v) { return !!v })
-      return (cols || []).filter(function (c) { return c && values.indexOf(c.key) >= 0 }).map(function (c) {
-        return { key: c.key, dir: sortDirOf(c.key) }
+      return (cols || []).filter(function (c) {
+        return c && (values.indexOf(c.key) >= 0 || (!!defKey && c.key === defKey))
+      }).map(function (c) {
+        return { key: c.key, dir: c.key === defKey ? (defDir || 'descending') : 'descending' }
       })
     }
-    const nextSort = function (cur, key) { return cur === key ? '' : key }
+    const nextSort = function (cur, key, defKey) {
+      if (key === defKey) return ''
+      return cur === key ? '' : key
+    }
+    const normalizeSortPref = function (v) { return v === 'rank' ? '' : (v || '') }
     /** 只给行号，详情行不参与；n 是数据行数量 */
     const nextRowIdx = function (i, key, n) {
       const last = Math.max(0, Number(n) - 1)
@@ -41,7 +46,7 @@
       } catch (e) { fail() }
     }
     // 离线测试缝：只暴露第六步的纯函数，不改变运行路径
-    window.__rankScanBoardTableTest = { sortableCols: sortableCols, nextSort: nextSort, nextRowIdx: nextRowIdx }
+    window.__rankScanBoardTableTest = { sortableCols: sortableCols, nextSort: nextSort, nextRowIdx: nextRowIdx, normalizeSortPref: normalizeSortPref }
 
     function BoardTab(props) {
       const ov = props.ov
@@ -55,9 +60,15 @@
       const sites = (ov && ov.sites) || []
       // 收起面板会卸载 BoardTab ⇒ 站/榜选择要持久化；日期/排序按榜各记各的
       const [stSite, setStSite] = React.useState(function () { return sel.get().site })
+      const sortPref = function (board) {
+        const raw = sel.pref(board, 'sort')
+        const v = normalizeSortPref(raw)
+        if (v !== raw) sel.setPref(board, 'sort', v)
+        return v
+      }
       const [bt, setBt] = React.useState(function () { return sel.get().board })
       const [sd, setSd] = React.useState(function () { return sel.pref(sel.get().board, 'date') })
-      const [ss, setSs] = React.useState(function () { return sel.pref(sel.get().board, 'sort') })
+      const [ss, setSs] = React.useState(function () { return sortPref(sel.get().board) })
       const [data, setData] = React.useState(null)
       const [err, setErr] = React.useState(null)
       const [pick, setPick] = React.useState(null)
@@ -154,7 +165,7 @@
           h('select', { value: value, onChange: function (e) { onChange(e.target.value) }, style: C.input },
             options.map(function (o) { return h('option', { key: o.value, value: o.value }, o.label) })))
       }
-      const pickBoard = function (v) { sel.set({ board: v }); setBt(v); setSd(sel.pref(v, 'date')); setSs(sel.pref(v, 'sort')); setPick(null); setDayOpen(false) }
+      const pickBoard = function (v) { sel.set({ board: v }); setBt(v); setSd(sel.pref(v, 'date')); setSs(sortPref(v)); setPick(null); setDayOpen(false) }
       const pickSite = function (v) { sel.set({ site: v, board: null }); setStSite(v); setBt(null); setSd(''); setSs(''); setPick(null); setDayOpen(false) }
       const pickDate = function (v) { setSd(v); sel.setPref(curBoard, 'date', v) }
       /** 「按上架日回看…」是动作项，不是日期值：不改当前选择，只在下面展开输入行 */
@@ -319,6 +330,7 @@
             boardId: curBoard,
             columns: prev.columns || [],
             sortOptions: prev.sortOptions || [],
+            defaultSortKey: (r && r.defaultSortKey) || null,
             rows: (r.rowsAll || []).map(function (x) { return { ...x, delta: null, days: null } }),
             dates: ds,
             dataDate: shown,
@@ -376,7 +388,10 @@
       const dateOptsShown = canDay ? dateOpts.concat([{ value: '__day', label: '按上架日回看…' }]) : dateOpts
       // 减掉正文左右 padding（20）、纵向滚动条与一点余量 ⇒ 表格不会溢出成横向滚动
       const cols = fitColumns(data && data.columns, avail - 48)
-      const sortable = sortableCols(cols, sortOpts)
+      const defaultSort = (data && data.defaultSortKey && data.defaultSortKey.key)
+        ? data.defaultSortKey
+        : { key: 'rank', dir: 'ascending' }
+      const sortable = sortableCols(cols, sortOpts, defaultSort.key, defaultSort.dir)
       const sortableMap = {}
       sortable.forEach(function (c) { sortableMap[c.key] = c.dir })
       const viewDate = (data && (data._queryDate || sd)) || ''
@@ -551,16 +566,17 @@
               : h('table', { ref: listRef, style: C.table },
               h('thead', null, h('tr', null, cols.map(function (c) {
                 const dir = sortableMap[c.key]
-                const active = ss === c.key
+                const active = (ss || defaultSort.key) === c.key
+                const shownDir = active ? (ss ? dir : defaultSort.dir) : dir
                 return h('th', {
                   key: c.key, style: C.th, title: c.note || '',
-                  'aria-sort': active ? dir : undefined,
+                  'aria-sort': active ? shownDir : undefined,
                 }, dir
                   ? h('button', {
                       className: 'rs-th-sort',
-                      title: active ? '取消按 ' + c.label + ' 排序' : '按 ' + c.label + ' 排序',
-                      onClick: function (e) { e.stopPropagation(); pickSort(nextSort(ss, c.key)) },
-                    }, c.label, h('span', { className: 'rs-sort-arrow' + (active ? ' is-on' : ''), 'aria-hidden': 'true' }, dir === 'ascending' ? '↑' : '↓'))
+                      title: active && !ss ? '当前为默认排序' : active ? '取消按 ' + c.label + ' 排序' : '按 ' + c.label + ' 排序',
+                      onClick: function (e) { e.stopPropagation(); pickSort(nextSort(ss, c.key, defaultSort.key)) },
+                    }, c.label, h('span', { className: 'rs-sort-arrow' + (active ? ' is-on' : ''), 'aria-hidden': 'true' }, shownDir === 'ascending' ? '↑' : '↓'))
                   : c.label)
               }))),
               h('tbody', { onKeyDown: onRowsKeyDown }, data.rows.flatMap(function (r, i) {
