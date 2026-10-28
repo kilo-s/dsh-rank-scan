@@ -333,3 +333,14 @@ test('设置 · 抓取范围：一站一行，「已选 x / y」+「⋯」菜单
   assert.ok(S.includes('const siteOpen = function (s) { return closedGroups[s] === true }'), '站点默认折叠（没有记录 = 收起）')
   assert.ok(!/h\('button', \{ className: 'rs-btn is-ghost', onClick: function \(\) \{ setAll\(/.test(S), '全选/不选不许再平铺成按钮')
 })
+
+test('修假设置：起点榜条数输入框置灰，并说明「站点固定 20 条」', () => {
+  assert.ok(S.includes("const qidianFixed = /^qidian\\./.test(String(curBoard || ''))"), '要按 boardId 判定起点固定条数')
+  const i = S.indexOf("每榜取多少条")
+  assert.ok(i > 0, '找不到本榜设置的输入行')
+  const body = S.slice(i, i + 1100)
+  assert.ok(body.includes('disabled: depthLocked || busy'), '条数输入框必须置灰')
+  assert.ok(body.includes("'条 · ' + depthNote"), '置灰时要写清原因（不能只留一个灰框）')
+  assert.ok(S.includes('站点固定 20 条（移动端单页 20 条，站点分页接口在反爬后）'), '要有「站点固定 20 条」提示')
+  assert.ok(body.includes("disabled: depthLocked || busy"), '保存按钮同样置灰（改了也不生效）')
+})

@@ -469,6 +469,16 @@
       const detailCols = ((data && data.columns) || []).filter(function (c) {
         return !shownColKeys[c.key] && !SUMMARY_COLS[c.key]
       })
+      /**
+       * 0.6 收尾（修假设置）：起点移动端榜单是**站点单页固定 20 条**，depth 对它不生效
+       *   （适配器写死 BOARD_PAGE_ROWS = 20，而 catalog 仍报 canDepth:true）。
+       *   这里按 boardId **客户端置灰**并写清原因；config 里的旧值保留不动（只是不再允许修改）。
+       *   宿主的 catalog 校验留待 0.7（见交接）。
+       */
+      const qidianFixed = /^qidian\./.test(String(curBoard || ''))
+      const fixedDepth = qidianFixed ? 20 : null
+      const depthLocked = qidianFixed || info.can === false
+      const depthNote = qidianFixed ? '站点固定 20 条（移动端单页 20 条，站点分页接口在反爬后）' : info.hint
       const isOpen = function (r) { return !!(pick && pick.key === r.key) }
       /**
        * ★ 2026-10-23（点了没反应）：详情卡原来挂在**整张列表之后** ⇒ 列表一长就在视口外
@@ -586,18 +596,19 @@
         enrichMissing ? h(Banner, { tone: 'warn', live: false },
           h('span', null, '补全未完成：还缺 ' + enrichMissing + ' 条字段'),
           h('span', { style: C.muted }, '（榜页没给收藏/字数，要进书页取；点上面的「补全缺失」重试，或等定时续跑）')) : null,
-        h(Section, { title: '本榜设置', defaultOpen: false, summary: '每榜 ' + (depth || info.max || '—') + ' 条（上限 ' + (info.max || '—') + '）' },
+        h(Section, { title: '本榜设置', defaultOpen: false, summary: '每榜 ' + (fixedDepth != null ? fixedDepth : (depth || info.max || '—')) + ' 条' + (fixedDepth != null ? '（站点固定）' : '（上限 ' + (info.max || '—') + '）') },
           h('div', { style: { ...C.row, flexWrap: 'wrap' } },
             h('span', { style: C.muted }, '每榜取多少条'),
             h('input', {
-              type: 'number', min: 1, max: info.max, value: depth, placeholder: String(info.max), disabled: !info.can || busy,
-              title: info.hint, onChange: function (e) { setDepth(e.target.value) },
+              type: 'number', min: 1, max: info.max, value: fixedDepth != null ? String(fixedDepth) : depth,
+              placeholder: String(fixedDepth != null ? fixedDepth : info.max), disabled: depthLocked || busy,
+              title: depthNote, onChange: function (e) { setDepth(e.target.value) },
               style: { ...C.input, width: '58px' },
             }),
-            h('span', { style: C.muted }, info.can ? '条（上限 ' + info.max + '）' : '条 · ' + info.hint),
-            h('button', { className: 'rs-btn', disabled: !info.can || busy, onClick: function () { saveDepth(false) }, title: '只保存，下次扫描生效' }, '保存'),
-            h('button', { className: 'rs-btn', disabled: !info.can || busy || props.scanBusy, onClick: function () { saveDepth(true) }, title: '保存后立刻抓一次这一榜（联网）' }, '保存并扫描本榜')),
-          info.hint ? h('div', { style: C.muted }, info.hint) : null),
+            h('span', { style: C.muted }, depthLocked ? '条 · ' + depthNote : '条（上限 ' + info.max + '）'),
+            h('button', { className: 'rs-btn', disabled: depthLocked || busy, onClick: function () { saveDepth(false) }, title: depthLocked ? depthNote : '只保存，下次扫描生效' }, '保存'),
+            h('button', { className: 'rs-btn', disabled: depthLocked || busy || props.scanBusy, onClick: function () { saveDepth(true) }, title: depthLocked ? depthNote : '保存后立刻抓一次这一榜（联网）' }, '保存并扫描本榜')),
+          !depthLocked && info.hint ? h('div', { style: C.muted }, info.hint) : null),
         band ? h('div', { style: { ...C.sectionLabel, whiteSpace: 'normal', marginTop: '8px', marginBottom: '8px' } }, band) : null,
         viewDate ? h(Banner, { tone: 'warn' },
           h('span', { style: { fontWeight: 600 } }, '正在查看历史：' + viewDate),
