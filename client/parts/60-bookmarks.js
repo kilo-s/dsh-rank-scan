@@ -33,7 +33,8 @@
           .then(function () { setBusy(false); toast('success', '书签已保存'); return store.refreshList() })
           .catch(function (e) { setBusy(false); toast('error', '保存失败：' + e + '（草稿还在）') })
       }
-      return h('div', { style: { ...C.detail, marginTop: '6px' } },
+      // 0.6.0 修：详情卡内不再套一层 C.detail（详情里再套一个带底色的盒子）
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 } },
         h('div', { style: C.row },
           h('span', { style: C.muted }, '备注'),
           h('input', { style: { ...C.input, flex: 1, minWidth: '160px' }, value: note, placeholder: '写点什么，可用 #标签', onChange: function (e) { setNote(e.target.value) } })),
@@ -405,12 +406,12 @@
           if (b.capturedAt) metaBits.push(h('span', { title: '这张卡的数据截止到这一天' }, '截止 ' + mdOf(b.capturedAt) + (b.ageDays != null ? '（' + b.ageDays + ' 天前）' : '')))
           const metaLine = []
           metaBits.forEach(function (x, k) {
-            if (k) metaLine.push(h('span', { key: 'ms' + k, style: { opacity: 0.6 } }, ' · '))
+            if (k) metaLine.push(metaDot('ms' + k))
             metaLine.push(x)
           })
           return h('div', {
             key: b.bookKey,
-            style: { ...C.card, padding: '6px 8px', cursor: selectMode ? 'pointer' : undefined },
+            style: selectMode ? { ...C.card, padding: '6px 8px', cursor: 'pointer' } : { ...C.card, padding: '6px 8px' },
             /* C6：批量选择时点卡片空白处即勾选（按钮 / 链接 / 输入框不算空白） */
             onClick: function (e) {
               if (!selectMode) return
@@ -434,8 +435,10 @@
             h('div', { style: { ...C.row, flexWrap: 'nowrap', marginTop: '2px' } },
               noteText
                 ? h('button', {
-                    className: 'rs-link-action',
-                    style: { border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', font: 'inherit', color: 'inherit', flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: T.fs.s, textAlign: 'left' },
+                    // 0.6.0 修：有备注的文字以前是「加粗 + 常驻下划线」，看着像链接（与 A1 冲突）。
+                    //   button 语义不变，样式交给 .rs-note-text：常规字重、正文色、只有 hover / focus-visible 出下划线。
+                    className: 'rs-note-text',
+                    style: { flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: T.fs.s, textAlign: 'left' },
                     title: '编辑备注',
                     onClick: function (e) { e.preventDefault(); startEdit(b) },
                   }, noteText)

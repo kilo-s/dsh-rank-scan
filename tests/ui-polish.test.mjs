@@ -141,7 +141,7 @@ test('B7：窄屏卡片第二行改成 C.meta 中点串，不再是一堆 chip',
   const body = S.slice(i, i + 3200)
   assert.ok(body.includes("style: { ...C.meta, display: 'flex', flexWrap: 'nowrap'"), '卡片第二行必须走 C.meta')
   assert.ok(!body.includes('style: C.chip'), 'narrowRow 里不许再出现 chip')
-  assert.ok(body.includes("' · '"), '要用中点串联')
+  assert.ok(body.includes("metaDot('sep' + k)"), '要用中点串联（metaDot）')
 })
 
 // ---------------------------------------------------------------- C 书签
@@ -242,4 +242,43 @@ test('A6：is-primary 只留给保存 / 扫描这类关键动作', () => {
   assert.ok(!S.includes("h('button', { className: 'rs-btn is-primary', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开')"), '「在 DSH 侧栏浏览器打开」必须是普通按钮')
   assert.ok(!S.includes("h('button', { className: 'rs-btn is-primary', onClick: function () { setSwitchAsk(null) } }, '继续编辑')"), '「继续编辑」必须是普通按钮')
   assert.ok(!S.includes("h('button', { className: 'rs-btn is-primary', onClick: function () { setLeaveAsk(null) } }, '继续编辑')"), '「继续编辑」（离开确认）必须是普通按钮')
+})
+
+// ---------------------------------------------------------------- 0.6.0 复查补丁
+test('中点串：分隔符是「 · 」且两边留 4px（metaDot），不靠空格', () => {
+  const mod = load()
+  const metaDot = mod.__test.helpers.metaDot
+  assert.equal(typeof metaDot, 'function', 'metaDot 必须导出为纯函数')
+  const dot = metaDot('k1')
+  assert.equal(dot.t, 'span', '中点必须是独立 span（flex 子节点的首尾空格会被裁掉）')
+  assert.deepEqual(dot.c, ['·'], '内容必须是中点本身')
+  assert.equal(dot.p.style.margin, '0 4px', '中点两边必须留 4px（不能靠空格）')
+  assert.equal(dot.p.style.color, 'var(--dsw-alias-label-secondary, var(--dsh-text-secondary, rgba(128,128,128,.9)))', '中点要用 T.muted')
+  // 两处元信息行都必须走 metaDot，不许再手写 ' · ' 分隔
+  assert.ok(S.includes("metaDot('ms' + k)"), '书签卡片的中点串必须用 metaDot')
+  assert.ok(S.includes("metaDot('sep' + k)"), '窄屏榜单卡片的中点串必须用 metaDot')
+  const leftovers = (S.match(/style: \{ opacity: 0\.6 \}, ' · '/g) || []).length
+  assert.equal(leftovers, 0, '不许留下手写的中分隔符（会被 flex 吃掉空格）')
+})
+
+test('备注文字：button 语义 + 常规字重 + 正文色，只在 hover / focus-visible 出下划线', () => {
+  assert.ok(S.includes('.rs-note-text{border:none;background:transparent;padding:0;cursor:pointer;font:inherit;font-weight:400;text-decoration:none;color:'), '缺少 .rs-note-text 基础规则（无下划线 + 常规字重 + 正文色）')
+  assert.ok(S.includes('.rs-note-text:hover,.rs-note-text:focus-visible{text-decoration:underline'), 'hover / focus-visible 才出下划线')
+  assert.ok(S.includes("className: 'rs-note-text'"), '有备注的文字必须用 rs-note-text（不是 rs-link-action）')
+  const i = S.indexOf("className: 'rs-note-text'")
+  const around = S.slice(Math.max(0, i - 400), i + 400)
+  assert.ok(around.includes("h('button'"), '仍然是 button 语义（不是 a）')
+  assert.ok(S.includes("'＋ 备注'"), '空状态「＋ 备注」保持原样')
+})
+
+test('回归：卡片状态样式不许写 xxx: cond ? a : undefined（会把 C.card 的 border 整条清空）', () => {
+  const i = S.indexOf('const narrowRow = function (r, i)')
+  assert.ok(i > 0, '找不到 narrowRow')
+  const body = S.slice(i, i + 3200)
+  assert.ok(!/^ {10,}borderColor: /m.test(body), '窄屏卡片不许再写 borderColor: … : undefined —— React 落成空串会把 border 长写清空，边框退回 currentColor（暗色下是亮白）')
+  assert.ok(body.includes("style: open\n", ) || body.includes('style: open\n            ?'), '展开态应整体替换 style')
+  const i2 = S.indexOf("data-row-idx': i,")
+  assert.ok(i2 > 0, '找不到表格行')
+  const rowBody = S.slice(i2, i2 + 600)
+  assert.ok(!/background:\s*open\s*\?\s*T\.subtle\s*:\s*undefined/.test(rowBody), '表格行也不许用 background: … : undefined')
 })

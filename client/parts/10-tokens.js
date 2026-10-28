@@ -76,6 +76,9 @@
         '[data-rank-scan-win] a:hover,[data-rank-scan-win] a:focus-visible{text-decoration:underline;text-underline-offset:2px}',
         // A1：文字动作（「新标签打开」这类）保留下划线，用这个 class 与普通链接区分
         '.rs-link-action{text-decoration:underline;text-underline-offset:2px;cursor:pointer}',
+        // A1 例外：备注文字是可点文本，但不该长得像链接——常规字重 + 正文色，只有 hover / focus-visible 才出下划线
+        '.rs-note-text{border:none;background:transparent;padding:0;cursor:pointer;font:inherit;font-weight:400;text-decoration:none;color:' + T.fg + '}',
+        '.rs-note-text:hover,.rs-note-text:focus-visible{text-decoration:underline;text-underline-offset:2px}',
         // A7：输入框 / 下拉框统一 28px，与 .rs-btn 同高（内联 C.input 也走同一数值）
         '.rs-input{height:28px;box-sizing:border-box;padding:0 6px;line-height:1.4}',
         '.rs-th-sort{border:none;background:transparent;padding:0;font:inherit;font-weight:600;cursor:pointer;color:inherit;display:inline-flex;align-items:center;gap:3px}',
@@ -150,5 +153,14 @@
       section: { marginTop: '16px' },
       /** A7：高度与 .rs-btn 对齐为 28px（textarea 需要自己覆盖成 height:auto） */
       input: { height: '28px', boxSizing: 'border-box', padding: '0 6px', fontSize: T.fs.s, borderRadius: T.r.s, border: '1px solid ' + T.border, background: 'transparent', color: 'inherit' },
+    }
+    /**
+     * 元信息分隔中点（A3 / 0.6.0 修）：必须是「 · 」并且两边留 4px。
+     *   ★ 不能靠空格：meta 行是 flex 容器，每个子节点的首尾空格会被行盒裁掉，
+     *     于是截图里出现「在读 676,671·截止」这种粘在一起的字符串。
+     *   中点用 T.muted（不抢元信息本身的颜色）。
+     */
+    const metaDot = function (key) {
+      return h('span', { key: key, style: { color: T.muted, margin: '0 4px' }, 'aria-hidden': 'true' }, '·')
     }
     /** 统一提示条：三种语气只差颜色，形状一致；错误用 role=alert 让读屏器打断 */

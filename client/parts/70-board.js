@@ -448,13 +448,19 @@
           detailCols.length ? h('div', { style: { marginTop: '3px' } }, detailCols.map(function (c) {
             return h('div', { key: 'dx-' + c.key, style: C.muted }, c.label + '：', cell(rowCellProps(r, c), r))
           })) : null,
-          h('div', { style: C.row },
+          /**
+           * 0.6.0 修：星标原来与备注表单挤在同一个 C.row 里，会「悬」在表单盒子外面左侧；
+           *   现在星标与表单进同一列（星标贴左、表单占满其余宽度），表单本身也不再自套底色盒子。
+           */
+          h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: '6px', marginTop: '4px' } },
             h(BookmarkStar, { bookKey: bookKeyOf(curBoard, r.key), row: r, boardId: curBoard, dataDate: data && data.dataDate }),
-            h(DetailBookmarkEditor, { bookKey: bookKeyOf(curBoard, r.key) }),
-            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
-            h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); copyLink(r.url) } }, '复制链接'),
-            h('a', { href: r.url || '#', target: '_blank', rel: 'noreferrer', className: 'rs-link-action', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
-            h('button', { className: 'rs-btn is-ghost', style: { marginLeft: 'auto' }, onClick: function (e) { e.stopPropagation(); closeDetail() } }, '关闭')),
+            h('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' } },
+              h(DetailBookmarkEditor, { bookKey: bookKeyOf(curBoard, r.key) }),
+              h('div', { style: { ...C.row, marginTop: '2px' } },
+                h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
+                h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); copyLink(r.url) } }, '复制链接'),
+                h('a', { href: r.url || '#', target: '_blank', rel: 'noreferrer', className: 'rs-link-action', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
+                h('button', { className: 'rs-btn is-ghost', style: { marginLeft: 'auto' }, onClick: function (e) { e.stopPropagation(); closeDetail() } }, '关闭')))),
           ex.qidiantuUrl || ex.sourceUrl
             ? h('div', { style: C.row },
                 (ex.qidiantuUrl ? h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.qidiantuUrl) } }, '看起点图原始页') : null),
@@ -481,7 +487,7 @@
         }).filter(Boolean)
         const metaLine = []
         chips.forEach(function (b, k) {
-          if (k) metaLine.push(h('span', { key: 'sep' + k, style: { opacity: 0.6 } }, ' · '))
+          if (k) metaLine.push(metaDot('sep' + k))
           metaLine.push(b)
         })
         return h('div', {
@@ -489,10 +495,16 @@
           tabIndex: 0,
           'data-row-idx': i,
           'aria-expanded': open ? 'true' : 'false',
-          style: { ...C.card, padding: '5px 8px', margin: '5px 0', cursor: 'pointer',
-            borderColor: open ? T.border : undefined,
-            background: open ? T.subtle : undefined,
-            boxShadow: open ? 'inset 3px 0 0 ' + T.accent : undefined },
+          /**
+           * ★ 0.6.0 修（暗色「亮白粗边框」的真因）：以前写的是
+           *     borderColor: open ? T.border : undefined
+           *   React 会把 undefined 落成 style.borderColor = ''，这一下会把 C.card 的
+           *   border 长写整条清空，边框退回 currentColor —— 暗色下就是近白色的一圈亮边
+           *   （看着像焦点环，其实不是）。现在只在需要时整体替换 style，绝不把颜色设成空串。
+           */
+          style: open
+            ? { ...C.card, padding: '5px 8px', margin: '5px 0', cursor: 'pointer', background: T.subtle, boxShadow: 'inset 3px 0 0 ' + T.accent }
+            : { ...C.card, padding: '5px 8px', margin: '5px 0', cursor: 'pointer' },
           onClick: function () { toggleRow(r, i) },
           onKeyDown: function (e) {
             if (!e || isRowControl(e.target)) return
@@ -604,7 +616,7 @@
                   tabIndex: 0,
                   'data-row-idx': i,
                   'aria-expanded': open ? 'true' : 'false',
-                  style: { cursor: 'pointer', background: open ? T.subtle : undefined },
+                  style: open ? { cursor: 'pointer', background: T.subtle } : { cursor: 'pointer' },
                   onClick: function () { toggleRow(r, i) },
                   onKeyDown: function (e) {
                     if (!e || isRowControl(e.target)) return

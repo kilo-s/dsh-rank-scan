@@ -84,6 +84,33 @@ A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipL
 - 书签批分的「正在编辑的那条」用 `bmBatch(list, n, keepKey)` 的第三参处理：超出已渲染范围时追加渲染，不改变总数与「再显示」语义。
 - 夹具脚本 `scripts/make-bm-fixture.ps1` 仍在仓库里（默认 120 条、只写 `${OutDir}/state/bookmarks.json`），后续手工验收长列表可直接用。
 
+## 复查补丁（第 2 轮，使用者看完截图后提的 5 条）
+
+| # | 问题 | 结论 / 处理 |
+|---|---|---|
+| 1 | 中点串没有间距（「在读 676,671·截止」） | **真因**：元信息行是 flex 容器，子节点的首尾空格会被行盒裁掉 —— 写 `' · '` 等于没有空格。新增纯函数 `metaDot(key)`（`margin: 0 4px` + `color: T.muted` + `·`），书签卡片与窄屏榜单卡片都改用它；手写分隔符一处不留 |
+| 2 | 有备注的文字像链接（加粗 + 常驻下划线） | 保留 `button` 语义，改挂 `.rs-note-text`：常规字重、`T.fg`、默认无下划线，只有 hover / focus-visible 才出下划线；「＋ 备注」空状态样式不变 |
+| 3 | board-480-dark-expanded 左上角带斜线的圆形图标 | **不是面板的**。实测 `document.elementFromPoint(14,16)` 命中的是宿主的「打开侧边栏」按钮（`data-dsh-responsive-part="sidebar-toggle"`，在 `data-shell-overlay` 那层里），它的层叠顺序高于面板 ⇒ 压在我们的标题上。面板侧无可修，未改 |
+| 4 | 第 2 张卡是亮白色粗边框（疑似焦点环） | **不是焦点环**（实测 `outline-style: none`、`:focus-visible` 为 false）。真因是窄屏卡片写了 `borderColor: open ? T.border : undefined`：React 把 `undefined` 落成 `style.borderColor = ''`，这一下会把 C.card 的 `border` 长写**整条清空**，边框退回 `currentColor` —— 暗色下就是近白色的一圈亮边。改成「展开态整体替换 style，不写 `: undefined`」；表格行的 `background: … : undefined` 同样处理 |
+| 5 | 展开详情里「备注 / 书签夹」还是盒子里套盒子，星标悬在盒子外 | `DetailBookmarkEditor` 不再套 `C.detail`（内层无底色、无边框）；星标与表单进同一列（星标贴左、表单占满其余宽度）。**没有动 `25-bookmark-star.js`** —— 星标的 class 与点击逻辑原样，只调了它在详情里的排布 |
+
+## 修改过的旧断言（0.6.0 全程累计）
+
+- `tests/ui-layout.test.mjs`「② 列按可用宽度装…」：取样窗口 `i + 2600` → `i + 4200`。卡片行加了展开态的整段 style（含解释注释），正文变长让原来的窗口截断在 `BookmarkStar` 之前；**断言内容一条没改**（卡片行仍要能打书签、仍要显示指标）。
+- 除此之外基线测试一条没动。
+
+## 闸门（复查补丁后）
+
+- `npm run build` 绿
+- `./scripts/test-local.ps1`：**445 pass / 0 fail**（新增 3 条：metaDot、备注文字样式、`: undefined` 回归）
+- `./scripts/acceptance.ps1 -SkipLive`：**100 pass / 0 fail**
+
+## `http.sslVerify=false` 的作用范围（重要）
+
+- 它**只**出现在本次推送的单条命令里，作为 `git -c http.sslVerify=false …` 的一次性参数（同一批还用了 `-c credential.helper=` 与 `-c http.extraheader=Authorization: …`）。
+- **没有**写进任何 global / local / system 配置，也**没有**写进任何脚本的默认值：实测 `git config --global --get http.sslVerify` 与 `--local` 均为空，`credential.helper` 同样为空。
+- 为什么需要它：本机直连 GitHub 被 TLS 拦截，而本地代理口（12000/7890/7891）当时都没在监听（`dsh-git-audit.ps1` 的判断）。下次推送仍然要重新判断，**不要**把它固化成默认。
+
 ## 发布后必须人工确认的一条（暗色）
 
 > ★ 截图里的暗色是 Playwright `emulateMedia({ colorScheme: 'dark' })` 模拟出来的，**没有经过宿主真实的主题切换**。
