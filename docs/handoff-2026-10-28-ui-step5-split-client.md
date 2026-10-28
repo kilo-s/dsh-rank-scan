@@ -54,7 +54,7 @@
 
 ## 待办
 
-- 发版后由用户在本机跑 `dsh plugin add github:kilo-s/dsh-rank-scan#v0.5.1` 做真实直装验证；代理沙箱不能 spawn git，已用 git archive + npm ci 替代验收。
+- 发版后由用户在本地机器跑 `dsh plugin add github:kilo-s/dsh-rank-scan#v0.5.1` 做真实直装验证；代理沙箱不能 spawn git，已用 git archive + npm ci 替代验收。
 
 ## 下一步
 
