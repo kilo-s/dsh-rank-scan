@@ -71,6 +71,12 @@
         '.rs-toast-x:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
         '[data-rank-scan-win] tbody tr:hover td{background:' + T.subtle + '}',
         '[data-rank-scan-win] a:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
+        '.rs-th-sort{border:none;background:transparent;padding:0;font:inherit;font-weight:600;cursor:pointer;color:inherit;display:inline-flex;align-items:center;gap:3px}',
+        '.rs-th-sort:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:1px}',
+        '.rs-sort-arrow{opacity:0;color:' + T.muted + ';font-size:10px;line-height:1}',
+        '.rs-th-sort:hover .rs-sort-arrow,.rs-th-sort:focus-visible .rs-sort-arrow{opacity:1}',
+        '.rs-sort-arrow.is-on{opacity:1;color:' + T.accent + ';font-weight:600}',
+        '[data-rank-scan-win] [data-row-idx]:focus-visible{outline:2px solid ' + T.accent + ';outline-offset:-2px}',
       ].join('\n')
       document.head.appendChild(el)
     }
