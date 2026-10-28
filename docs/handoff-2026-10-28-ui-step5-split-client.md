@@ -4,7 +4,7 @@
 - 提交 1（纯搬家）：fed18ce
 - 提交 2（可读性）：`fe7aff7`
 - 版本：0.5.1
-- 状态：**未合并 main、未打 tag**，等验收。
+- 状态：**验收通过；本轮合并 main、tag `v0.5.1`。**
 
 ## 拆分布局
 
@@ -44,7 +44,7 @@
 - 每个 part 顶部加职责/依赖/不该放什么注释（3 行）；build 在每个 part 前插 /* ---- parts/NN-name.js ---- */。
 - 删除一次性哈希守门；新增 tests/client-parts.test.mjs：命名/编号、单文件 ≤900 行、new Function 语法、顶层 function 不跨 part 重复。
 - 版本 0.5.1（package.json / package-lock / README / CHANGELOG）。
-- 验证：test-local **417 pass / 0 fail**（54 文件）；acceptance **PASS 97 / FAIL 0**。
+- 验证：test-local **418 pass / 0 fail**（54 文件）；acceptance **PASS 97 / FAIL 0**。
 
 ## git 直装
 
@@ -58,5 +58,4 @@
 
 ## 下一步
 
-1. 验收两个 commit 与切分表。（已完成）
-2. 通过后合并 main、打 tag v0.5.1。
+原定五步 UI 路线完成；发版后暂停，下一阶段等方向。
