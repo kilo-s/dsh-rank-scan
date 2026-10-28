@@ -2,7 +2,7 @@
 
 - 日期：2026-10-28
 - 分支：`ui/polish-0.6`（从 main v0.5.2 = 3f32906 拉出）
-- 范围依据：[plan-0.6.0-polish.md](plan-0.6.0-polish.md)（唯一权威；早先的 handoff-2026-10-28-panel-next.md 已作废）
+- 范围依据：[plan-0.6.0-polish.md](plan-0.6.0-polish.md)（唯一权威；早先那份过渡交接已作废）
 - 版本：开发期 0.5.2 → 收尾提交改 0.6.0；**不合并、不打 tag**
 
 ## 进度
