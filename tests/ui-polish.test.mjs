@@ -323,3 +323,13 @@ test('0.6 收尾补列：空值显示「—」、数字列右对齐、480 卡片
   // 480 宽卡片：新列必须进中点串（列序靠后，不能只靠 slice(0,6)）
   assert.ok(S.includes('const CHIP_ALWAYS = { shouding: 1, firstDay: 1, firstV: 1, update: 1 }'), '中点串要专门保住新补的四列')
 })
+
+test('设置 · 抓取范围：一站一行，「已选 x / y」+「⋯」菜单里放全选/不选/补齐缺失，默认折叠', () => {
+  assert.ok(S.includes("h(PopMenu, { label: '⋯'"), '站点标题行右侧要有「⋯」菜单')
+  assert.ok(S.includes("(open ? '▾ ' : '▸ ') + siteNameOf(s) + ' · 已选 ' + sel + ' / ' + total"), '标题行要显示「站点 · 已选 x / y」')
+  for (const label of ["'全选这一站（' + total + '）'", "'全不选这一站'", "'补齐缺失（联网）'"]) {
+    assert.ok(S.includes(label), '菜单里缺少：' + label)
+  }
+  assert.ok(S.includes('const siteOpen = function (s) { return closedGroups[s] === true }'), '站点默认折叠（没有记录 = 收起）')
+  assert.ok(!/h\('button', \{ className: 'rs-btn is-ghost', onClick: function \(\) \{ setAll\(/.test(S), '全选/不选不许再平铺成按钮')
+})
