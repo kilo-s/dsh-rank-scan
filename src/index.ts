@@ -21,7 +21,7 @@ import { CIWEIMAO_BOARDS, CIWEIMAO_BUY_URL } from './sites/ciweimao.js'
 import { FANQIE_MALE } from './sites/fanqie.js'
 import { CATEGORIES as QIDIAN_CATEGORIES } from './sites/qidian-mobile.js'
 import { QIDIANTU_BOARDS, periodStartOf } from './sites/qidiantu.js'
-import { deriveFanqieViews } from './scan/derive.js'
+import { deriveFanqieViews, poolDateOf } from './scan/derive.js'
 import { decodePua, hasPua, learnPair, loadFontMap, saveFontMap } from './scan/fontmap.js'
 import { applyColumnPolicy, batchKeyOf, batchKindOf, batchLabelOf, boardMeta, columnsFor, compareDesc, defaultSortFor, defaultSortKeyFor, enrichAttemptPolicy, enrichMissingCount, groupBySite, groupChanges, isBatchBoard, isEnrichableBoard, saleRangeOf, shouldShowDays, usesRankDelta, withFanqieCat } from './scan/view.js'
 import { BookmarkService, BookmarkStore } from './scan/bookmark.js'
@@ -1755,7 +1755,26 @@ export function apply(ctx: PluginCtx, config: any): void {
     if (boardId.startsWith('fanqie.derived.')) {
       const read = (b: string, d: string) => store.readSnapshot(d, b)
       const pool = (st.boards as string[]).filter((b) => b.startsWith('fanqie.m.'))
-      const views = deriveFanqieViews(read as any, { date: latest, poolBoards: pool, dataDates: dates })
+      /**
+       * ★ 0.6.1（使用者 2026-10-29「番茄在读周榜有时候卡住显示不了内容」）：
+       *   原来拿**全局最新数据日** latest 建池。今天的目录可能只有别的站（实测 2026-10-29 只有起点
+       *   三个榜，番茄 0 个快照）⇒ 池子为空 ⇒ 0 行，而 note 照常输出「已结算 N/7 天」，
+       *   看上去就像面板卡住没内容。
+       *   现在：算池子的日期 = **最新一个番茄真有快照的日期**；全局最新日另有提示。
+       */
+      const hasPoolRows = (d: string) => pool.some((b) => {
+        const s = store.readSnapshot(d, b)
+        return !!(s && s.rows && s.rows.length)
+      })
+      const poolDates = dates.filter(hasPoolRows)
+      const poolDate = poolDateOf(dates, hasPoolRows)
+      const calcDate = poolDate || latest
+      const lagNote = !poolDate
+        ? '番茄还没有任何本地快照（' + latest + ' 也没有）：先在「设置 → 抓取范围」里勾上番茄，或等下次扫描'
+        : poolDate !== latest
+          ? '番茄最新快照是 ' + poolDate + '（' + latest + ' 还没有番茄快照），本榜按 ' + poolDate + ' 算'
+          : null
+      const views = deriveFanqieViews(read as any, { date: calcDate, poolBoards: pool, dataDates: poolDates })
       const v = views.find((x) => x.boardId === boardId) || views[0]
       // 派生榜行自带 extra.periodDelta / gain / settledDays；days 位给「池内天数」（列被 hideColumnsFor 隐藏，仅作诊断）
       let rows = (v ? v.rows : []).map((r: any) => ({ ...r, days: r.extra && r.extra.inPoolDays != null ? r.extra.inPoolDays : null }))
@@ -1770,7 +1789,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         defaultSortKey,
         sortOptions: sortOptionsFor(boardId, meta, { hasHistory }),
         depth: (st.depths || {})[boardId] ?? 30,
-        dataDate: latest,
+        dataDate: calcDate,
         dates: datesFor,
         // 期首 = 本期周一（自然周口径）；面板「基期」显示的就是它
         baselineDate: v ? v.periodStart : null,
@@ -1779,9 +1798,10 @@ export function apply(ctx: PluginCtx, config: any): void {
         settledDays: v ? v.settledDays : 0,
         elapsed: v ? v.elapsed : 0,
         datesLabel: v ? v.datesLabel : '',
-        firstEver: dates.length < 2,
+        firstEver: poolDates.length < 2,
         rows,
-        note: v ? v.note : null,
+        // 池子不是按「全局最新日」算的时候，必须说清用的是哪天（不然空表看不出原因）
+        note: [lagNote, v ? v.note : null].filter(Boolean).join('；') || null,
       }
     }
     let snap = store.readSnapshot(date, boardId)

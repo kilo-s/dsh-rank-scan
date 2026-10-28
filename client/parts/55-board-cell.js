@@ -87,13 +87,11 @@
       // ★ 2026-10-29 口径修正：三江这一列是「日期」（Unix 秒时间戳），不是「首日增量」⇒ 显示成 MM-DD HH:mm
       if (k === 'firstDay') return fmtStamp(ex.firstDay)
       if (k === 'firstV') return dash(ex.firstV)
-      if (k === 'update') return dash(ex.update)
       if (k === 'collect') return fmtRead(ex.collect)
       if (k === 'collectBase') return fmtRead(ex.collectBase)
       if (k === 'fans') return fmtRead(ex.fans)
       if (k === 'score') return dash(ex.score)
       if (k === 'words') return fmtWords(ex.wordsText !== undefined ? ex.wordsText : ex.wordsCnt !== undefined ? ex.wordsCnt : ex.wordNumber !== undefined ? ex.wordNumber : ex.words)
-      if (k === 'updated') return fmtTime(ex.lastChapterUpdateTime)
       if (k === 'subCat') return dash(ex.subCat)
       if (k === 'cat') return dash(ex.cat)
       if (k === 'days') return dash(r.days)

@@ -155,6 +155,32 @@ A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipL
 - 另修两处小问题：详情卡「更新 —」（起点没有 `lastChapterUpdateTime`）整行不渲染；「展开简介」改为**实测溢出**（`scrollHeight > clientHeight`，resize 重量）才出现，900 宽两行简介不再出按钮。
 - **已知未修（0.6 之前就这样）**：三江「今日增量」整列是「—」。原因是 `cell` 读 `ex.dailyDelta`，而三江行只有 `extra.daily[]` / `extra.totalDelta`，v0.5.2 的代码同样如此 ⇒ 与你说的「0.6 之前也一样」相符；真正的值是「第 N 天」那几列 + 期累计。
 
+## 0.6.1（2026-10-29，发布前修正批次）
+
+| # | 事项 | 落点 | 断言 |
+|---|---|---|---|
+| 1 | **全站统一去掉「最近更新 / 更新时间」列**（使用者定稿）：撤回刺猬猫的「最近更新」，番茄「更新时间」不再回来，详情卡「更新 …」也移除 | `view.ts`、`55-board-cell.js`、`70-board.js`（`CHIP_ALWAYS`/`CHIP_SKIP`/`SUMMARY_COLS`）、`20-ui-kit.js`（列优先级/列宽里的 `updated` 死配置） | `ui-polish`「全站统一不出最近更新/更新时间列」 |
+| 2 | **番茄在读周榜空表**：派生榜改用「最新一个番茄真有快照的日期」建池，说明里写清回落；`dataDates`/`已结算 N 天` 只统计番茄真有快照的日期 | `derive.ts`（新增 `poolDateOf`）、`index.ts`（派生榜分支） | `derive`「池子日期取最新一个真有番茄快照的日期」 |
+
+- 现场实测（接口直连）：修前 `rows=0`（note 仍说「已结算 4/7 天，有数据的日期含 10-29」）；修后 **rows=240**、`dataDate=2026-10-28`、note 变成「番茄最新快照是 2026-10-28（2026-10-29 还没有番茄快照），本榜按 2026-10-28 算；本期…已结算 3/7 天（有数据的日期：10-26、10-27、10-28）」。耗时 907 ms（冷）/ 59 ms（热）。
+- 刺猬猫 480 卡不再被「最近更新」长文本挤满：`变化 ↑1 · 字数 11.01万字 · 收藏 11,371`。
+- 版本号：`package.json` / `package-lock.json` = **0.6.1**。**README 里的「钉版本」示例仍是 v0.6.0 / 0.6.0**，等真正打 tag 那一刻再改成 0.6.1（避免指向不存在的 tag）。
+
+### 修改过的旧断言（0.6.1 这一轮）
+
+| 文件 | 原断言 | 改成 |
+|---|---|---|
+| `tests/ui-polish.test.mjs` | 「0.6 收尾补列…」里断言 `cell('update')` 与 `CHIP_ALWAYS = {…, update: 1}` | 去掉 update 的用例；`CHIP_ALWAYS` 断言改成三列（`shouding/firstDay/firstV`） |
+| `tests/ui-polish.test.mjs` | 「详情卡的『更新』行只在有 `lastChapterUpdateTime` 时渲染」 | 改成「详情卡不再显示『更新 …』」（整条移除） |
+| `tests/view.test.mjs` | 刺猬猫列序 `deepEqual([…,'update',…])`（0.6.0 加的） | 回到 `['rank','delta','title','author','words','collect']` |
+| `tests/view.test.mjs` | 「0.6 收尾补列」里断言刺猬猫两榜**有** `update` 列 | 改成 4 个榜（刺猬猫三榜 + 番茄）**都不许有** `update`/`updated` |
+
+### 闸门（0.6.1 分支）
+
+- build ✓
+- `test-local`：**455 pass / 0 fail**（0.6.0 收尾是 453；本轮 +2）
+- `acceptance -SkipLive`：**100 pass / 0 fail**
+
 ## 发布后必须人工确认的一条（暗色）
 
 > ★ 截图里的暗色是 Playwright `emulateMedia({ colorScheme: 'dark' })` 模拟出来的，**没有经过宿主真实的主题切换**。

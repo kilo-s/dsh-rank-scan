@@ -309,21 +309,20 @@ test('0.6 收尾补列：空值显示「—」、数字列右对齐、480 卡片
   const mod = load()
   const cell = mod.__test.helpers.cell
   // 空值一律「—」，不补 0
-  for (const key of ['shouding', 'firstDay', 'firstV', 'update']) {
+  for (const key of ['shouding', 'firstDay', 'firstV']) {
     assert.equal(cell({ key: key }, { extra: {} }), '—', key + ' 空值必须是「—」，不许补 0')
   }
   assert.equal(cell({ key: 'shouding' }, { extra: { shouding: 2168 } }), 2168, '首订有值时原样显示')
   // ★ 0.6 修正：这一列是时间戳（站点「日期」列），不再是「+1148」那种增量
   assert.equal(cell({ key: 'firstDay' }, { extra: { firstDay: 1793000228 } }), '10-26 15:37', '时间戳列显示 MM-DD HH:mm')
   assert.equal(cell({ key: 'firstV' }, { extra: { firstV: '12:13' } }), '12:13')
-  assert.equal(cell({ key: 'update' }, { extra: { update: '10-28 12:00' } }), '10-28 12:00')
   // 数字列（右对齐 + 等宽）：首订 / 首日增量在 NUM_COL_RE 里
   const re = S.match(/const NUM_COL_RE = \/([^/]+)\//)
   assert.ok(re, '找不到 NUM_COL_RE')
   assert.ok(re[1].includes('shouding'), '首订要算数字列（右对齐）')
   assert.ok(!re[1].includes('firstDay'), '「上架」是时间戳，不是数字列')
   // 480 宽卡片：新列必须进中点串（列序靠后，不能只靠 slice(0,6)）
-  assert.ok(S.includes('const CHIP_ALWAYS = { shouding: 1, firstDay: 1, firstV: 1, update: 1 }'), '中点串要专门保住新补的四列')
+  assert.ok(S.includes('const CHIP_ALWAYS = { shouding: 1, firstDay: 1, firstV: 1 }'), '中点串要专门保住新补的三列')
 })
 
 test('设置 · 抓取范围：一站一行，「已选 x / y」+「⋯」菜单里放全选/不选/补齐缺失，默认折叠', () => {
@@ -370,11 +369,8 @@ test('0.6 修正：三江那列是 Unix 秒时间戳 ⇒ 显示成 MM-DD HH:mm�
   assert.ok(re && !re[1].includes('firstDay'), '时间戳列不参与数字右对齐')
 })
 
-test('0.6 修正：详情卡的「更新」行只在有 lastChapterUpdateTime 时渲染', () => {
-  const i = S.indexOf("'更新 ' + fmtTime(ex.lastChapterUpdateTime)")
-  assert.ok(i > 0, '找不到「更新」行')
-  const around = S.slice(i - 260, i + 40)
-  assert.ok(around.includes('ex.lastChapterUpdateTime != null && Number(ex.lastChapterUpdateTime) > 0'), '没有这个字段的榜整行不渲染（不许显示「更新 —」）')
+test('0.6.1：详情卡不再显示「更新 …」（与列口径统一，同一个 lastChapterUpdateTime）', () => {
+  assert.ok(!S.includes("'更新 ' + fmtTime(ex.lastChapterUpdateTime)"), '详情卡的「更新」行必须移除')
 })
 
 test('0.6 修正：「展开简介」只在真的被截断时出现（实测溢出 + resize 重量）', () => {
@@ -385,4 +381,16 @@ test('0.6 修正：「展开简介」只在真的被截断时出现（实测溢�
   assert.ok(body.includes('const textRef = React.useRef(null)') && body.includes('ref: textRef'), '要量真实渲染后的盒子')
   assert.ok(body.includes('(over || open)'), '收起态溢出或有溢出时才给按钮；展开态保留「收起」')
   assert.ok(!body.includes('text.length > 60'), '旧的按字数阈值判断必须移除')
+})
+
+test('0.6.1：全站统一不出「最近更新 / 更新时间」列（刺猬猫、番茄都没有）', () => {
+  // 客户端：没有 update / updated 的渲染分支，也没进中点串/摘要列
+  assert.ok(!S.includes("if (k === 'update')"), '「最近更新」列的渲染分支必须删掉')
+  assert.ok(!S.includes("if (k === 'updated') return fmtTime"), '榜单「更新时间」列的渲染分支必须删掉（0.6.0 之前就该死了）')
+  // 注意：60-bookmarks.js 里的 k === 'updated' 是**书签排序键**（按 capturedAt），与榜单列无关，保留
+  assert.ok(!S.includes("'更新 ' + fmtTime(ex.lastChapterUpdateTime)"), '详情卡也不显示「更新」')
+  assert.ok(!/CHIP_ALWAYS = \{[^}]*update/.test(S), '中点串不许再带最近更新')
+  assert.ok(!/CHIP_SKIP = \{[^}]*updated/.test(S), 'CHIP_SKIP 里的 updated 是死配置，一并清掉')
+  assert.ok(!/SUMMARY_COLS = \{[^}]*updated/.test(S), 'SUMMARY_COLS 里的 updated 一并清掉')
+  assert.ok(!/updated: 7/.test(S) && !S.includes("if (k === 'updated') return 124"), '列优先级/列宽里也不许再提 updated')
 })

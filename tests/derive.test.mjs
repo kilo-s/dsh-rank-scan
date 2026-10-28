@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveFanqieViews, weekStart } from '../lib/scan/derive.js'
+import { deriveFanqieViews, poolDateOf, weekStart } from '../lib/scan/derive.js'
 
 /**
  * 番茄派生榜（2026-10-15 定稿）：**自然周**口径 —— 照搬起点图三江榜的
@@ -191,3 +191,13 @@ test('★ 字数在别的分类榜里也要能取到（同一本书可能只出�
   assert.equal(v.rows[0].extra.catId, 258)
 })
 
+
+test('0.6.1：池子日期取「最新一个真有番茄快照的日期」，不是全局最新日', () => {
+  const dates = ['2026-10-26', '2026-10-27', '2026-10-28', '2026-10-29']
+  // 2026-10-29 只有起点抓到（番茄 0 条）—— 这正是「番茄在读周榜空表」的现场
+  const has = { '2026-10-26': true, '2026-10-27': true, '2026-10-28': true, '2026-10-29': false }
+  assert.equal(poolDateOf(dates, (x) => has[x]), '2026-10-28', '要退到最近一个有番茄快照的日期')
+  assert.equal(poolDateOf(dates, () => false), null, '一个都没有 ⇒ null（由调用方给明话）')
+  assert.equal(poolDateOf([], () => true), null, '空日期表 ⇒ null')
+  assert.equal(poolDateOf(['2026-10-01', '2026-10-03'], (x) => x === '2026-10-01'), '2026-10-01', '乱序输入也要取最新的那个有数据的')
+})
