@@ -497,9 +497,16 @@
        *   宿主的 catalog 校验留待 0.7（见交接）。
        */
       const qidianFixed = /^qidian\./.test(String(curBoard || ''))
+      /**
+       * ★ 0.6.2：条数只对**适配器真读 depth** 的榜开放（宿主 catalog 的 canDepth 已经按口径算好）。
+       *   派生榜再单独标一次：它连「扫本榜」都没意义（本地按快照算、0 请求）。
+       */
+      const derivedBoard = isDerived
       const fixedDepth = qidianFixed ? 20 : null
-      const depthLocked = qidianFixed || info.can === false
-      const depthNote = qidianFixed ? '站点固定 20 条（移动端单页 20 条，站点分页接口在反爬后）' : info.hint
+      const depthLocked = qidianFixed || derivedBoard || info.can === false
+      const depthNote = qidianFixed
+        ? '站点固定 20 条（移动端单页 20 条，站点分页接口在反爬后）'
+        : (info.hint || '该榜条数由站点/口径决定，不可调')
       const isOpen = function (r) { return !!(pick && pick.key === r.key) }
       /**
        * ★ 2026-10-23（点了没反应）：详情卡原来挂在**整张列表之后** ⇒ 列表一长就在视口外
@@ -607,29 +614,41 @@
           h('button', { className: 'rs-btn is-ghost', onClick: function () { setDayOpen(false) } }, '收起'),
           h('div', { style: { ...C.muted, flex: '1 1 100%' } }, '首订按 n-1 锚：选上架日 X ⇒ 请求数据日期 X+1（页面内容日期就是 X）；保存后快照记在 X+1 名下。站点给的日期对不上会被拒绝，不写任何文件。')) : null,
         h('div', { style: { ...C.row, marginTop: '4px', flexWrap: 'wrap' } },
-          h('button', {
+          // ★ 0.6.2：派生榜不发请求（本地按快照算），「扫描本榜」对它点了只会得到一条警告 ⇒ 直接不出现
+          isDerived ? null : h('button', {
             className: 'rs-btn',
             disabled: props.scanBusy || busy,
             onClick: scanBoard,
             title: props.scanBusy ? '全局扫描进行中；请到概览点「停止本次」后再扫本榜' : '只抓当前这一榜，不动其它榜（联网）',
           }, scanning ? '扫描本榜中…' : (props.scanBusy ? '全局扫描进行中…' : '扫描本榜（联网）')),
           enrichMissing ? h('button', { className: 'rs-btn', disabled: busy || props.scanBusy, onClick: doEnrich, title: '补全当前榜缺失字段（联网：逐本进书页取，可能走缓存）' }, '补全缺失 ' + enrichMissing + ' 条') : null,
-          h('span', { style: { ...C.meta, flex: '1 1 auto' } }, '只抓当前这一榜；全局扫描/停止在概览')),
+          // 派生榜连扫描按钮都没有 ⇒ 这行说明也别留着（否则在讲一个不存在的按钮）
+          isDerived ? null : h('span', { style: { ...C.meta, flex: '1 1 auto' } }, '只抓当前这一榜；全局扫描/停止在概览')),
         enrichMissing ? h(Banner, { tone: 'warn', live: false },
           h('span', null, '补全未完成：还缺 ' + enrichMissing + ' 条字段'),
           h('span', { style: C.muted }, '（榜页没给收藏/字数，要进书页取；点上面的「补全缺失」重试，或等定时续跑）')) : null,
-        h(Section, { title: '本榜设置', defaultOpen: false, summary: '每榜 ' + (fixedDepth != null ? fixedDepth : (depth || info.max || '—')) + ' 条' + (fixedDepth != null ? '（站点固定）' : '（上限 ' + (info.max || '—') + '）') },
+        h(Section, { title: '本榜设置', defaultOpen: false, summary: derivedBoard
+          ? '全部 ' + ((data && data.rows) ? data.rows.length : 0) + ' 条（本地派生榜不设条数）'
+          : fixedDepth != null
+            ? '每榜 ' + fixedDepth + ' 条（站点固定）'
+            : depthLocked
+              ? depthNote
+              : '每榜 ' + (depth || info.max || '—') + ' 条（上限 ' + (info.max || '—') + '）' },
           h('div', { style: { ...C.row, flexWrap: 'wrap' } },
             h('span', { style: C.muted }, '每榜取多少条'),
             h('input', {
-              type: 'number', min: 1, max: info.max, value: fixedDepth != null ? String(fixedDepth) : depth,
-              placeholder: String(fixedDepth != null ? fixedDepth : info.max), disabled: depthLocked || busy,
+              type: 'number', min: 1, max: info.max,
+              value: derivedBoard ? '' : (fixedDepth != null ? String(fixedDepth) : depth),
+              placeholder: derivedBoard ? '全部' : String(fixedDepth != null ? fixedDepth : info.max),
+              disabled: depthLocked || busy,
               title: depthNote, onChange: function (e) { setDepth(e.target.value) },
               style: { ...C.input, width: '58px' },
             }),
             h('span', { style: C.muted }, depthLocked ? '条 · ' + depthNote : '条（上限 ' + info.max + '）'),
-            h('button', { className: 'rs-btn', disabled: depthLocked || busy, onClick: function () { saveDepth(false) }, title: depthLocked ? depthNote : '只保存，下次扫描生效' }, '保存'),
-            h('button', { className: 'rs-btn', disabled: depthLocked || busy || props.scanBusy, onClick: function () { saveDepth(true) }, title: depthLocked ? depthNote : '保存后立刻抓一次这一榜（联网）' }, '保存并扫描本榜')),
+            // ★ 0.6.2：条数不可调时两个按钮都不给 —— 改了也不生效，而扫描入口本来就在上面的操作条
+            //   （「扫描本榜（联网）」对所有榜都在，派生榜也不例外；派生榜实际不发请求，由宿主给说明）。
+            depthLocked ? null : h('button', { className: 'rs-btn', disabled: busy, onClick: function () { saveDepth(false) }, title: '只保存，下次扫描生效' }, '保存'),
+            depthLocked ? null : h('button', { className: 'rs-btn', disabled: busy || props.scanBusy, onClick: function () { saveDepth(true) }, title: '保存后立刻抓一次这一榜（联网）' }, '保存并扫描本榜')),
           !depthLocked && info.hint ? h('div', { style: C.muted }, info.hint) : null),
         band ? h('div', { style: { ...C.sectionLabel, whiteSpace: 'normal', marginTop: '8px', marginBottom: '8px' } }, band) : null,
         viewDate ? h(Banner, { tone: 'warn' },

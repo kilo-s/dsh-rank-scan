@@ -181,6 +181,40 @@ A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipL
 - `test-local`：**455 pass / 0 fail**（0.6.0 收尾是 453；本轮 +2）
 - `acceptance -SkipLive`：**100 pass / 0 fail**
 
+## 0.6.2（2026-10-29）：把「假设置」一次扫干净
+
+使用者 2026-10-29：「顺手把『假设置』这类问题一次扫干净」。判据**只看适配器是否真读 `depth`**（`src/sites/*.ts`），不看「站点理论上能给多少」。
+
+### 审计结果（抓取集 20 个榜，实际行数取 2026-10-28 快照）
+
+| 榜 | 改前 catalog 显示 | 实际行数 | 适配器读 depth | 改后 |
+|---|---|---|---|---|
+| `qidian.sign.cat12` / `cat21` / `cat4` | 每榜 20 / 10 / 10 条（上限 20） | 20 | ✗ 单页写死 20 | `canDepth:false`（0.6.0 只是客户端置灰，现在宿主也给对口径） |
+| `qidiantu.shouding` | 每榜 10 条（上限 100） | **43** | ✗ 整页给出 | `canDepth:false` + 「起点图整页给出条数…」 |
+| `qidiantu.sanjiang` | 每榜 10 条（上限 100） | **17** | ✗ 整页给出 | 同上 |
+| `ciweimao.buy.latest` | 每榜 30 条（上限 100） | **17** | ✗ 第三方整批 | `canDepth:false` + 「第三方接口整批给出」 |
+| `ciweimao.no-vip-click.week` / `yp_new.week` | 30 | 30 | ✓ 每页 10 翻页 | 保持可调 |
+| `sfacg.new.click` / `hot.week` / `vip.week` | 10（上限 10） | 10 | ✗ SSR 固定 10 | `canDepth:false`（原本就锁） |
+| `fanqie.m.new.*`（8 个） | 30 | 30 | ✓ `slice(0, depth)` | 保持可调 |
+| `fanqie.derived.period` | 每榜 **10** 条（上限 100） | **240**（全池） | ✗ 本地派生 | `canDepth:false`，摘要改「全部 240 条（本地派生榜不设条数）」 |
+
+> 顺带查清「那个 10 是哪来的」：`config.depths` 里**没有**派生榜这一项，10 是 `defaultDepthFor()` 对「认不出的 boardId 一律给 10」的兜底（`fanqie.derived.*` 不以 `fanqie.m.` 开头），派生分支返回的 `depth` 又是 30 —— 三个数字互不相干，谁都没生效。
+
+### 落点
+
+- `src/index.ts`：`catalog()` 里新增 `depthLocked(boardId)` + `depthHintOf(site, boardId)`，`canDepth` 改用它；`maxDepth` 不变（仍是站点上限，供展示）。
+- `client/parts/70-board.js`：`depthLocked = qidianFixed || derivedBoard || info.can === false`；摘要三分支（派生「全部 N 条」/ 起点「每榜 20 条（站点固定）」/ 锁定榜直接说原因）；锁定时不渲染「保存 / 保存并扫描本榜」；派生榜不渲染「扫描本榜」与那行「只抓当前这一榜…」说明。
+
+### 闸门（0.6.2 分支）
+
+- build ✓
+- `test-local`：**456 pass / 0 fail**（0.6.1 是 455，本轮 +1）
+- `acceptance -SkipLive`：**100 pass / 0 fail**
+
+### 新增断言
+
+- `ui-polish`「0.6.2：条数只对真读 depth 的榜开放」：host 侧 `depthLocked` 的五个前缀/等值判断 + `canDepth: !depthLocked(boardId)`；client 侧派生榜复用 `isDerived`、摘要「全部 N 条」、锁定时不给「保存条数」、派生榜不给「扫描本榜」、输入框占位「全部」。
+
 ## 发布后必须人工确认的一条（暗色）
 
 > ★ 截图里的暗色是 Playwright `emulateMedia({ colorScheme: 'dark' })` 模拟出来的，**没有经过宿主真实的主题切换**。

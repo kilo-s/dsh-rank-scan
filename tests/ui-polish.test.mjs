@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { readFileSync } from 'node:fs'
 import { readClientSource } from './_client-source.mjs'
 
 /**
@@ -15,6 +16,8 @@ import { readClientSource } from './_client-source.mjs'
  */
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const S = readClientSource()
+/** 宿主侧源码：条数口径（canDepth）在 src/index.ts 的 catalog() 里 */
+const HOST = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
 
 function load() {
   const fakeReact = {
@@ -393,4 +396,23 @@ test('0.6.1：全站统一不出「最近更新 / 更新时间」列（刺猬猫
   assert.ok(!/CHIP_SKIP = \{[^}]*updated/.test(S), 'CHIP_SKIP 里的 updated 是死配置，一并清掉')
   assert.ok(!/SUMMARY_COLS = \{[^}]*updated/.test(S), 'SUMMARY_COLS 里的 updated 一并清掉')
   assert.ok(!/updated: 7/.test(S) && !S.includes("if (k === 'updated') return 124"), '列优先级/列宽里也不许再提 updated')
+})
+
+test('0.6.2：条数只对真读 depth 的榜开放；派生榜说「全部 N 条」并隐藏扫描入口', () => {
+  // host：canDepth 按适配器是否真读 depth 判（起点/起点图/首订约/派生/菠萝包 = 不可调）
+  assert.ok(HOST.includes('const depthLocked = (boardId: string) =>'), '缺少口径函数（host catalog）')
+  // 口径：起点 / 起点图 / 刺猬猫首订约 / 番茄派生 / 菠萝包 = 不可调
+  for (const frag of ["boardId.startsWith('qidian.')", "boardId.startsWith('qidiantu.')", "boardId === 'ciweimao.buy.latest'", "boardId.startsWith('fanqie.derived.')", "boardId.startsWith('sfacg.')"]) {
+    assert.ok(HOST.includes(frag), 'canDepth 口径缺少：' + frag)
+  }
+  assert.ok(HOST.includes('canDepth: !depthLocked(boardId)'), 'catalog 必须用口径函数算 canDepth')
+  // client：派生榜单独标、摘要换成「全部 N 条」
+  assert.ok(S.includes('const derivedBoard = isDerived'), '派生榜复用 isDerived')
+  assert.ok(S.includes("? '全部 ' + ((data && data.rows) ? data.rows.length : 0) + ' 条（本地派生榜不设条数）'"), '派生榜摘要要写「全部 N 条」')
+  assert.ok(S.includes('const depthLocked = qidianFixed || derivedBoard || info.can === false'), '锁定条件要含派生榜与 canDepth:false')
+  // 条数不可调时不再给「保存 / 保存并扫描」；扫描入口在操作条，派生榜连它都不给
+  assert.ok(S.includes("depthLocked ? null : h('button', { className: 'rs-btn', disabled: busy, onClick: function () { saveDepth(false) }"), '锁定时不给「保存条数」')
+  assert.ok(S.includes("isDerived ? null : h('button', {"), '派生榜不给「扫描本榜」（点了只会拿到警告）')
+  // 输入框置灰 + 占位「全部」
+  assert.ok(S.includes("placeholder: derivedBoard ? '全部' : String(fixedDepth != null ? fixedDepth : info.max)"), '派生榜输入框占位「全部」')
 })
