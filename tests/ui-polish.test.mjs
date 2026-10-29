@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { readFileSync } from 'node:fs'
 import { readClientSource } from './_client-source.mjs'
 
 /**
@@ -15,6 +16,8 @@ import { readClientSource } from './_client-source.mjs'
  */
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const S = readClientSource()
+/** 宿主侧源码：条数口径（canDepth）在 src/index.ts 的 catalog() 里 */
+const HOST = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
 
 function load() {
   const fakeReact = {
@@ -335,15 +338,17 @@ test('设置 · 抓取范围：一站一行，「已选 x / y」+「⋯」菜单
   assert.ok(!/h\('button', \{ className: 'rs-btn is-ghost', onClick: function \(\) \{ setAll\(/.test(S), '全选/不选不许再平铺成按钮')
 })
 
-test('修假设置：起点榜条数输入框置灰，并说明「站点固定 20 条」', () => {
+test('修假设置：条数不可调的榜不再出现「本榜设置」（整块移除，原因压到操作条一行）', () => {
   assert.ok(S.includes("const qidianFixed = /^qidian\\./.test(String(curBoard || ''))"), '要按 boardId 判定起点固定条数')
-  const i = S.indexOf("每榜取多少条")
-  assert.ok(i > 0, '找不到本榜设置的输入行')
-  const body = S.slice(i, i + 1100)
-  assert.ok(body.includes('disabled: depthLocked || busy'), '条数输入框必须置灰')
-  assert.ok(body.includes("'条 · ' + depthNote"), '置灰时要写清原因（不能只留一个灰框）')
-  assert.ok(S.includes('站点固定 20 条（移动端单页 20 条，站点分页接口在反爬后）'), '要有「站点固定 20 条」提示')
-  assert.ok(body.includes("disabled: depthLocked || busy"), '保存按钮同样置灰（改了也不生效）')
+  // 整块控件只对可调的榜渲染
+  assert.ok(S.includes("depthLocked ? null : h(Section, { title: '本榜设置'"), '条数不可调时整块不渲染')
+  // 原因不能丢，但也**不许撑长操作条**：放进 hover 提示（title）
+  assert.ok(S.includes("title: depthLocked ? depthNote : ''"), '原因要挂在操作条那行的 title 上')
+  assert.ok(S.includes("'只抓当前这一榜；全局扫描/停止在概览'"), '操作条对所有榜统一一句话')
+  assert.ok(S.includes('站点固定 20 条（移动端单页 20 条，站点分页接口在反爬后）'), '起点的原因要保留')
+  // 可调的榜（番茄/刺猬猫）保留输入框与两个按钮
+  assert.ok(S.includes("h('span', { style: C.muted }, '每榜取多少条')"), '可调的榜仍要有输入框')
+  assert.ok(S.includes("}, '保存并扫描本榜')"), '可调的榜仍要有「保存并扫描本榜」')
 })
 
 test('0.6 修正：三江那列是 Unix 秒时间戳 ⇒ 显示成 MM-DD HH:mm，绝不放裸数字', () => {
@@ -393,4 +398,25 @@ test('0.6.1：全站统一不出「最近更新 / 更新时间」列（刺猬猫
   assert.ok(!/CHIP_SKIP = \{[^}]*updated/.test(S), 'CHIP_SKIP 里的 updated 是死配置，一并清掉')
   assert.ok(!/SUMMARY_COLS = \{[^}]*updated/.test(S), 'SUMMARY_COLS 里的 updated 一并清掉')
   assert.ok(!/updated: 7/.test(S) && !S.includes("if (k === 'updated') return 124"), '列优先级/列宽里也不许再提 updated')
+})
+
+test('0.6.2：条数只对真读 depth 的榜开放；派生榜说「全部 N 条」并隐藏扫描入口', () => {
+  // host：canDepth 按适配器是否真读 depth 判（起点/起点图/首订约/派生/菠萝包 = 不可调）
+  assert.ok(HOST.includes('const depthLocked = (boardId: string) =>'), '缺少口径函数（host catalog）')
+  // 口径：起点 / 起点图 / 刺猬猫首订约 / 番茄派生 / 菠萝包 = 不可调
+  for (const frag of ["boardId.startsWith('qidian.')", "boardId.startsWith('qidiantu.')", "boardId === 'ciweimao.buy.latest'", "boardId.startsWith('fanqie.derived.')", "boardId.startsWith('sfacg.')"]) {
+    assert.ok(HOST.includes(frag), 'canDepth 口径缺少：' + frag)
+  }
+  assert.ok(HOST.includes('canDepth: !depthLocked(boardId)'), 'catalog 必须用口径函数算 canDepth')
+  // client：派生榜单独标、摘要换成「全部 N 条」
+  assert.ok(S.includes('const derivedBoard = isDerived'), '派生榜复用 isDerived')
+  assert.ok(S.includes("'本地派生 · 不发请求'"), '派生榜给 7 字短标签')
+  assert.ok(S.includes("title: '本地派生榜：按候选池全量出' + ((data && data.rows) ? '（本次 ' + data.rows.length + ' 行）' : '') + '，不发请求'"), '完整说明放 hover 提示')
+  assert.ok(S.includes('const depthLocked = qidianFixed || derivedBoard || info.can === false'), '锁定条件要含派生榜与 canDepth:false')
+  // 条数不可调时不再给「保存 / 保存并扫描」；扫描入口在操作条，派生榜连它都不给
+  // 条数不可调 ⇒ 整块「本榜设置」都不出现，「保存条数」自然也没有
+  assert.ok(S.includes("depthLocked ? null : h(Section, { title: '本榜设置'"), '锁定时整块不渲染（含保存条数）')
+  assert.ok(S.includes("isDerived ? null : h('button', {"), '派生榜不给「扫描本榜」（点了只会拿到警告）')
+  // 输入框置灰 + 占位「全部」
+  assert.ok(!S.includes('fixedDepth'), '旧的 fixedDepth 分支应已清掉（起点走 depthLocked 分支）')
 })

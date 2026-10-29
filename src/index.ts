@@ -2216,6 +2216,29 @@ export function apply(ctx: PluginCtx, config: any): void {
     const captured = new Set(st.boards as string[])
     const shown = new Set(st.display as string[])
     const rows: any[] = []
+    /**
+     * ★ 0.6.2「假设置」审计（使用者 2026-10-29）：条数只对**适配器真读 depth** 的榜开放。
+     *   判据看 `src/sites/*.ts`，不看「站点理论上能给多少」：
+     *     · 起点  —— 移动端单页固定 20 条，适配器写死（不读 depth）
+     *     · 起点图 —— 整页给出，适配器不读 depth（首订当日 20–35、三江 17）
+     *     · 刺猬猫首订（约）—— 第三方接口整批给出，depth 无意义
+     *     · 番茄派生榜 —— 本地算，按候选池全量出（240 行）
+     *     · 菠萝包 —— 首页 SSR 每 tab 固定 10
+     *   其余（番茄分类榜、刺猬猫两个榜单）适配器真按 depth 翻页/截断，才给可调。
+     *   注：canDepth=false 只是**不开放编辑**；config 里已有的旧值原样保留。
+     */
+    const depthLocked = (boardId: string) =>
+      boardId.startsWith('qidian.') || boardId.startsWith('qidiantu.') ||
+      boardId === 'ciweimao.buy.latest' || boardId.startsWith('fanqie.derived.') ||
+      boardId.startsWith('sfacg.')
+    const depthHintOf = (site: string, boardId: string) => {
+      if (site === 'qidian') return '移动端榜单单页固定 20 条（站点分页接口在反爬挑战后面，暂不可调）'
+      if (boardId === 'ciweimao.buy.latest') return '第三方接口整批给出（不按条数截取）'
+      if (boardId.startsWith('fanqie.derived.')) return '本地派生榜不设条数（按候选池全量出）'
+      if (site === 'qidiantu') return '起点图整页给出条数（不按深度截取；首订当日榜 20–35 行、三江 17 行左右）'
+      if (site === 'sfacg') return '首页 SSR 每个 tab 固定 10 条（不可调）'
+      return '可调（每页 10 条，翻页取）'
+    }
     const push = (site: string, siteName: string, group: string, boardId: string, label: string) => {
       const cap = site === 'qidian' ? 20 : site === 'sfacg' ? 10 : 100
       rows.push({
@@ -2223,8 +2246,8 @@ export function apply(ctx: PluginCtx, config: any): void {
         captured: captured.has(boardId), displayed: shown.has(boardId),
         depth: (st.depths || {})[boardId] ?? defaultDepthFor(boardId),
         maxDepth: cap,
-        canDepth: cap > 10,
-        depthHint: site === 'qidian' ? '移动端榜单单页固定 20 条（站点分页接口在反爬挑战后面，暂不可调）' : site === 'sfacg' ? '首页 SSR 每个 tab 固定 10 条（不可调）' : site === 'qidiantu' ? '起点图站点自身决定条数（首订当日榜 20–35 条）' : '可调（每页 10 条，翻页取）',
+        canDepth: !depthLocked(boardId),
+        depthHint: depthHintOf(site, boardId),
       })
     }
     // 冻结口径：起点「全站」分类不纳入（cat -1 = 全站）
