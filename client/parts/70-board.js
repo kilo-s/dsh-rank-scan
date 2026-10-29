@@ -621,11 +621,15 @@
             title: props.scanBusy ? '全局扫描进行中；请到概览点「停止本次」后再扫本榜' : '只抓当前这一榜，不动其它榜（联网）',
           }, scanning ? '扫描本榜中…' : (props.scanBusy ? '全局扫描进行中…' : '扫描本榜（联网）')),
           enrichMissing ? h('button', { className: 'rs-btn', disabled: busy || props.scanBusy, onClick: doEnrich, title: '补全当前榜缺失字段（联网：逐本进书页取，可能走缓存）' }, '补全缺失 ' + enrichMissing + ' 条') : null,
-          h('span', { style: { ...C.meta, flex: '1 1 auto' } }, depthLocked
-            ? (isDerived
-                ? '本地派生榜：按候选池全量出' + ((data && data.rows) ? '（本次 ' + data.rows.length + ' 行）' : '') + '，不发请求 · 全局扫描/停止在概览'
-                : '条数由站点决定 · ' + depthNote + ' · 全局扫描/停止在概览')
-            : '只抓当前这一榜；全局扫描/停止在概览')),
+          /**
+           * ★ 0.6.2c（使用者 2026-10-29「有必要用这么长的文字说明吗，要考虑 ui 观感」）：
+           *   操作条这一行**不再分叉成长句** —— 所有榜统一一句话；「条数为什么不能改」
+           *   这种一次性信息放进 hover 提示（title），不占版面。
+           *   派生榜没有扫描按钮，那一句对它不成立 ⇒ 换成 7 个字的短标签。
+           */
+          isDerived
+            ? h('span', { style: C.meta, title: '本地派生榜：按候选池全量出' + ((data && data.rows) ? '（本次 ' + data.rows.length + ' 行）' : '') + '，不发请求' }, '本地派生 · 不发请求')
+            : h('span', { style: { ...C.meta, flex: '1 1 auto' }, title: depthLocked ? depthNote : '' }, '只抓当前这一榜；全局扫描/停止在概览')),
         enrichMissing ? h(Banner, { tone: 'warn', live: false },
           h('span', null, '补全未完成：还缺 ' + enrichMissing + ' 条字段'),
           h('span', { style: C.muted }, '（榜页没给收藏/字数，要进书页取；点上面的「补全缺失」重试，或等定时续跑）')) : null,

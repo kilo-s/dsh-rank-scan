@@ -342,8 +342,9 @@ test('修假设置：条数不可调的榜不再出现「本榜设置」（整�
   assert.ok(S.includes("const qidianFixed = /^qidian\\./.test(String(curBoard || ''))"), '要按 boardId 判定起点固定条数')
   // 整块控件只对可调的榜渲染
   assert.ok(S.includes("depthLocked ? null : h(Section, { title: '本榜设置'"), '条数不可调时整块不渲染')
-  // 原因不能丢：压到操作条那一行
-  assert.ok(S.includes("'条数由站点决定 · ' + depthNote"), '操作条要写清为什么不能改')
+  // 原因不能丢，但也**不许撑长操作条**：放进 hover 提示（title）
+  assert.ok(S.includes("title: depthLocked ? depthNote : ''"), '原因要挂在操作条那行的 title 上')
+  assert.ok(S.includes("'只抓当前这一榜；全局扫描/停止在概览'"), '操作条对所有榜统一一句话')
   assert.ok(S.includes('站点固定 20 条（移动端单页 20 条，站点分页接口在反爬后）'), '起点的原因要保留')
   // 可调的榜（番茄/刺猬猫）保留输入框与两个按钮
   assert.ok(S.includes("h('span', { style: C.muted }, '每榜取多少条')"), '可调的榜仍要有输入框')
@@ -409,7 +410,8 @@ test('0.6.2：条数只对真读 depth 的榜开放；派生榜说「全部 N �
   assert.ok(HOST.includes('canDepth: !depthLocked(boardId)'), 'catalog 必须用口径函数算 canDepth')
   // client：派生榜单独标、摘要换成「全部 N 条」
   assert.ok(S.includes('const derivedBoard = isDerived'), '派生榜复用 isDerived')
-  assert.ok(S.includes("'本地派生榜：按候选池全量出' + ((data && data.rows) ? '（本次 ' + data.rows.length + ' 行）' : '')"), '派生榜要在操作条说明「按候选池全量出（本次 N 行）」')
+  assert.ok(S.includes("'本地派生 · 不发请求'"), '派生榜给 7 字短标签')
+  assert.ok(S.includes("title: '本地派生榜：按候选池全量出' + ((data && data.rows) ? '（本次 ' + data.rows.length + ' 行）' : '') + '，不发请求'"), '完整说明放 hover 提示')
   assert.ok(S.includes('const depthLocked = qidianFixed || derivedBoard || info.can === false'), '锁定条件要含派生榜与 canDepth:false')
   // 条数不可调时不再给「保存 / 保存并扫描」；扫描入口在操作条，派生榜连它都不给
   // 条数不可调 ⇒ 整块「本榜设置」都不出现，「保存条数」自然也没有
