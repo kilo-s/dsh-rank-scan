@@ -338,15 +338,16 @@ test('设置 · 抓取范围：一站一行，「已选 x / y」+「⋯」菜单
   assert.ok(!/h\('button', \{ className: 'rs-btn is-ghost', onClick: function \(\) \{ setAll\(/.test(S), '全选/不选不许再平铺成按钮')
 })
 
-test('修假设置：起点榜条数输入框置灰，并说明「站点固定 20 条」', () => {
+test('修假设置：条数不可调的榜不再出现「本榜设置」（整块移除，原因压到操作条一行）', () => {
   assert.ok(S.includes("const qidianFixed = /^qidian\\./.test(String(curBoard || ''))"), '要按 boardId 判定起点固定条数')
-  const i = S.indexOf("每榜取多少条")
-  assert.ok(i > 0, '找不到本榜设置的输入行')
-  const body = S.slice(i, i + 1100)
-  assert.ok(body.includes('disabled: depthLocked || busy'), '条数输入框必须置灰')
-  assert.ok(body.includes("'条 · ' + depthNote"), '置灰时要写清原因（不能只留一个灰框）')
-  assert.ok(S.includes('站点固定 20 条（移动端单页 20 条，站点分页接口在反爬后）'), '要有「站点固定 20 条」提示')
-  assert.ok(body.includes("disabled: depthLocked || busy"), '保存按钮同样置灰（改了也不生效）')
+  // 整块控件只对可调的榜渲染
+  assert.ok(S.includes("depthLocked ? null : h(Section, { title: '本榜设置'"), '条数不可调时整块不渲染')
+  // 原因不能丢：压到操作条那一行
+  assert.ok(S.includes("'条数由站点决定 · ' + depthNote"), '操作条要写清为什么不能改')
+  assert.ok(S.includes('站点固定 20 条（移动端单页 20 条，站点分页接口在反爬后）'), '起点的原因要保留')
+  // 可调的榜（番茄/刺猬猫）保留输入框与两个按钮
+  assert.ok(S.includes("h('span', { style: C.muted }, '每榜取多少条')"), '可调的榜仍要有输入框')
+  assert.ok(S.includes("}, '保存并扫描本榜')"), '可调的榜仍要有「保存并扫描本榜」')
 })
 
 test('0.6 修正：三江那列是 Unix 秒时间戳 ⇒ 显示成 MM-DD HH:mm，绝不放裸数字', () => {
@@ -408,11 +409,12 @@ test('0.6.2：条数只对真读 depth 的榜开放；派生榜说「全部 N �
   assert.ok(HOST.includes('canDepth: !depthLocked(boardId)'), 'catalog 必须用口径函数算 canDepth')
   // client：派生榜单独标、摘要换成「全部 N 条」
   assert.ok(S.includes('const derivedBoard = isDerived'), '派生榜复用 isDerived')
-  assert.ok(S.includes("? '全部 ' + ((data && data.rows) ? data.rows.length : 0) + ' 条（本地派生榜不设条数）'"), '派生榜摘要要写「全部 N 条」')
+  assert.ok(S.includes("'本地派生榜：按候选池全量出' + ((data && data.rows) ? '（本次 ' + data.rows.length + ' 行）' : '')"), '派生榜要在操作条说明「按候选池全量出（本次 N 行）」')
   assert.ok(S.includes('const depthLocked = qidianFixed || derivedBoard || info.can === false'), '锁定条件要含派生榜与 canDepth:false')
   // 条数不可调时不再给「保存 / 保存并扫描」；扫描入口在操作条，派生榜连它都不给
-  assert.ok(S.includes("depthLocked ? null : h('button', { className: 'rs-btn', disabled: busy, onClick: function () { saveDepth(false) }"), '锁定时不给「保存条数」')
+  // 条数不可调 ⇒ 整块「本榜设置」都不出现，「保存条数」自然也没有
+  assert.ok(S.includes("depthLocked ? null : h(Section, { title: '本榜设置'"), '锁定时整块不渲染（含保存条数）')
   assert.ok(S.includes("isDerived ? null : h('button', {"), '派生榜不给「扫描本榜」（点了只会拿到警告）')
   // 输入框置灰 + 占位「全部」
-  assert.ok(S.includes("placeholder: derivedBoard ? '全部' : String(fixedDepth != null ? fixedDepth : info.max)"), '派生榜输入框占位「全部」')
+  assert.ok(!S.includes('fixedDepth'), '旧的 fixedDepth 分支应已清掉（起点走 depthLocked 分支）')
 })
