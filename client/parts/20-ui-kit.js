@@ -440,7 +440,6 @@
       days: 3, author: 4, fans: 4,
       cat: 5, score: 5,
       subCat: 6, settledDays: 6,
-      updated: 7,
     }
     /** 优先级数字越大越先被丢；7 天增量的 daily0..6 排最后 */
     const colPrio = function (c) {
@@ -455,7 +454,6 @@
     const colEst = function (c) {
       const k = String((c && c.key) || '')
       if (k === 'title') return 200
-      if (k === 'updated') return 124
       if (k === 'rank') return 36
       if (k === 'delta') return 50
       if (/^daily\d+$/.test(k)) return 46

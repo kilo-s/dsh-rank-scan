@@ -457,12 +457,12 @@
        *   右半张桌子全空，被删掉的指标也没有别处可看。窄的时候改成**卡片行**：
        *   第一行 名次 · 书名 · 作者 · 星标；第二行把这一榜要看的指标做成 chip（放不下自动换行）。
        */
-      const CHIP_SKIP = { title: 1, rank: 1, author: 1, cat: 1, subCat: 1, updated: 1, days: 1 }
+      const CHIP_SKIP = { title: 1, rank: 1, author: 1, cat: 1, subCat: 1, days: 1 }
       /**
        * 0.6 收尾：卡片第二行的中点串除了「按列序前 6 个」，还要**保证新补的四列在**里
        *   （它们在列序里靠后，光靠 slice(0,6) 会被切掉）；空值仍由渲染处跳过。
        */
-      const CHIP_ALWAYS = { shouding: 1, firstDay: 1, firstV: 1, update: 1 }
+      const CHIP_ALWAYS = { shouding: 1, firstDay: 1, firstV: 1 }
       const chipCols = (function () {
         const all = ((data && data.columns) || []).filter(function (c) { return !CHIP_SKIP[c.key] })
         const head = all.slice(0, 6)
@@ -476,7 +476,7 @@
        *   增量只能靠拉宽面板看）。这里算出「当前视图没显示的列」，在行详情里用**同一套 cell 渲染器**
        *   补全 —— 不截断真实字段，也不改现有列宽/收起策略。
        */
-      const SUMMARY_COLS = { title: 1, rank: 1, author: 1, words: 1, updated: 1 }
+      const SUMMARY_COLS = { title: 1, rank: 1, author: 1, words: 1 }
       const shownColKeys = (function () {
         const m = {}
         if (cards) {
@@ -511,10 +511,8 @@
         return h('div', { style: { ...C.detail, marginTop: '4px' } },
           h('div', { style: { fontWeight: 600 } }, dash(r.title)),
           h('div', { style: C.muted }, '作者 ' + dash(r.author) + ' · 名次 ' + dash(r.rank) + ' · 字数 ' + fmtWords(ex.wordsText || ex.wordsCnt || ex.wordNumber || ex.words)),
-          // 「更新」只有番茄榜单页给（lastChapterUpdateTime）；没这个字段的榜整行不渲染，不显示「更新 —」
-          ex.lastChapterUpdateTime != null && Number(ex.lastChapterUpdateTime) > 0
-            ? h('div', { style: C.muted }, '更新 ' + fmtTime(ex.lastChapterUpdateTime))
-            : null,
+          // ★ 0.6.1（使用者 2026-10-29「统一去掉」）：详情卡也不再显示「更新 …」——
+          //   它和榜单列的「更新时间」是同一个字段（番茄 `lastChapterUpdateTime`），留着就还是不一致。
           // 简介：只有真有 desc 的行才渲染（没有就整块不出现，不显示「—」）
           h(BoardDesc, { text: ex.desc }),
           // 被当前宽度收起的列：在这里逐条列出（label + 与表格完全相同的渲染）

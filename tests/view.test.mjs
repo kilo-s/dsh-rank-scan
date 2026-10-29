@@ -49,8 +49,8 @@ test('列随榜：刺猬猫带收藏/字数（榜单页无值，靠书页补全�
   const cw = columnsFor(boardMeta('ciweimao.no-vip-click.week')).map((c) => c.key)
   // 榜单页本身没有数值字段 ⇒ 收藏/字数列留给「补全本榜」填（无历史 ⇒ 无在榜天数列）
   // 列顺序统一（2026-10-15 使用者）：全站「字数 → 收藏」
-  // ★ 0.6 收尾：新增「最近更新」列（网站页给的 extra.update），列序统一为「最近更新 → 字数 → 收藏」
-  assert.deepEqual(cw, ['rank', 'delta', 'title', 'author', 'update', 'words', 'collect'], '刺猬猫核心列 + 最近更新 + 字数/收藏（字数在前）')
+  // ★ 0.6.1（使用者 2026-10-29）：全站统一去掉「最近更新 / 更新时间」列 ⇒ 刺猬猫回到四列 + 字数/收藏
+  assert.deepEqual(cw, ['rank', 'delta', 'title', 'author', 'words', 'collect'], '刺猬猫核心列 + 字数/收藏（字数在前）')
   const sc = columnsFor(boardMeta('sfacg.new.click')).map((c) => c.key)
   assert.ok(sc.includes('score') && sc.includes('words') && sc.includes('collect'))
   // 2026-10-15 使用者：首页榜没有作者，但书页 <title> 里有 ⇒ 补全后能填上，列要给
@@ -319,9 +319,10 @@ test('0.6 收尾补列：三江有首订/首日增量，首订榜有首V，刺�
   const sdKeys = sd.map((c) => c.key)
   assert.ok(sdKeys.includes('firstV'), '首订榜要有「首V」列（数据在 extra.firstV）')
   assert.match(sd.filter((c) => c.key === 'firstV')[0].note || '', /首V时刻/, '列说明要写清来源')
-  for (const id of ['ciweimao.no-vip-click.week', 'ciweimao.yp_new.week']) {
-    const cw = columnsFor(boardMeta(id))
-    assert.ok(cw.map((c) => c.key).includes('update'), id + ' 要有「最近更新」列')
+  // ★ 0.6.1：两站统一不出「最近更新 / 更新时间」
+  for (const id of ['ciweimao.no-vip-click.week', 'ciweimao.yp_new.week', 'ciweimao.buy.latest', 'fanqie.m.new.1141']) {
+    const keys = columnsFor(boardMeta(id)).map((c) => c.key)
+    assert.ok(!keys.includes('update'), id + ' 不许有「最近更新」列')
+    assert.ok(!keys.includes('updated'), id + ' 不许有「更新时间」列')
   }
-  assert.ok(!columnsFor(boardMeta('qidiantu.sanjiang')).map((c) => c.key).includes('update'), '三江不该有「最近更新」')
 })

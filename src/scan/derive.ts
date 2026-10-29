@@ -54,6 +54,17 @@ export function weekStart(date: string): string {
   return fmt(d.getTime())
 }
 
+/**
+ * 挑「算池子的日期」：从新到旧第一个 **probe 说有数据** 的日期。
+ * ★ 0.6.1（2026-10-29）：派生榜不能直接拿全局最新数据日 —— 今天目录可能只抓到别的站
+ *   （实测 2026-10-29 目录里只有起点的 3 个榜，番茄一条都没有），池子会空 ⇒ 整榜 0 行。
+ */
+export function poolDateOf(dates: string[], probe: (d: string) => boolean): string | null {
+  const desc = dates.slice().sort().reverse()
+  for (const d of desc) if (probe(d)) return d
+  return null
+}
+
 export function deriveFanqieViews(
   read: SnapshotReader,
   opts: { date: string; poolBoards: string[]; dataDates: string[] },
