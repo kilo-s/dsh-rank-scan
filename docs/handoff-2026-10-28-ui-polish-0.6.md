@@ -1,13 +1,13 @@
 # 交接：0.6.0 视觉精修整批（已完成）
 
 - 日期：2026-10-28
-- 分支：`ui/polish-0.6`（从 main v0.5.2 = 3f32906 拉出），**未合并、未打 tag**
+- 分支：`ui/polish-0.6`（从 main v0.5.2 = 3f32906 拉出），**已合并入 main，已发布 v0.6.0 / v0.6.1 / v0.6.2（当前 main = 4f05f6a，tag v0.6.2）**
 - 范围依据：[plan-0.6.0-polish.md](plan-0.6.0-polish.md)（唯一权威）
 - 版本：package.json / lock / README 已改 0.6.0；CHANGELOG 已按 A–D 分组写入
 
 ## 一句话现状
 
-A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipLive 100 pass / 0 fail，截图矩阵 15 张已拍齐。等使用者决定是否合并/发版。
+A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipLive 100 pass / 0 fail，截图矩阵 15 张已拍齐。**已合并入 main，v0.6.0 / v0.6.1 / v0.6.2 均已发布（当前 main = 4f05f6a，tag v0.6.2）。**
 
 ## 提交
 
@@ -164,7 +164,7 @@ A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipL
 
 - 现场实测（接口直连）：修前 `rows=0`（note 仍说「已结算 4/7 天，有数据的日期含 10-29」）；修后 **rows=240**、`dataDate=2026-10-28`、note 变成「番茄最新快照是 2026-10-28（2026-10-29 还没有番茄快照），本榜按 2026-10-28 算；本期…已结算 3/7 天（有数据的日期：10-26、10-27、10-28）」。耗时 907 ms（冷）/ 59 ms（热）。
 - 刺猬猫 480 卡不再被「最近更新」长文本挤满：`变化 ↑1 · 字数 11.01万字 · 收藏 11,371`。
-- 版本号：`package.json` / `package-lock.json` = **0.6.1**。**README 里的「钉版本」示例仍是 v0.6.0 / 0.6.0**，等真正打 tag 那一刻再改成 0.6.1（避免指向不存在的 tag）。
+- 版本号：`package.json` / `package-lock.json` = **0.6.1**。**README 里的「钉版本」示例仍是 v0.6.0 / 0.6.0**，等真正打 tag 那一刻再改成 0.6.1（避免指向不存在的 tag）。已在 v0.6.2 改正（README.md:21/40）。
 
 ### 修改过的旧断言（0.6.1 这一轮）
 
@@ -244,6 +244,6 @@ A–E 全部按方案落地，离线闸门 442 pass / 0 fail，acceptance -SkipL
 
 ## 下一步（等使用者决定，我不自行推进）
 
-1. 是否需要合并 `ui/polish-0.6` → main 并打 `v0.6.0`（本会话按纪律**没有**合并、没有打 tag、没有推送）。
-2. 合并后由使用者在本地跑 `dsh plugin add github:kilo-s/dsh-rank-scan#v0.6.0` 做真实安装验证。
+1. ~~是否需要合并 `ui/polish-0.6` → main 并打 `v0.6.0`~~ —— **已完成**：已合并入 main；tag v0.6.0 / v0.6.1 / v0.6.2 均已发布（当前 main = 4f05f6a，tag v0.6.2）。
+2. ~~合并后跑 `dsh plugin add github:kilo-s/dsh-rank-scan#v0.6.0` 做真实安装验证~~ —— 改为用 **`#v0.6.2`**：`dsh plugin add github:kilo-s/dsh-rank-scan#v0.6.2`。
 3. 若截图要贴到公开面，需先推分支（现在 raw 链接还取不到）。
