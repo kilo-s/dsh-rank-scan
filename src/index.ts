@@ -55,7 +55,7 @@ import {
   writeReport,
   writeSlim,
 } from './scan/files.js'
-import { DEFAULT_FALLBACK_TIME, DEFAULT_SITE_TIMES, hmOf, planSiteRuns, SITE_ORDER, siteOfBoard, timeReached, validTime } from './scan/schedule.js'
+import { DEFAULT_FALLBACK_TIME, DEFAULT_SITE_TIMES, hmOf, planSiteRuns, RETRY_COOLDOWN_MIN, SITE_ORDER, siteOfBoard, timeReached, validTime } from './scan/schedule.js'
 import { cacheStats, cachedBook, clearCache, putCachedBooks } from './scan/qidian-cache.js'
 import { assignCachedStats, cacheStats as bookCacheStats, cachedEntry, clearCache as clearBookCache, putEntries } from './scan/book-cache.js'
 
@@ -98,6 +98,13 @@ export const inject: string[] = ['timer', 'webServer']
 
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
+/**
+ * ★ 2026-10-30（review 修）：**配置架构版本号只在这里定义一次**。
+ *   以前迁移写 7、recordRun 仍写 6 ⇒ 每轮定时跑完都把版本降回 6，下次启动又跑一遍 v7 迁移；
+ *   使用者若刻意把菠萝包调回 09:30，会被再改掉一次 —— 与「调过的不动」自相矛盾。
+ */
+const TIMER_SCHEMA_V = 7
+
 function defaultState() {
   return {
     scanTime: '01:30',
@@ -111,6 +118,12 @@ function defaultState() {
     siteLastRun: {} as Record<string, string>,
   /** ★ 2026-10-17：每站**定时**那次跑成功的时刻（ISO）。siteLastRun 只有日期，面板要显示「定时 08:30」 */
   siteLastTimerAt: {} as Record<string, string>,
+  /**
+   * ★ 2026-10-30：每站**最近一次尝试**的时刻（ISO），**成功与失败都记**。
+   *   失败冷却（schedule.ts 的 RETRY_COOLDOWN_MIN）靠它算：siteLastTimerAt 只在成功时写，
+   *   整站抛错/宿主机刚醒时它不落地 ⇒ 会白等兜底 22:30。
+   */
+  siteLastAttemptAt: {} as Record<string, string>,
     /** 每个榜最近一次扫描（含手动）：面板可显示「这个榜上次什么时候抓的」 */
     boardLastScan: {} as Record<string, { date: string; at: string; outcome: string }>,
     /**
@@ -458,6 +471,8 @@ export function apply(ctx: PluginCtx, config: any): void {
           previousRows: pd ? (pd.rows || []) : null,
           currentPeriodKey: periodKeyFromRows(nx.rows || []),
           previousPeriodKey: pd ? periodKeyFromRows(pd.rows || []) : null,
+          // ★ 2026-10-30：跨日版本复用（菠萝包旧代隔天复用回来时，只跟上一版比会漏）
+          history: recentTrustedVersions(b.boardId, rec.dataDate, 7),
         })
         /**
          * ★ 2026-10-25（换期 ≠ 换榜/降级）：换榜判据必须先问「是不是同一期」。
@@ -900,6 +915,30 @@ export function apply(ctx: PluginCtx, config: any): void {
     return out
   }
 
+  /**
+   * ★ 2026-10-30：每站**今天最后一次尝试**距今多少分钟（失败冷却用：冷却到就当天补跑，不必等 22:30）。
+   * 取三者里最晚的一个：siteLastAttemptAt（**成功/失败都记**，2026-10-30 新增）→ siteLastTimerAt（只在成功时写）→
+   * boardLastScan.at（每次尝试都写，outcome = 五态）。所以「整站抛错、榜页还没落盘」这类失败也算一次尝试，
+   * 同时不会把「早上那次手动扫描」误当成「刚刚失败」⇒ 冷却既不会被绕过，也不会把失败站漏掉。
+   */
+  function minutesSinceAttemptAll(sites: string[], today: string): Record<string, number> {
+    const st: any = readState()
+    const bls: any = st.boardLastScan || {}
+    const now = clock.now().getTime()
+    const out: Record<string, number> = {}
+    for (const s of sites) {
+      // ★ 2026-10-30：优先用「最近一次尝试」的时刻（成功/失败都记），缺失才回落到「定时成功时刻」
+      let at = String((((st as any).siteLastAttemptAt || {}) as Record<string, string>)[s] || (((st as any).siteLastTimerAt || {}) as Record<string, string>)[s] || '')
+      for (const b of ((st.boards as string[]) || []).filter((x: string) => siteOfBoard(x) === s)) {
+        const hit = bls[b]
+        if (hit && hit.date === today && String(hit.at) > at) at = String(hit.at)
+      }
+      const ms = at ? now - new Date(at).getTime() : NaN
+      if (Number.isFinite(ms) && ms >= 0) out[s] = Math.round(ms / 60000)
+    }
+    return out
+  }
+
   /** 站 id → 中文名（面板/日志用） */
   const SITE_CN: Record<string, string> = { qidian: '起点', qidiantu: '起点图', ciweimao: '刺猬猫', sfacg: '菠萝包', fanqie: '番茄' }
 
@@ -918,6 +957,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       failed: sitesFailedToday(sites, localDate(new Date()), st.siteTimes || DEFAULT_SITE_TIMES),
       retried: st.siteRetry || {},
       stale: SITE_ORDER.filter((s) => Object.keys(st.staleFlag || {}).some((b) => siteOfBoard(b) === s && st.staleFlag[b]?.date === localDate(new Date()))),
+      minutesSinceAttempt: minutesSinceAttemptAll(sites, localDate(new Date())),
     })
     /**
      * ★ 2026-10-16（疑问「关闭状态为什么显示今天已跑」）：把「这个站今天抓过没、谁抓的、几点抓的」
@@ -982,6 +1022,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       failed: sitesFailedToday(sites, today, (st as any).siteTimes || DEFAULT_SITE_TIMES),
       stale: staleSites,
       retried: (st as any).siteRetry || {},
+      minutesSinceAttempt: minutesSinceAttemptAll(sites, today),
     })
     const target = plan.due[0] || plan.fallback[0]
     if (!target) {
@@ -1026,7 +1067,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         st2.lastTimerState = state
         st2.lastTimerNote = note.slice(0, 300)
         // ★ 审计-2/39：迁移判据是 !== 6（见下方 v6 迁移），这里原来写回 3 ⇒ 每次启动都重跑一遍迁移
-        ;(st2 as any).timerSchemaV = 6
+        ;(st2 as any).timerSchemaV = Math.max(TIMER_SCHEMA_V, Number((st2 as any).timerSchemaV) || 0)
         // ★ 按站分时：记「这个站今天跑过了」，下一个 tick 才会轮到别的站
         const slr: any = { ...((st2 as any).siteLastRun || {}) }
         slr[target] = today
@@ -1035,6 +1076,10 @@ export function apply(ctx: PluginCtx, config: any): void {
          * ★ 2026-10-17：分开记「定时那次成功的时刻」与「最近一次抓取（含手动）」——
          *   只有日期的话，面板上「今天已抓（手动 11:43）」会让人以为计划 08:30 没跑。
          */
+        // ★ 2026-10-30：**每次都记尝试时刻**（成功/失败都记）—— 失败冷却靠它算
+        const slat: any = { ...((st2 as any).siteLastAttemptAt || {}) }
+        slat[target] = startedAt
+        ;(st2 as any).siteLastAttemptAt = slat
         if (state === 'ok') {
           const sla: any = { ...((st2 as any).siteLastTimerAt || {}) }
           sla[target] = startedAt
@@ -1088,7 +1133,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       // v6（2026-10-16）：补 staleFlag/siteRetry/installedAt/按站分时（**不翻开关**）
       const cur1: any = readJson(statePath, {})
       // v6（2026-10-16）：补 staleFlag/siteRetry/installedAt（老配置不视作「安装当天」、不翻开关）
-      if (cur1 && cur1.timerSchemaV !== 6) {
+      if (cur1 && !(Number(cur1.timerSchemaV) >= 6)) {
         const st1: any = readState()
         st1.siteTimes = { ...DEFAULT_SITE_TIMES, ...(st1.siteTimes || {}) }
         st1.fallbackTime = st1.fallbackTime || DEFAULT_FALLBACK_TIME
@@ -1107,6 +1152,26 @@ export function apply(ctx: PluginCtx, config: any): void {
         st1.timerSchemaV = 6
         writeState(st1)
         timerLog('v4 迁移：按站分时 = ' + JSON.stringify(st1.siteTimes) + '（兜底 ' + st1.fallbackTime + '；installedAt=' + st1.installedAt + '）')
+      }
+      /**
+       * v7（2026-10-30）：**按站分时改点** —— 菠萝包 09:30→14:30（首页整代对象，09:30 踩在换代的未测窗口里）、
+       * 起点图 12:40→21:30（首订数值要到 首V+24h 才收盘，12:40 抓有 ~37% 未收盘）。
+       * 只改**仍是旧默认值**的站：使用者自己调过的时刻一律不动。
+       */
+      const cur7: any = readJson(statePath, {})
+      if (cur7 && !(Number(cur7.timerSchemaV) >= TIMER_SCHEMA_V)) {
+        const st7: any = readState()
+        const OLD: Record<string, string> = { sfacg: '09:30', qidiantu: '12:40' }
+        const defs = DEFAULT_SITE_TIMES as Record<string, string>
+        const times: Record<string, string> = { ...defs, ...(st7.siteTimes || {}) }
+        const moved: string[] = []
+        for (const s of Object.keys(OLD)) {
+          if (times[s] === OLD[s]) { times[s] = defs[s]; moved.push(SITE_CN[s] || s) }
+        }
+        st7.siteTimes = times
+        st7.timerSchemaV = TIMER_SCHEMA_V
+        writeState(st7)
+        timerLog('v7 迁移：按站分时改点（只改仍是旧默认值的站）' + (moved.length ? '：' + moved.join('、') : '（无需改）') + ' ⇒ ' + JSON.stringify(times))
       }
     } catch { /* 迁移失败不该挡住接线 */ }
     timerApi = t
@@ -1145,6 +1210,25 @@ export function apply(ctx: PluginCtx, config: any): void {
   function isUntrusted(date: string, boardId: string): boolean {
     try { return new FileStore(root).isUntrusted(date, boardId) } catch { return false }
   }
+  /**
+   * ★ 2026-10-30：该榜最近 N 次**可信**快照（新→旧、不含当天），供「跨日版本复用」判据用。
+   * N 按快照次数而不是日历天：抓失败/关机造成的缺日不该白占窗口。
+   */
+  function recentTrustedVersions(boardId: string, date: string, n = 7): { date: string; rows: any[]; periodKey: string | null }[] {
+    const st = new FileStore(root)
+    const out: { date: string; rows: any[]; periodKey: string | null }[] = []
+    const ds = listDataDates(root)
+    for (let k = ds.length - 1; k >= 0 && out.length < n; k--) {
+      const d = ds[k]
+      if (d >= date) continue
+      if (st.isUntrusted(d, boardId)) continue
+      const s: any = st.readSnapshot(d, boardId)
+      if (!s || !(s.rows || []).length) continue
+      out.push({ date: d, rows: s.rows, periodKey: periodKeyFromRows(s.rows) })
+    }
+    return out
+  }
+
   /**
    * ★ 工作包 A：**该榜自己的上一次可信成功数据日**（跨过缺日、跨过被拒快照）。
    *   旧口径只看「全局上一数据日期」：该榜那天没跑成功就判「首次采集」⇒ 变化整列空、
@@ -3292,7 +3376,7 @@ export function apply(ctx: PluginCtx, config: any): void {
               if (!validTime(body.fallbackTime)) return send(400, { error: '兜底时间格式应为 HH:mm' })
               stT.fallbackTime = body.fallbackTime
             }
-            stT.timerSchemaV = 6
+            stT.timerSchemaV = Math.max(TIMER_SCHEMA_V, Number(stT.timerSchemaV) || 0)
             writeState(stT)
             const on = stT.timerEnabled === true
             // ★ 票 25：开关变化立刻接/断，不用等重启
@@ -3301,7 +3385,7 @@ export function apply(ctx: PluginCtx, config: any): void {
               ok: true, enabled: on, scanTime: stT.scanTime, siteTimes: stT.siteTimes, fallbackTime: stT.fallbackTime,
               siteLastRun: stT.siteLastRun || {}, siteLastTimerAt: (stT as any).siteLastTimerAt || {}, plan: timerPlanNow(), armed,
               note: (on
-                ? '定时已开启（按站分时）：' + SITE_ORDER.map((s) => (SITE_CN[s] || s) + ' ' + ((stT.siteTimes || {})[s] || '—')).join('、') + '；当天没跑成的站到 ' + (stT.fallbackTime || DEFAULT_FALLBACK_TIME) + ' 补跑'
+                ? '定时已开启（按站分时）：' + SITE_ORDER.map((s) => (SITE_CN[s] || s) + ' ' + ((stT.siteTimes || {})[s] || '—')).join('、') + '；当天没跑成的站冷却 ' + RETRY_COOLDOWN_MIN + ' 分钟后补跑一次（最晚 ' + (stT.fallbackTime || DEFAULT_FALLBACK_TIME) + '）'
                 : '定时扫描已关闭（面板「立刻扫一次」仍可用）') + (on
                 ? (armed ? '；定时器已接线' : '；注意：宿主 timer 服务不可用，暂未接线')
                 : '；定时器已断开'),

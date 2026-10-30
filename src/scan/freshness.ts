@@ -64,6 +64,13 @@ export function contentSignature(rows: Row[] | null | undefined): string {
   }).join('|')
 }
 
+export interface HistoryEntry {
+  date: string
+  rows: Row[]
+  /** 真实期键（行里取得到就传） */
+  periodKey?: string | null
+}
+
 export interface FreshnessInput {
   boardId: string
   /** 当前数据日期 */
@@ -75,6 +82,12 @@ export interface FreshnessInput {
   /** 真实期键（行里取得到就传；取不到留空） */
   currentPeriodKey?: string | null
   previousPeriodKey?: string | null
+  /**
+   * ★ 2026-10-30：**最近若干次可信快照**（新→旧，调用方已排除当天与不可信日），用于「跨日版本复用」判据。
+   *   没有它就只能跟"上一次"比 —— 而菠萝包的旧代可能隔一天才被复用回来（本地实测 10-17↔10-18、
+   *   10-20↔10-22、10-24=10-25=10-26），只跟上一版比会漏。
+   */
+  history?: HistoryEntry[]
 }
 
 export interface FreshnessVerdict {
@@ -85,18 +98,67 @@ export interface FreshnessVerdict {
   identical: boolean
 }
 
-export function judgeFreshness(i: FreshnessInput): FreshnessVerdict {
-  const prev = i.previousRows
-  if (!prev || !prev.length || !(i.currentRows || []).length) {
-    return { verdict: 'ok', reason: null, samePeriod: false, identical: false }
+/**
+ * ★ 2026-10-30：**跨日版本复用**判据（对齐云端菠萝包 N=7 口径，但不误伤周榜/期榜）。
+ *
+ * 规则：与历史任一可信版本逐条全等，且那个版本属于**另一个周期**，才算"复用了旧版本"：
+ *   - 日更榜（无周期概念）⇒ 任何一天全等都算复用；
+ *   - 周榜 ⇒ 周键不同才算（同一周内不变是正常形态）；
+ *   - 期榜（三江/刺猬猫首订约）⇒ 期键不同才算（同批次不变是正常形态）。
+ * 为什么需要：菠萝包首页是站点自己生成的"整代"对象，会 A/B 副本交替复用（云端 09-24↔09-25 实测），
+ * 只跟"上一次有效快照"比会漏掉隔天复用回来的旧代。
+ */
+export function findReusedVersion(i: {
+  boardId: string
+  date: string
+  currentRows: Row[]
+  currentPeriodKey?: string | null
+  history?: HistoryEntry[]
+}): { date: string } | null {
+  const cur = i.currentRows || []
+  if (!cur.length || !i.history || !i.history.length) return null
+  const curSig = contentSignature(cur)
+  const cadence = cadenceOfBoard(i.boardId)
+  const curKey = periodKeyFor(cadence, i.date, i.currentPeriodKey)
+  for (const h of i.history) {
+    if (!h || !(h.rows || []).length) continue
+    if (contentSignature(h.rows) !== curSig) continue
+    if (cadence === 'daily') return { date: h.date }
+    const hKey = periodKeyFor(cadence, h.date, h.periodKey)
+    if (curKey && hKey && curKey !== hKey) return { date: h.date }
   }
-  const identical = contentSignature(i.currentRows) === contentSignature(prev)
+  return null
+}
+
+/** 期键推算：行里有真期键就用它；周榜回落本地周键；日更榜没有「期」这个概念 */
+function periodKeyFor(cadence: BoardCadence, date: string | null | undefined, given?: string | null): string | null {
+  if (given) return given
+  return cadence === 'weekly' && date ? weekKeyOf(date) : null
+}
+
+export function judgeFreshness(i: FreshnessInput): FreshnessVerdict {
+  const cur = i.currentRows || []
+  if (!cur.length) return { verdict: 'ok', reason: null, samePeriod: false, identical: false }
+  const prev = i.previousRows
+  /**
+   * ★ 2026-10-30（review 修两次，同一个洞）：**跨日复用必须先查，且与「有没有上一版」「与上一版是否相同」无关**。
+   *   ① 一看到 prev 为空就 ok ⇒ 首次采集/上一版缺失时判据整个不生效；
+   *   ② 只在「与上一版不同」时才查 ⇒ 10-24=10-25=10-26 那种「这一周用的其实是上周那版」会被
+   *      samePeriod 判成正常（正是要抓的假持平）。现在：先查复用，再回落到同一期/逐条相同的老判据。
+   */
+  const reuse = findReusedVersion({
+    boardId: i.boardId, date: i.date, currentRows: cur,
+    currentPeriodKey: i.currentPeriodKey, history: i.history,
+  })
+  if (reuse) return { verdict: 'suspected', reason: '复用了 ' + reuse.date + ' 的版本（跨期未刷新）', samePeriod: false, identical: false }
+  if (!prev || !prev.length) return { verdict: 'ok', reason: null, samePeriod: false, identical: false }
+  const identical = contentSignature(cur) === contentSignature(prev)
   if (!identical) return { verdict: 'ok', reason: null, samePeriod: false, identical: false }
   const cadence = cadenceOfBoard(i.boardId)
   let samePeriod = false
   if (cadence !== 'daily') {
-    const curKey = i.currentPeriodKey || (cadence === 'weekly' && i.date ? weekKeyOf(i.date) : null)
-    const prevKey = i.previousPeriodKey || (cadence === 'weekly' && i.prevDate ? weekKeyOf(i.prevDate) : null)
+    const curKey = periodKeyFor(cadence, i.date, i.currentPeriodKey)
+    const prevKey = periodKeyFor(cadence, i.prevDate, i.previousPeriodKey)
     samePeriod = !!curKey && !!prevKey && curKey === prevKey
   }
   if (samePeriod) return { verdict: 'ok', reason: '同一期未变化（正常）', samePeriod: true, identical: true }
