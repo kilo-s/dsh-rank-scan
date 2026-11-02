@@ -105,6 +105,16 @@ const pad2 = (n: number) => String(n).padStart(2, '0')
  */
 const TIMER_SCHEMA_V = 7
 
+/**
+ * ★ 2026-11-02（审查 M1）：boardId 会直入快照路径拼接
+ *   （store.readSnapshot/writeSnapshot 的 join(root, dataDate, boardId + '.json')），
+ *   而它来自 HTTP query/body 与持久化配置 —— 未校验时 '../../x' 可读出数据根之外的任意 .json，
+ *   /select 还会把恶意 boardId 持久化（之后每次 /overview 自动触发一次穿越读）。
+ *   只放行「字母数字开头 + 字母数字/./_/-」⇒ 无路径分隔符、无 '..' 段。store 层另有兜底。
+ */
+const BOARD_ID_SAFE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+const isValidBoardId = (b: string) => BOARD_ID_SAFE.test(b)
+
 function defaultState() {
   return {
     scanTime: '01:30',
@@ -3318,7 +3328,7 @@ export function apply(ctx: PluginCtx, config: any): void {
           if (p === '/api/rank-scan/overview') return send(200, await panelOverview())
           if (p === '/api/rank-scan/board') {
             const b = q.get('boardId')
-            if (!b) return send(400, { error: 'boardId 必填' })
+            if (!b || !isValidBoardId(b)) return send(400, { error: 'boardId 必填且只能是字母、数字、点、下划线、连字符' })
             return send(200, await panelBoard(b, q.get('date') || undefined, q.get('sort') || undefined, Number(q.get('limit') || 0)))
           }
           if (p === '/api/rank-scan/changes') return send(200, await panelChanges(q.get('date') || undefined))
@@ -3327,7 +3337,9 @@ export function apply(ctx: PluginCtx, config: any): void {
             const body = await readBody(req)
             const st3 = readState()
             if (Array.isArray(body.captures)) {
-              const posted = body.captures.map(String)
+              const posted: string[] = body.captures.map(String)
+              // ★ 审查 M1：boardId 直入快照路径 ⇒ 非法字符（路径分隔符/..）直接拒，不持久化
+              if (posted.some((b) => !isValidBoardId(b))) return send(400, { error: 'boardId 含非法字符（只允许字母、数字、点、下划线、连字符）' })
               // 面板只能管清单内的榜；清单外的既有抓取项原样保留（防止「保存丢榜」）
               const known = new Set(catalog().boards.map((b: any) => b.boardId))
               const keep = (st3.boards as string[]).filter((b) => !known.has(b))
@@ -3335,7 +3347,11 @@ export function apply(ctx: PluginCtx, config: any): void {
               // 口径：抓了就要显示 ⇒ 显示集跟随抓取集（派生榜随番茄开关自动进出）
               st3.display = (st3.boards as string[]).filter((b) => !b.startsWith('fanqie.derived.'))
             }
-            if (Array.isArray(body.displays)) st3.display = body.displays.map(String)
+            if (Array.isArray(body.displays)) {
+              const disp: string[] = body.displays.map(String)
+              if (disp.some((b) => !isValidBoardId(b))) return send(400, { error: 'boardId 含非法字符（只允许字母、数字、点、下划线、连字符）' })
+              st3.display = disp
+            }
             if (typeof body.autoEnrich === 'boolean') st3.autoEnrich = body.autoEnrich
             if (typeof body.qidianEnrich === 'boolean') st3.qidianEnrich = body.qidianEnrich
         /**
@@ -3400,7 +3416,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             const body = await readBody(req)
             const boardId = String(body.boardId || '')
             const n = Math.max(1, Math.min(100, Number(body.depth) || 10))
-            if (!boardId) return send(400, { error: 'boardId 必填' })
+            if (!boardId || !isValidBoardId(boardId)) return send(400, { error: 'boardId 必填且只能是字母、数字、点、下划线、连字符' })
             const st2 = readState()
             st2.depths = { ...(st2.depths || {}), [boardId]: n }
             writeState(st2)
@@ -3450,7 +3466,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             //   否则 date='../../x' 能把快照写到数据根之外。
             let date: string
             try { date = assertDataDate(body.date) } catch (e) { return send(400, { error: e instanceof Error ? e.message : String(e) }) }
-            if (!boardId) return send(400, { error: 'boardId 必填' })
+            if (!boardId || !isValidBoardId(boardId)) return send(400, { error: 'boardId 必填且只能是字母、数字、点、下划线、连字符' })
             const stDay = readState()
             const site: any = serveSiteFor([boardId], stDay.depths || {})[0]
             if (!site) return send(400, { error: '没有这个站的适配器：' + boardId })
@@ -3494,6 +3510,7 @@ export function apply(ctx: PluginCtx, config: any): void {
               return send(200, { ok: true, dropped: date, gone: !existsSync(dir) })
             }
             const b = String(body.boardId || 'qidiantu.shouding')
+            if (!isValidBoardId(b)) return send(400, { error: 'boardId 含非法字符（只允许字母、数字、点、下划线、连字符）' })
             const st4 = readState()
             const site: any = serveSiteFor([b], st4.depths || {})[0]
             if (!site) return send(400, { error: '没有这个站的适配器：' + b })
@@ -3545,7 +3562,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             const forceQ = q.get('force') === '1' || q.get('force') === 'true'
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })
             const b = q.get('boardId')
-            if (!b) return send(400, { error: 'boardId 必填' })
+            if (!b || !isValidBoardId(b)) return send(400, { error: 'boardId 必填且只能是字母、数字、点、下划线、连字符' })
             const resE: any = await enrichBoard(b, forceQ)
             /**
              * ★ 2026-10-17：手动「补全本榜」补齐后要**把待办销掉** —— 以前只有后台工人那一圈会清，
@@ -3577,6 +3594,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })
             const forceQ = q.get('force') === '1' || q.get('force') === 'true'
             const bid = q.get('boardId')
+            if (bid && !isValidBoardId(bid)) return send(400, { error: 'boardId 含非法字符（只允许字母、数字、点、下划线、连字符）' })
             if (bid) return send(200, await qidianEnrichBoard(bid, forceQ))
             // 不带 boardId = 把抓取集里的起点榜逐个补（仍受每榜请求上限保护）
             const stQ = readState()
@@ -3697,6 +3715,8 @@ export function apply(ctx: PluginCtx, config: any): void {
             if (action === 'add') {
               let row = body.row || null
               let boardId = String(body.boardId || '')
+              // ★ 审查 M1：boardId 会用于 readSnapshot 路径拼接 ⇒ 先卡格式
+              if (boardId && !isValidBoardId(boardId)) return send(400, { error: 'boardId 含非法字符（只允许字母、数字、点、下划线、连字符）' })
               let dataDate = String(body.dataDate || '')
               /**
                * ★ 只给了 bookKey 的情况（「变化集」就是这么调用的）：去本地快照里把这本书找出来，
@@ -3856,7 +3876,12 @@ export function apply(ctx: PluginCtx, config: any): void {
           if (p === '/api/rank-scan/bookmark/open-folder') {
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })
             const body3 = await readBody(req)
-            const dir = String(body3.path || '').trim() || join(homedir(), 'Documents', 'rank-scan-export')
+            // ★ 2026-11-02（审查 M2）：与 export-file 同一道白名单 —— 只允许用户目录内的路径，
+            //   且**先校验再 existsSync**：UNC 路径（\\host\share）光 existsSync 就会发起 SMB 认证，
+            //   把本机 NTLM 哈希发给攻击者主机。
+            const dir = resolve(String(body3.path || '').trim() || join(homedir(), 'Documents', 'rank-scan-export'))
+            const relF = relative(resolve(homedir()), dir)
+            if (!relF || relF === '..' || relF.startsWith('..' + (process.platform === 'win32' ? '\\' : '/')) || isAbsolute(relF)) return send(400, { error: '只允许打开用户目录内的文件夹' })
             if (!existsSync(dir)) return send(400, { error: '目录还不存在：' + dir + '（先导出一次就会创建）' })
             const cmd = process.platform === 'win32' ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open'
             try {

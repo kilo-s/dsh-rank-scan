@@ -4,6 +4,12 @@ import type { ScanRecord, Snapshot } from './types.js'
 import type { LockInfo, ScanStore } from './run.js'
 import type { DayIndex, SnapshotStat } from './daily.js'
 
+/**
+ * ★ 2026-11-02（审查 M1）：boardId 的文件名合法口径（与 src/index.ts 路由层同一条正则）。
+ *   字母数字开头 + 字母数字/./_/- ⇒ 无路径分隔符、无 '..' 段，join 之后必在数据根之内。
+ */
+const BOARD_ID_SAFE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
 /** 内存 store：测试与干跑用 */
 export class MemoryStore implements ScanStore {
   snapshots = new Map<string, Snapshot>()
@@ -75,13 +81,18 @@ export class FileStore implements ScanStore {
   async setCancelFlag(v: boolean) {
     this.write(join(this.root, 'state', 'cancel.json'), { cancel: v, at: new Date().toISOString() })
   }
-  async writeSnapshot(s: Snapshot) { this.write(join(this.root, s.dataDate, s.boardId + '.json'), s) }
+  async writeSnapshot(s: Snapshot) {
+    // ★ 审查 M1 纵深防御：写路径必须 fail-loud（静默跳过会让「已落盘」变成假话）
+    if (!BOARD_ID_SAFE.test(s.boardId)) throw new Error('非法 boardId，拒绝写快照：' + JSON.stringify(String(s.boardId)).slice(0, 80))
+    this.write(join(this.root, s.dataDate, s.boardId + '.json'), s)
+  }
   async writeScan(r: ScanRecord) { this.write(join(this.root, r.dataDate, 'scan.json'), r) }
   /**
    * ★ 2026-10-17：快照文件的写入时刻（毫秒）。给面板「本榜抓取」兜底 ——
    *   老数据没有 BoardResult.capturedAt 时，用它代替全局扫描时刻，至少不会 20 个榜同一个值。
    */
   snapshotMtime(boardId: string, dataDate: string): number | null {
+    if (!BOARD_ID_SAFE.test(boardId)) return null
     try { return statSync(join(this.root, dataDate, boardId + '.json')).mtimeMs } catch { return null }
   }
   async readScan(dataDate: string) { return this.read<ScanRecord>(join(this.root, dataDate, 'scan.json')) }
@@ -117,7 +128,11 @@ export class FileStore implements ScanStore {
     j[k] = (j[k] || 0) + 1
     this.write(p, j)
   }
-  readSnapshot(dataDate: string, boardId: string) { return this.read<Snapshot>(join(this.root, dataDate, boardId + '.json')) }
+  readSnapshot(dataDate: string, boardId: string) {
+    // ★ 审查 M1 纵深防御：boardId 直入路径拼接，非法一律按「没有这份快照」处理
+    if (!BOARD_ID_SAFE.test(boardId)) return null
+    return this.read<Snapshot>(join(this.root, dataDate, boardId + '.json'))
+  }
   /**
    * ★ 工作包 A：逐榜·逐日状态索引。与 scan.json（批次记录）分开：
    *   一天 5 批扫描各写各的批次，但 day-index 只覆盖本批跑过的榜，其余榜保留。

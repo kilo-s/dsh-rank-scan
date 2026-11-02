@@ -56,6 +56,16 @@ test('★ 票 23 行为：同源闸只认同源页面；无头（curl/脚本）�
   assert.equal(mod.sameOriginOk({ origin: 'http://localhost:9999', host: H }).ok, false, '端口不同不算同源')
 })
 
+test('★ 审查 M3：DNS rebinding 必须拒（Host 非 loopback 一律拒，哪怕 Origin 与 Host 字符串相等）', async () => {
+  const mod = await import('../lib/scan/guard.js')
+  // rebinding 场景：攻击者域名解析到 127.0.0.1，浏览器发出的 Origin.host 与 Host 头都是攻击者域名
+  assert.equal(mod.sameOriginOk({ origin: 'http://rebind.evil.com:19387', host: 'rebind.evil.com:19387' }).ok, false, 'Origin==Host 但非 loopback ⇒ 必须拒')
+  assert.equal(mod.sameOriginOk({ referer: 'http://rebind.evil.com/x', host: 'rebind.evil.com:19387' }).ok, false, 'Referer 路径同理')
+  // 合法面板访问不受影响
+  assert.equal(mod.sameOriginOk({ origin: 'http://127.0.0.1:19387', host: 'localhost:19387' }).ok, true, 'loopback 别名仍互认')
+  assert.equal(mod.sameOriginOk({ origin: 'http://localhost:19387', host: 'localhost:19387' }).ok, true, 'localhost 同源仍放行')
+})
+
 test('★ 票 28：书签写盘不得再「先删后改名」（丢数据窗口）', () => {
   const src = readFileSync(join(ROOT, 'src', 'scan', 'bookmark.ts'), 'utf8')
   assert.ok(!/rmSync\(this\.file/.test(src), '书签写盘又回到先删后改名')
@@ -128,6 +138,29 @@ test('P0-2 日期：/day 与 /repair 都必须过 assertDataDate，drop 还须�
   assert.ok(uses >= 2, 'assertDataDate 要在 /day 与 /repair 两个入口各用一次，实际 ' + uses)
   assert.match(HOST, /relative\(resolve\(root\), dir\)\.startsWith\('\.\.'\)/, 'drop 路径缺「根包含」检查')
   assert.ok(!/const date = String\(body\.date \|\| ''\)/.test(HOST), '又有入口回到未校验的裸 date 了')
+})
+
+test('★ 审查 M1：boardId 全线路径安全 —— 路由层卡格式 + store 层兜底', () => {
+  const STORE = readFileSync(join(ROOT, 'src', 'scan', 'store.ts'), 'utf8')
+  // 路由层：helper 定义 + 至少 8 处使用（/board、/enrich、/select captures、/select displays、/depth、/day、/repair、/qidianEnrich、/bookmark）
+  assert.match(HOST, /const isValidBoardId = /, 'index.ts 缺 isValidBoardId helper')
+  const uses = (HOST.match(/isValidBoardId\(/g) || []).length
+  assert.ok(uses >= 9, 'isValidBoardId 要覆盖所有收 boardId 的路由，实际 ' + uses + ' 处')
+  // store 层：读路径静默按无快照、写路径 fail-loud
+  assert.match(STORE, /const BOARD_ID_SAFE = /, 'store.ts 缺 BOARD_ID_SAFE')
+  assert.match(STORE, /if \(!BOARD_ID_SAFE\.test\(boardId\)\) return null/, 'readSnapshot 缺非法 boardId 兜底')
+  assert.match(STORE, /if \(!BOARD_ID_SAFE\.test\(s\.boardId\)\) throw new Error/, 'writeSnapshot 缺非法 boardId 拒绝')
+})
+
+test('★ 审查 M2：open-folder 必须先白名单校验再 existsSync（UNC ⇒ NTLM 哈希泄漏）', () => {
+  const openFolder = HOST.split(`'/api/rank-scan/bookmark/open-folder'`)[1] || ''
+  assert.match(openFolder, /const relF = relative\(resolve\(homedir\(\)\), dir\)/, 'open-folder 缺 homedir 白名单（与 export-file 同款）')
+  assert.ok(openFolder.indexOf('relF') > -1 && openFolder.indexOf('relF') < openFolder.indexOf('existsSync(dir)'), '必须先校验 relF 再 existsSync（UNC 光探测存在就泄漏 NTLM）')
+})
+
+test('★ 审查 M4：qidiantu 首订回退时 pageDate 只采纳「有行」页的日期', () => {
+  const QT = readFileSync(join(ROOT, 'src', 'sites', 'qidiantu.ts'), 'utf8')
+  assert.match(QT, /if \(parsed\.rows\.length && parsed\.date\) pageDate = parsed\.date/, 'pageDate 又变回无条件赋值（回退轮次会串日期）')
 })
 
 test('assertDataDate 行为：只放行严格 YYYY-MM-DD（越界/空/穿越一律抛错）', async () => {

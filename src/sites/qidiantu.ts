@@ -368,7 +368,10 @@ export function makeQidiantuSite(opts: {
         const html = await fetchText('https://www.qidiantu.com/shouding/' + usedDate, ctx)
         requests += 1
         const parsed = parseShouding(html)
-        if (parsed.date) pageDate = parsed.date
+        // ★ 2026-11-02（审查 M4）：只采纳「有行且被采用」那一页的日期 —— 以前无条件赋值，
+        //   n-1 页 0 行但有日期时 pageDate=want，回退到 n-2 取到行而当页日期未命中时，
+        //   srcDate 错用 n-1 ⇒ contentDate 防呆被绕过，n-2 的数据以 n-1 名义落盘。
+        if (parsed.rows.length && parsed.date) pageDate = parsed.date
         if (parsed.rows.length) {
           rows = parsed.rows
           if (back > 0) warnings.push('n-1（' + want + '）无数据行，已回退到 ' + usedDate)
