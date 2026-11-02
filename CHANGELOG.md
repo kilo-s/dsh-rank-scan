@@ -2,6 +2,22 @@
 
 本项目的版本变更记录。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.6.4] - 2026-11-02
+
+### 安全
+
+- **boardId 全线格式校验，堵住路径穿越读与其持久化投毒链**：boardId 会直入快照路径拼接（`join(root, dataDate, boardId + '.json')`），此前 9 个 HTTP 入口（/board、/select、/depth、/day、/repair、/enrich、/qidianEnrich、/bookmark）均无格式校验，`../../x` 可读出数据根之外的任意 .json，且 /select 会把恶意 boardId 持久化、之后每次 /overview 自动触发一次穿越读。现在路由层统一用 `isValidBoardId`（字母数字开头 + 字母数字/./_/-，无路径分隔符与 `..` 段）拒非法值；store 层纵深防御：`readSnapshot`/`snapshotMtime` 非法按「无快照」处理、`writeSnapshot` 非法直接抛错。
+- **open-folder 增加 homedir 白名单**：此前仅 `existsSync` 就 `spawn(explorer.exe)`，UNC 路径（`\\host\share`）光探测存在就会发起 SMB 认证、把本机 NTLM 哈希发给攻击者主机。现在与 export-file 同一道白名单（resolve + relative 检查），且**先校验再 existsSync**。
+- **来源闸增加 loopback Host 白名单，防 DNS rebinding**：此前只比对 Origin/Referer 与 Host 字符串是否相等，攻击者域名重绑定到 127.0.0.1 时两头同为攻击者域名会被误判「同源」。现在 Host 不是 loopback（localhost/127.0.0.1/[::1]）一律拒。
+
+### 修复
+
+- **qidiantu 首订回退翻页串日期**：`pageDate` 此前在回退循环外无条件赋值——n-1 页 0 行但有日期时 `pageDate=want`，回退到 n-2 取到行而当页日期未命中时，`srcDate` 错用 n-1，contentDate 防呆被绕过，n-2 的数据以 n-1 名义落盘。现在只采纳「有行且被采用」那一页的日期。
+
+### 测试
+
+- 新增 4 条 host-guard 回归测试：M1 路由层校验覆盖与 store 层兜底、M2 先校验再探测的顺序闸、M3 DNS rebinding 行为用例、M4 pageDate 采纳条件。
+
 ## [0.6.0] - 2026-10-28
 
 视觉精修整批：面板内不再「盒子套盒子」，元信息用中点串取代一排带底色的小标签，榜单页数字列右对齐、星标不再一排灰点；书签页重做成三行卡片，加了排序与分批。升级保留全部快照、书签与配置。
