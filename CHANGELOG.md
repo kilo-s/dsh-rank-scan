@@ -7,7 +7,7 @@
 ### 安全
 
 - **boardId 全线格式校验，堵住路径穿越读与其持久化投毒链**：boardId 会直入快照路径拼接（`join(root, dataDate, boardId + '.json')`），此前 9 个 HTTP 入口（/board、/select、/depth、/day、/repair、/enrich、/qidianEnrich、/bookmark）均无格式校验，`../../x` 可读出数据根之外的任意 .json，且 /select 会把恶意 boardId 持久化、之后每次 /overview 自动触发一次穿越读。现在路由层统一用 `isValidBoardId`（字母数字开头 + 字母数字/./_/-，无路径分隔符与 `..` 段）拒非法值；store 层纵深防御：`readSnapshot`/`snapshotMtime` 非法按「无快照」处理、`writeSnapshot` 非法直接抛错。
-- **open-folder 增加 homedir 白名单**：此前仅 `existsSync` 就 `spawn(explorer.exe)`，UNC 路径（`\\host\share`）光探测存在就会发起 SMB 认证、把本机 NTLM 哈希发给攻击者主机。现在与 export-file 同一道白名单（resolve + relative 检查），且**先校验再 existsSync**。
+- **open-folder 增加 homedir 白名单**：此前仅 `existsSync` 就 `spawn(explorer.exe)`，UNC 路径（`\\host\share`）光探测存在就会发起 SMB 认证、把本地 NTLM 哈希发给攻击者主机。现在与 export-file 同一道白名单（resolve + relative 检查），且**先校验再 existsSync**。
 - **来源闸增加 loopback Host 白名单，防 DNS rebinding**：此前只比对 Origin/Referer 与 Host 字符串是否相等，攻击者域名重绑定到 127.0.0.1 时两头同为攻击者域名会被误判「同源」。现在 Host 不是 loopback（localhost/127.0.0.1/[::1]）一律拒。
 
 ### 修复

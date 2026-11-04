@@ -3878,7 +3878,7 @@ export function apply(ctx: PluginCtx, config: any): void {
             const body3 = await readBody(req)
             // ★ 2026-11-02（审查 M2）：与 export-file 同一道白名单 —— 只允许用户目录内的路径，
             //   且**先校验再 existsSync**：UNC 路径（\\host\share）光 existsSync 就会发起 SMB 认证，
-            //   把本机 NTLM 哈希发给攻击者主机。
+            //   把本地 NTLM 哈希发给攻击者主机。
             const dir = resolve(String(body3.path || '').trim() || join(homedir(), 'Documents', 'rank-scan-export'))
             const relF = relative(resolve(homedir()), dir)
             if (!relF || relF === '..' || relF.startsWith('..' + (process.platform === 'win32' ? '\\' : '/')) || isAbsolute(relF)) return send(400, { error: '只允许打开用户目录内的文件夹' })

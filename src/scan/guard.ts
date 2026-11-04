@@ -30,7 +30,7 @@ export function sameOriginOk(input: SameOriginInput): { ok: boolean; reason: str
   const expect = String(input.host || '').trim()
   if (!expect) return { ok: true, reason: 'no-host-header' }
   // ★ 2026-11-02（审查 M3）：防 DNS rebinding —— 攻击者域名重绑定到 127.0.0.1 时，
-  //   Origin.host 与 Host 头同为攻击者域名，字符串相等会被误判「同源」。而本插件只监听本机，
+  //   Origin.host 与 Host 头同为攻击者域名，字符串相等会被误判「同源」。而本插件只监听 loopback，
   //   合法请求的 Host 必为 loopback ⇒ Host 不是 loopback 的一律拒。
   if (!loopbackName(nameOf(expect))) return { ok: false, reason: 'host-not-loopback:' + expect }
   if (host === expect) return { ok: true, reason: 'same-origin' }
