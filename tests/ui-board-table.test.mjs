@@ -79,3 +79,17 @@ test('表头 aria-sort、行/卡片 aria-expanded、列说明折叠与复制 Pro
   assert.match(s, /'列说明'/)
   assert.match(s, /writeText\([^)]*\)\.then/)
 })
+test('排序后不许无条件把表头顶到容器顶部（2026-11-06：一点排序就跳一屏）', () => {
+  const boardSrc = s.slice(s.indexOf('function BoardTab'), s.indexOf('function Panel(props)'))
+  assert.ok(boardSrc.includes('scrollParentOf'), '要按真实滚动容器算可视区上沿')
+  assert.match(boardSrc, /if \(el\.getBoundingClientRect\(\)\.top >= viewTop - 1\) return/, '表头仍可见时必须原地不动')
+  assert.ok(!/if \(el && el\.scrollIntoView\) \{/.test(boardSrc), '旧的无条件 scrollIntoView 必须删掉')
+})
+test('删掉的排序项不该继续生效：sortValueValid 只认当前榜的下拉项（2026-11-06）', () => {
+  const fn = loadBoardTable()
+  const opts = [{ value: '' }, { value: 'readDelta' }, { value: 'delta' }, { value: 'words' }]
+  assert.equal(fn.sortValueValid('', opts), true, '空串 = 默认，永远合法')
+  assert.equal(fn.sortValueValid('readDelta', opts), true)
+  assert.equal(fn.sortValueValid('read', opts), false, '番茄去掉「在读」后，旧偏好不能再悄悄生效')
+  assert.equal(fn.sortValueValid('nope', []), false)
+})

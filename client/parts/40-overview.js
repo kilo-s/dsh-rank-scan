@@ -12,6 +12,39 @@
     }
 
     /**
+     * 概览「变化」列（2026-11-06 统一涨跌色）：
+     *   宿主旧实现只给拼好的字符串（'↑3' / '↓-2'），客户端无法判正负 ⇒ 这一列从来没有颜色，
+     *   下降还叠了负号；而榜单页同一件事是绿/红。现在宿主同时给 deltaNum，这里按数值上色，
+     *   文案与榜单页「变化」列同构：↑2 绿 / ↓2 红 / 0 灰 / 新入榜「＋ 新」/ 回榜 / 退榜「→ 榜外」。
+     * 兼容只有字符串的老宿主：从 '↑3' / '↓-2' 反解数值；解不出就原样显示（不编颜色）。
+     */
+    function changeDeltaNode(group, it) {
+      const row = it || {}
+      let n = typeof row.deltaNum === 'number' && Number.isFinite(row.deltaNum) ? row.deltaNum : null
+      const raw = row.delta == null ? '' : String(row.delta)
+      if (n == null && raw) {
+        const m = raw.match(/^([↑↓])\s*(-?\d+(?:\.\d+)?)$/)
+        if (m) n = (m[1] === '↓' ? -1 : 1) * Math.abs(Number(m[2]))
+      }
+      if (group === '新入榜') return h('span', { style: C.up }, '＋ 新')
+      if (group === '回榜') return h('span', { style: C.muted }, '回榜')
+      if (group === '退榜') return h('span', { style: C.down }, '→ 榜外')
+      if (n == null) return dash(raw)
+      /**
+       * ★ 数值型榜（番茄在读 / 起点图首订这类）：上升 = 数值涨，**不是名次**，
+       *   写成 ↑21664 会被读成「掉了两万多名」⇒ 改用带千分位的 +/- 写法。
+       */
+      if (row.metric === 'value') {
+        if (n > 0) return h('span', { style: C.up }, '+' + fmtRead(n))
+        if (n < 0) return h('span', { style: C.down }, '-' + fmtRead(Math.abs(n)))
+        return h('span', { style: C.muted }, '0')
+      }
+      if (n > 0) return h('span', { style: C.up }, '↑' + n)
+      if (n < 0) return h('span', { style: C.down }, '↓' + Math.abs(n))
+      return h('span', { style: C.muted }, '0')
+    }
+
+    /**
      * 概览：先回答「今天有什么需要看」——
      *   ① 需要处理（**仅有问题时出现**：榜名 + 影响 + 可执行动作）
      *   ② 今天的变化（可按分组筛：新入榜/回榜/上升/下降/退榜）
@@ -401,7 +434,7 @@
                       h('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: e.it.title }, e.it.title),
                       h('span', { style: { flex: '0 0 auto' }, onClick: function (ev) { ev.stopPropagation() } },
                         h(BookmarkStar, { bookKey: bookKeyOf(e.it.boardId, e.it.title), boardId: e.it.boardId, row: null, title: e.it.title })),
-                      h('span', { style: { ...C.num, flex: '0 0 auto' }, title: '名次变化' }, dash(e.it.delta))),
+                      h('span', { style: { ...C.num, flex: '0 0 auto' }, title: e.it.metric === 'value' ? '数值变化（本地环比）' : '名次变化' }, changeDeltaNode(e.group, e.it))),
                     h('div', { style: { ...C.muted, marginTop: '1px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, e.it.boardName))
                 }))
             }))
@@ -423,7 +456,7 @@
                     h('td', { style: { ...C.td, minWidth: '140px' } }, e.it.title, ' ',
                       h('span', { onClick: function (ev) { ev.stopPropagation() } },
                         h(BookmarkStar, { bookKey: bookKeyOf(e.it.boardId, e.it.title), boardId: e.it.boardId, row: null, title: e.it.title }))),
-                    h('td', { style: { ...C.td, ...C.num } }, dash(e.it.delta)))
+                    h('td', { style: { ...C.td, ...C.num } }, changeDeltaNode(e.group, e.it)))
                 })
                 return [head].concat(body)
               })))) : null,

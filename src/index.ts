@@ -1711,6 +1711,8 @@ export function apply(ctx: PluginCtx, config: any): void {
     if (key === 'periodDelta') return typeof ex.periodDelta === 'number' ? ex.periodDelta : null
     // 番茄：在读在 extra 里（行 value 是「今日涨幅」，不是在读）
     if (key === 'read') return typeof ex.read === 'number' ? ex.read : null
+    // ★ 2026-11-06：番茄「在读变化」参与排序（缺前值 ⇒ null，由 compareDesc 压到最后）
+    if (key === 'readDelta') return typeof ex.valueDelta === 'number' ? ex.valueDelta : null
     // 三江：期初收藏 / 今日增量 / 期累计（都在 extra）
     if (key === 'collectBase' || key === 'dailyDelta' || key === 'periodTotal') {
       return typeof ex[key] === 'number' ? ex[key] : null
@@ -1742,8 +1744,32 @@ export function apply(ctx: PluginCtx, config: any): void {
         { value: 'periodTotal', label: '期累计增量' },
       ]
     }
+    /**
+     * ★ 2026-11-06（使用者定）：番茄新书榜的排序项按「当天看得懂的变化」重排：
+     *   默认（名次）→ 在读变化 → 名次变化 → 字数。
+     *   · 去掉「在读」排序：在读是累计值，按它排等于把榜单换成另一张榜，且番茄在读日间会回落/修正；
+     *   · 「变化（本地环比）」改名「名次变化」：番茄这列本来就是名次差（名次型榜），不是数值差；
+     *   · 字数挪到最后：它是作品属性，不是「今天发生了什么」。
+     *   在读周榜是派生榜，走上面自己的那套，不受影响。
+     */
+    if (meta.site === 'fanqie' && !boardId.startsWith('fanqie.derived.')) {
+      const fanOpts = [
+        { value: '', label: '默认（名次）' },
+        { value: 'readDelta', label: '在读变化' },
+        { value: 'delta', label: '名次变化' },
+        { value: 'words', label: '字数' },
+      ]
+      const fanKeys = new Set(applyColumnPolicy(columnsFor(meta, { hasBaseline: flags.hasHistory, hasHistory: flags.hasHistory }), boardId).map((c) => c.key))
+      return fanOpts.filter((o) => !o.value || fanKeys.has(o.value))
+    }
     const main = mainLabelOf(boardId, meta)
     const opts = [{ value: '', label: '默认（名次）' }]
+    /**
+     * ★ 2026-11-06（使用者定）：起点 / 刺猬猫 / 菠萝包 —— 默认（名次）后面紧跟「名次变化」。
+     *   这三站是名次型榜，「变化」列一直在（prevRank − curRank），但以前没进排序下拉。
+     *   批次榜（刺猬猫首订（约））没有「变化」列 ⇒ 末尾的列存在性过滤会自动剔除这一项。
+     */
+    if (meta.site === 'qidian' || meta.site === 'ciweimao' || meta.site === 'sfacg') opts.push({ value: 'delta', label: '名次变化' })
     // 列名口径：番茄主指标列叫 read（不是 value），排序值必须对上列 key 才不会被客户端过滤掉
     const mainKey = meta.site === 'fanqie' && !boardId.startsWith('fanqie.derived.') ? 'read' : 'value'
     if (meta.metric === 'value') opts.push({ value: mainKey, label: main })
@@ -2262,8 +2288,17 @@ export function apply(ctx: PluginCtx, config: any): void {
       if (d.firstEver) continue
       firstEver = false
       if (d.crossPeriod) { excluded.push({ boardId, reason: '新期不可比（不参与变化）' }); continue }
-      const push = (group: string, list: any[], sign: string) => {
-        for (const e of list || [])
+      /**
+       * ★ 2026-11-06（使用者反馈「概览的变化箭头没有颜色」）：
+       *   以前宿主只回传**拼好的字符串**（'↑3' / '↓-2'），客户端拿不到数值 ⇒ 概览「变化」列
+       *   从来没有涨跌色；下降还叠了负号（'↓-2'）；新入榜/回榜/退榜的 '第' '→ 榜外' 前缀
+       *   更是死代码（这三组的 delta 恒为 null，走不到拼前缀的分支）。
+       *   现在：① 一起回传 deltaNum（面板按正负上色）；② 文本孪生做规范化（下降取绝对值）；
+       *   ③ 三个无差值的分组不再拼前缀，文案交给面板按 group 出（与榜单页同构）。
+       */
+      const push = (group: string, list: any[]) => {
+        for (const e of list || []) {
+          const n = typeof e.delta === 'number' && Number.isFinite(e.delta) ? e.delta : null
           entries.push({
             site: meta.site,
             siteName: meta.siteName,
@@ -2273,15 +2308,21 @@ export function apply(ctx: PluginCtx, config: any): void {
             baselineDate: d.baselineDate,
             group,
             title: e.title,
-            delta: e.delta == null ? '' : sign + String(e.delta),
+            /** 面板上色用的**数值**（缺失 = null，不补 0） */
+            deltaNum: n,
+            /** 榜的指标类型：rank ⇒ 名次变化（↑↓）；value ⇒ 数值变化（+/-，番茄/起点图这类），面板据此换写法 */
+            metric: meta.metric,
+            /** 文本孪生：↑3 / ↓2（下降只留绝对值）；无差值的分组给空串，由面板按 group 出文案 */
+            delta: n == null ? '' : group === '下降' ? '↓' + Math.abs(n) : group === '上升' ? '↑' + n : String(n),
             days: e.days == null ? null : e.days,
           })
+        }
       }
-      push('新入榜', d.newEntry, '第')
-      push('回榜', d.rebound, '回榜第')
-      push('上升', d.up, '↑')
-      push('下降', d.down, '↓')
-      push('退榜', d.out, '→ 榜外')
+      push('新入榜', d.newEntry)
+      push('回榜', d.rebound)
+      push('上升', d.up)
+      push('下降', d.down)
+      push('退榜', d.out)
     }
     return {
       date: useDate,

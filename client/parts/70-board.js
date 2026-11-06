@@ -19,6 +19,31 @@
       return cur === key ? '' : key
     }
     const normalizeSortPref = function (v) { return v === 'rank' ? '' : (v || '') }
+    /**
+     * ★ 2026-11-06：排序偏好是否仍在该榜的**可选项**里。
+     *   番茄这一轮去掉了「在读」排序项，但 localStorage 里还留着旧偏好 'read' ⇒
+     *   下拉里找不到这个选项（显示空白），表格却仍按在读排 —— 看起来像排序坏了。
+     *   判据只认宿主回传的 sortOptions：不在里面就回落默认（空串）。
+     */
+    const sortValueValid = function (v, sortOptions) {
+      if (!v) return true
+      return (sortOptions || []).some(function (o) { return o && o.value === v })
+    }
+    /**
+     * 最近的滚动容器（面板 body；overflow auto/scroll 且真的能滚）。找不到就退回 document.scrollingElement。
+     * ★ 2026-11-06：排序后「要不要把表头拉回来」要用它算可视区上沿，别再假设容器在页面顶部。
+     */
+    const scrollParentOf = function (node) {
+      let el = node && node.parentElement
+      while (el && el !== document.body) {
+        const cs = getComputedStyle(el)
+        const oy = cs && cs.overflowY
+        if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 4) return el
+        el = el.parentElement
+      }
+      return document.scrollingElement || null
+    }
+
     /** 只给行号，详情行不参与；n 是数据行数量 */
     const nextRowIdx = function (i, key, n) {
       const last = Math.max(0, Number(n) - 1)
@@ -94,7 +119,7 @@
     }
 
     // 离线测试缝：只暴露第六步的纯函数，不改变运行路径
-    window.__rankScanBoardTableTest = { sortableCols: sortableCols, nextSort: nextSort, nextRowIdx: nextRowIdx, normalizeSortPref: normalizeSortPref }
+    window.__rankScanBoardTableTest = { sortableCols: sortableCols, nextSort: nextSort, nextRowIdx: nextRowIdx, normalizeSortPref: normalizeSortPref, sortValueValid: sortValueValid }
 
     function BoardTab(props) {
       const ov = props.ov
@@ -266,10 +291,29 @@
         if (!sortJumpRef.current) return
         sortJumpRef.current = false
         const el = listRef.current
-        if (el && el.scrollIntoView) {
-          try { el.scrollIntoView({ block: 'start' }) } catch (e) {}
-        }
+        if (!el || !el.getBoundingClientRect) return
+        /**
+         * ★ 2026-11-06（使用者反馈「排序一点就跳到下面去」）：
+         *   旧实现是**无条件** el.scrollIntoView({ block: 'start' }) —— 表头被顶到滚动容器顶部，
+         *   于是标题/工具条整段被推出可视区，看着像「点一下就被甩到下面一屏」。
+         *   本意只是「用户在列表深处换排序、表头已经看不见」时把表头拉回来；
+         *   表头本来就在视野里就**保持原位不动**。
+         */
+        const scroller = scrollParentOf(el)
+        const viewTop = scroller && scroller.getBoundingClientRect ? scroller.getBoundingClientRect().top : 0
+        if (el.getBoundingClientRect().top >= viewTop - 1) return
+        try { el.scrollIntoView({ block: 'start' }) } catch (e) {}
       }, [ss])
+      /**
+       * ★ 2026-11-06：榜换了、或排序项被删掉（番茄去掉「在读」）时，清掉已失效的旧偏好；
+       *   否则下拉里找不到该值（显示空白），表格却还按旧键在排 —— 看起来像排序失效。
+       */
+      React.useEffect(function () {
+        if (!data || data.boardId !== bt) return
+        if (sortValueValid(ss, data.sortOptions)) return
+        setSs('')
+        try { sel.setPref(bt, 'sort', '') } catch (e) {}
+      }, [data, bt, ss])
       React.useEffect(function () {
         if (pick || focusBackRef.current == null) return
         const idx = focusBackRef.current

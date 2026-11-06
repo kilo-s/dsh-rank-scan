@@ -76,6 +76,40 @@ test('小尾巴 A：单榜扫描置位 Panel 忙态，409 走 warn', () => {
   assert.match(boardSrc, /e\.status === 409/)
 })
 
+
+test('概览变化列：涨绿跌红、下降不带负号、无差值分组给文案（2026-11-06 统一色）', () => {
+  const mod = loadComponents()
+  const node = mod.__test.helpers.changeDeltaNode
+  assert.equal(typeof node, 'function', '渲染函数要能从测试缝拿到')
+  const up = node('上升', { deltaNum: 3, delta: '↑3' })
+  const down = node('下降', { deltaNum: -2, delta: '↓2' })
+  const flat = node('上升', { deltaNum: 0, delta: '0' })
+  const newbie = node('新入榜', { deltaNum: null, delta: '' })
+  const rebound = node('回榜', {})
+  const out = node('退榜', {})
+  assert.equal(up.props.children.join(''), '↑3')
+  assert.ok(String(up.props.style.color).indexOf('success') >= 0, '上升必须套绿（C.up）')
+  assert.equal(down.props.children.join(''), '↓2', '下降只写绝对值，不许出现 ↓-2')
+  assert.ok(String(down.props.style.color).indexOf('error') >= 0, '下降必须套红（C.down）')
+  assert.equal(flat.props.children.join(''), '0')
+  assert.equal(newbie.props.children.join(''), '＋ 新', '新入榜与榜单页同文案')
+  assert.equal(rebound.props.children.join(''), '回榜')
+  assert.equal(out.props.children.join(''), '→ 榜外')
+  // 老宿主只给字符串：反解出数值后照样上色，且不出现双符号
+  const legacy = node('下降', { delta: '↓-2' })
+  assert.equal(legacy.props.children.join(''), '↓2')
+  assert.ok(String(legacy.props.style.color).indexOf('error') >= 0)
+  // 数值型榜（番茄在读/起点图首订）：上升=数值涨，不是名次 ⇒ 用 ± 千分位，不画 ↑↓
+  const valUp = node('上升', { deltaNum: 21664, delta: '21664', metric: 'value' })
+  const valDown = node('下降', { deltaNum: -13780, delta: '13780', metric: 'value' })
+  assert.equal(valUp.props.children.join(''), '+21,664')
+  assert.equal(valDown.props.children.join(''), '-13,780')
+  assert.ok(String(valDown.props.style.color).indexOf('error') >= 0, '数值下降也要红')
+  assert.ok(String(valUp.props.style.color).indexOf('success') >= 0, '数值上升也要绿')
+  // 完全没有差值（名额外的榜）⇒ 「—」，不编颜色
+  assert.equal(node('上升', {}), '—')
+})
+
 test('小尾巴 B：上架日 / 条数输入用 C.input', () => {
   assert.ok(!boardSrc.includes("fontSize: '12px', padding: '2px 4px'"), '不许再写死 12px/padding')
   assert.ok(boardSrc.includes("style: { ...C.input, width: '58px' }"))

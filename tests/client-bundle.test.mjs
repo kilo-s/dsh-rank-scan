@@ -118,8 +118,15 @@ test('★ 跨期不可比：变化列必须显示「新期」（行上带 extra.
   // 判定必须排在 deltaGroup/数值判定**之前**，否则又会被 '＋ 新' / '—' 抢走
   // 三元式与 if/return 都算数（2026-10-17 给变化列配上色后改成了 if 分支，判定顺序不变）
   assert.match(src, /ex\.periodChanged === true(\)\s*\?\s*'新期'|\)\s*return\s*'新期')/, '变化列缺少「新期」分支')
-  const idxNew = src.indexOf("'新期'")
-  const idxPlus = src.indexOf("'＋ 新'")
+  // ★ 2026-11-06：作用域收窄到**变化列这一格**（cell 的 delta 分支）——概览页同款文案
+  //   「＋ 新」现在也出现在 40-overview.js（加载顺序在 55 之前），用全局 indexOf 比较是假阳性。
+  // 注意：列宽工具里也有 'if (k === \'delta\') return 50' ⇒ 必须取**带花括号**的那个分支（cell 里）
+  const blockStart = src.lastIndexOf("if (k === 'delta') {")
+  const blockEnd = src.indexOf("if (k === 'read')", blockStart)
+  assert.ok(blockStart > 0 && blockEnd > blockStart, '变化列分支找不到')
+  const block = src.slice(blockStart, blockEnd)
+  const idxNew = block.indexOf("'新期'")
+  const idxPlus = block.indexOf("'＋ 新'")
   assert.ok(idxNew > 0 && idxPlus > 0, '两个分支都要在')
   assert.ok(idxNew < idxPlus, '「新期」判定必须排在「＋ 新」之前')
 })

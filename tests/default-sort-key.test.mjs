@@ -58,6 +58,64 @@ test('sort=rank 视同未指定，且 sortOptions 不再包含 rank', async () =
     assert.ok(!plain.body.sortOptions.some((o) => o.value === 'rank'), '下拉里不能再出现「名次」排序项')
   } finally { h.cleanup() }
 })
+test('番茄排序项：默认（名次）→ 在读变化 → 名次变化 → 字数，且 readDelta 真按在读差排序（2026-11-06 使用者定）', async () => {
+  const b = 'fanqie.m.new.262'
+  const h = harness()
+  try {
+    const store = new FileStore(h.root)
+    const row = (key, rank, read, vd) => ({ key, rank, value: read, title: key, author: null, url: null, extra: { read, valueDelta: vd, catId: 262 } })
+    await store.writeSnapshot({ boardId: b, dataDate: '2026-10-21', metric: 'value', rows: [
+      row('a', 1, 1000, 10),
+      row('b', 2, 900, 500),
+      row('c', 3, 800, -7),
+    ] })
+    writeFileSync(join(h.root, 'state/config.json'), JSON.stringify({ boards: [b], display: [b], timerEnabled: false, timerSchemaV: 3 }))
+    const plain = await h.call('/api/rank-scan/board?boardId=' + encodeURIComponent(b) + '&date=2026-10-21')
+    assert.equal(plain.code, 200, JSON.stringify(plain.body))
+    assert.deepEqual(plain.body.sortOptions.map((o) => o.label), ['默认（名次）', '在读变化', '名次变化', '字数'])
+    assert.deepEqual(plain.body.sortOptions.map((o) => o.value), ['', 'readDelta', 'delta', 'words'])
+    assert.ok(!plain.body.sortOptions.some((o) => o.value === 'read'), '番茄不再提供「在读」排序')
+    const byReadDelta = await h.call('/api/rank-scan/board?boardId=' + encodeURIComponent(b) + '&date=2026-10-21&sort=readDelta')
+    assert.deepEqual(byReadDelta.body.rows.map((r) => r.key), ['b', 'a', 'c'], '在读变化降序：500 / 10 / -7')
+  } finally { h.cleanup() }
+})
+test('起点/刺猬猫/菠萝包：默认（名次）后面是名次变化，且 sort=delta 真按名次差降序（2026-11-06 使用者定）', async () => {
+  const h = harness()
+  try {
+    const store = new FileStore(h.root)
+    const boards = ['qidian.sign.cat12', 'ciweimao.no-vip-click.week', 'sfacg.new.click']
+    const prevRows = [
+      { key: 'k1', rank: 3, value: 3, title: '甲', author: null, url: null },
+      { key: 'k2', rank: 1, value: 1, title: '乙', author: null, url: null },
+      { key: 'k3', rank: 2, value: 2, title: '丙', author: null, url: null },
+    ]
+    const curRows = [
+      { key: 'k1', rank: 1, value: 1, title: '甲', author: null, url: null },
+      { key: 'k2', rank: 2, value: 2, title: '乙', author: null, url: null },
+      { key: 'k3', rank: 3, value: 3, title: '丙', author: null, url: null },
+    ]
+    for (const b of boards) {
+      await store.writeSnapshot({ boardId: b, dataDate: '2026-10-20', metric: 'rank', rows: prevRows })
+      await store.writeSnapshot({ boardId: b, dataDate: '2026-10-21', metric: 'rank', rows: curRows })
+    }
+    writeFileSync(join(h.root, 'state/config.json'), JSON.stringify({ boards, display: boards, timerEnabled: false, timerSchemaV: 3 }))
+    for (const b of boards) {
+      const plain = await h.call('/api/rank-scan/board?boardId=' + encodeURIComponent(b) + '&date=2026-10-21')
+      assert.equal(plain.code, 200, b + ' ' + JSON.stringify(plain.body))
+      assert.deepEqual(plain.body.sortOptions.slice(0, 2).map((o) => o.label), ['默认（名次）', '名次变化'], b + ' 默认后面必须是名次变化')
+      const sorted = await h.call('/api/rank-scan/board?boardId=' + encodeURIComponent(b) + '&date=2026-10-21&sort=delta')
+      assert.deepEqual(sorted.body.rows.map((r) => r.delta), [2, -1, -1], b + ' 名次差口径')
+      assert.equal(sorted.body.rows[0].key, 'k1', b + ' 名次变化降序：+2 必须排第一')
+    }
+    // 批次榜：有快照才能看下拉；它没有「变化」列 ⇒ 这一项必须被末尾的列存在性过滤剔除
+    await store.writeSnapshot({ boardId: 'ciweimao.buy.latest', dataDate: '2026-10-21', metric: 'value', rows: [
+      { key: 'b1', rank: 1, value: 88, title: '丁', author: null, url: null, extra: { issue: 479 } },
+    ] })
+    const batch = await h.call('/api/rank-scan/board?boardId=' + encodeURIComponent('ciweimao.buy.latest') + '&date=2026-10-21')
+    assert.equal(batch.code, 200, JSON.stringify(batch.body))
+    assert.ok(!batch.body.sortOptions.some((o) => o.value === 'delta'), '批次榜没有「变化」列 ⇒ 不该出现名次变化')
+  } finally { h.cleanup() }
+})
 
 test('/day 响应也带 defaultSortKey', async () => {
   const b = 'qidian.sign.cat12'

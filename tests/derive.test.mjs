@@ -92,23 +92,40 @@ test('期首当天（周一就是数据首日）：累计算不出来，但已�
   assert.ok(String(v.note).includes('2026-10-12 ~ 2026-10-18'), '说明行要写具体日期范围（不要「周一~周日」）')
 })
 
-test('跨周：新一期只有一天时，「今日涨幅」也按期内口径 ⇒ null（不拿上一期的日子当比较基准）', () => {
+test('★ 跨周（2026-11-06 新口径）：周一的增量与上周日比，第 1 天不再恒空', () => {
   const table = {
     '2026-10-18': { 'fanqie.m.new.1141': [row('1', '甲', 1000, 1)] },
     '2026-10-19': { 'fanqie.m.new.1141': [row('1', '甲', 1200, 1)] },
   }
+  const dataDates = ['2026-10-18', '2026-10-19']
   const v = viewOf(deriveFanqieViews(makeReader(table), {
-    date: '2026-10-19', poolBoards: ['fanqie.m.new.1141'], dataDates: ['2026-10-18', '2026-10-19'],
+    date: '2026-10-19', poolBoards: ['fanqie.m.new.1141'], dataDates,
   }))
   assert.equal(v.periodStart, '2026-10-19', '新一期从这天开始（周一）')
-  assert.equal(v.settledDays, 1, '本期只结算了今天')
-  // ★ 口径选择（2026-10-15）：期的语义是「本周内」，所以「今日涨幅」的比较基准也**落在期内**，
-  //   不跨期去取上一期的最后一天。否则周一那天的「本期累计」会是 0 而「今日涨幅」却是 200，
-  //   两个数在同一天里互相矛盾。代价：每周一所有书的「今日涨幅」都是「—」（诚实表达"本周还没法算涨幅"）。
-  assert.equal(v.rows[0].value, null, '期内没有上一数据日 ⇒ 今日涨幅 null')
-  // 新一期期首就是今天 ⇒ 期累计 0（基准=今天）；下周一起就有真实累计了
-  assert.equal(v.rows[0].extra.periodDelta, 0, '本期累计：期首就是今天 ⇒ 0')
-  assert.equal(v.rows[0].extra.baseDate, '2026-10-19', '基准日 = 新一期期首')
+  assert.equal(v.settledDays, 1, '本期只结算了今天（上周日不计入结算天数）')
+  // ★ 口径（2026-11-06）：基准日 = 期首前一天（上周日）。三江同构 ⇒ 第 1 天有值，
+  //   且「今日涨幅 = 第 1 天 = 期累计」三个数一致，不会出现「累计 0 但涨幅 200」的自相矛盾。
+  assert.equal(v.rows[0].value, 200, '今日涨幅 = 1200 − 1000（上周日）')
+  assert.equal(v.rows[0].extra.periodDelta, 200, '期累计 = 今日 − 上周日')
+  assert.equal(v.rows[0].extra.baseDate, '2026-10-18', '基准日 = 期首前一天')
+  assert.equal(v.rows[0].extra.baseKind, 'prev-period-day')
+  assert.deepEqual(v.rows[0].extra.pdays, [200, null, null, null, null, null, null], '第 1 天有值')
+  assert.ok(String(v.note).includes('基准日 = 2026-10-18'), '说明行必须写清基准日')
+})
+
+test('★ 期累计恒等于「各天增量之和」（基准日 = 上周日时）', () => {
+  const table = {
+    '2026-10-18': { 'fanqie.m.new.1141': [row('1', '甲', 1000, 1)] },
+    '2026-10-19': { 'fanqie.m.new.1141': [row('1', '甲', 1200, 1)] },
+    '2026-10-20': { 'fanqie.m.new.1141': [row('1', '甲', 1500, 1)] },
+    '2026-10-21': { 'fanqie.m.new.1141': [row('1', '甲', 1900, 1)] },
+  }
+  const dataDates = ['2026-10-18', '2026-10-19', '2026-10-20', '2026-10-21']
+  const v = viewOf(deriveFanqieViews(makeReader(table), { date: '2026-10-21', poolBoards: ['fanqie.m.new.1141'], dataDates }))
+  const p = v.rows[0].extra.pdays
+  assert.deepEqual(p, [200, 300, 400, null, null, null, null])
+  const sum = p.reduce((a, x) => a + (x == null ? 0 : x), 0)
+  assert.equal(sum, v.rows[0].extra.periodDelta, '期累计 = Σ pdays')
 })
 
 test('池子 = 多榜并集去重（同一本书只算一次）', () => {
@@ -140,7 +157,7 @@ test('★ 逐日增量（pdays）：第 N 天 = 第 N 天 − 第 N−1 天；�
   const v = viewOf(deriveFanqieViews(makeReader(table), {
     date: '2026-10-15', poolBoards: ['fanqie.m.new.1141'], dataDates: ['2026-10-12', '2026-10-13', '2026-10-14', '2026-10-15'],
   }))
-  // 期首(第1天)=10-12 是基准 ⇒ 第1天恒为 null；第2~4天分别是 200 / 300 / 400；第5~7天未到
+  // 上周日(10-11)本地没有快照 ⇒ 第1天仍是 null（不跨两天硬算）；第2~4天 200 / 300 / 400；第5~7天未到
   assert.deepEqual(v.rows[0].extra.pdays, [null, 200, 300, 400, null, null, null])
   assert.equal(v.rows[0].value, 400, '今日涨幅 = 1900 − 1500')
   assert.equal(v.rows[0].extra.periodDelta, 900, '期累计 = 1900 − 1000')

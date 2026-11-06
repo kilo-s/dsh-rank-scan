@@ -75,7 +75,7 @@ export function boardMeta(boardId: string): BoardMeta {
       categoryScoped: true,
       extended: true,
       // 口径：照搬起点图三江榜的「同一期首日 + 期内累加每日增量 + 已结算 N 天」
-      caliber: '本地派生（不发请求）：自然周（周一~周日）同一期首日 + 期内累加每日增量；名次按今日涨幅',
+      caliber: '本地派生（不发请求）：自然周（周一~周日），基准日 = 期首前一天（上周日），期内累加每日增量；名次按今日涨幅',
     }
   }
   if (boardId.startsWith('fanqie.')) {
@@ -252,7 +252,14 @@ export function columnsFor(meta: BoardMeta, flags: ColumnFlags = { hasBaseline: 
       { key: 'periodDelta', label: '期累计', note: '今日在读 − 本期基准日（期首周一；期首缺快照时退回本期内最早有数据的日期，看说明行）' },
     )
     for (let d = 0; d < 7; d++) {
-      cols.push({ key: 'pday' + d, label: '第' + (d + 1) + '天', note: '本期第 ' + (d + 1) + ' 天的在读增量（未到/缺数据 ⇒ 「—」）' })
+      // ★ 2026-11-06：第 1 天的前值是**期首前一天（上周日）**，不是「本期基准给不出」⇒ 说明要写清
+      cols.push({
+        key: 'pday' + d,
+        label: '第' + (d + 1) + '天',
+        note: d === 0
+          ? '期首日（周一）的在读增量 = 期首日在读 − 上周日在读；任一侧缺快照 ⇒ 「—」'
+          : '本期第 ' + (d + 1) + ' 天的在读增量（未到/缺数据 ⇒ 「—」）',
+      })
     }
   }
   if (cw && meta.boardId === 'ciweimao.buy.latest') {

@@ -12,7 +12,12 @@ import { withFanqieCat } from './view.js'
  *   - 因此照搬起点图三江榜的口径：**同一期首日 + 期内累加每日增量 + 已结算 N 天**，
  *     全站共用同一个基准日，N 本书才可比。
  *
- * 周期 = 自然周（周一~周日）。期首冻结基准读数，期内只累加每日增量（日粒度，怕丢一天数据）。
+ * 周期 = 自然周（周一~周日）。基准读数冻结在**期首前一天**（上周日），期内逐日累加增量（日粒度，怕丢一天数据）。
+ *
+ * ★ 2026-11-06（使用者反馈「所有作品的第一天都是空的」）：原来基准取在**期首（周一）当天**，
+ *   第 1 天就是基准自己 ⇒ 没有前值、恒为 null，整榜每一行的第 1 列永远「—」，看着像漏抓一天。
+ *   改成与起点图三江同构：**基准日 = 期首前一天**，第 1 天 = 周一在读 − 上周日在读；
+ *   期累计同步从这天起算 ⇒ 仍满足「期累计 = 各天增量之和」。
  * 榜单默认按**今日涨幅**倒序（使用者 2026-10-15），另提供「本周累计涨幅」倒序排序项。
  */
 export interface SnapshotLike { boardId: string; dataDate: string; metric: string; rows: Row[] }
@@ -85,12 +90,15 @@ export function deriveFanqieViews(
   const today = opts.date
   const periodStart = weekStart(today)
   const periodEnd = addDays(periodStart, 6)
+  /** 期首前一天 = 本周的增量基准日（上周日）；只当「一天的增量基准」，不计入本期结算天数 */
+  const prevReadingDay = addDays(periodStart, -1)
   // 本期内的数据日期（升序）：>= 期首 且 <= 今天
   const dates = opts.dataDates.filter((d) => d >= periodStart && d <= today).sort()
   const settledDays = dates.length
   // 「应已过天数」= 期首到今天的天数（含今天）：周一=1、周四=4。用来提示「有几天本地没有快照」
   const elapsed = Math.max(1, Math.round((Date.parse(today + 'T00:00:00') - Date.parse(periodStart + 'T00:00:00')) / DAY) + 1)
-  const prevDate = dates.filter((d) => d < today).slice(-1)[0] || null
+  // 今日涨幅的上一读数日：期内上一个数据日；本期还没有更早的数据时退回期首前一天（跨期一天，见文件头）
+  const prevDate = dates.filter((d) => d < today).slice(-1)[0] || prevReadingDay
   // 池子：今日各榜并集（同一本书取第一条书名看起来干净的那条）
   const pool = new Map<string, Row>()
   // 顺手收集每本书的**字数/分类**（番茄快照 extra 里有 wordNumber / catId）——
@@ -126,16 +134,19 @@ export function deriveFanqieViews(
   /**
    * ★ 本期 7 天的逐日增量（使用者 2026-10-15：番茄周榜要像起点图三江那样「每天统计变化」）。
    *   第 N 天 = 第 N 天在读 − 第 N−1 天在读；缺任一侧 ⇒ null（不伪造 0）。
-   *   注意第 1 天的前一天在**期外**，所以第 1 天恒为 null——期首是基准，不是「第 1 天的涨幅」。
+   * ★ 2026-11-06：第 1 天的前值是**上周日**（prevReadingDay，跨期一天）——
+   *   与三江同构（三江的「第 1 天」也是期首读数之后的第一个增量日）。
+   *   上周日或期首日缺任一侧 ⇒ null，不拿更早的日子跨两天算。
    */
   const periodDays: string[] = []
   for (let i = 0; i < 7; i++) periodDays.push(addDays(periodStart, i))
   const pdaysOf = (key: string): (number | null)[] => {
     const vals = periodDays.map((d) => (d > today ? null : valueAt(key, d)))
+    const prevVal = valueAt(key, prevReadingDay)
     return periodDays.map((d, i) => {
       if (d > today) return null
       const cur = vals[i]
-      const prev = i === 0 ? null : vals[i - 1]
+      const prev = i === 0 ? prevVal : vals[i - 1]
       return cur != null && prev != null ? cur - prev : null
     })
   }
@@ -147,13 +158,22 @@ export function deriveFanqieViews(
     const gain = v != null && pv != null ? v - pv : null     // 今日涨幅
     /**
      * 本期累计 = 今日在读 − **基准日**在读。
-     * ★ 基准日优先期首（周一）；**期首缺快照**时退回「本期内最早有数据的日期」（使用者 2026-10-15）：
-     *   我们是从 10-14 才开始抓的，本期 10-12/10-13 根本没有快照 —— 硬拿期首当基准会让
-     *   **整榜 240 行全是「—」**，一点用都没有。退回最早数据日后至少给得出「这些天涨了多少」，
-     *   代价是基准被推后了，所以界面上必须**标明基准日**（baseDate 一起回传）。
-     * 只有「本期内只有今天一天数据」时才真的算不出来 ⇒ null（不伪造 0）。
+     * 基准日优先级（2026-11-06 改）：
+     *   ① **期首前一天（上周日）** —— 只要周日和周一都有读数，就与三江同构：期累计 = 今日 − 周日，
+     *      且恒等于「第 1..N 天增量之和」；
+     *   ② 周日缺、周一有 ⇒ 退到期首（周一），此时第 1 天算不出来、期累计 = 今日 − 周一；
+     *   ③ 期首也缺 ⇒ 退回「本期内最早有数据的日期」（10-14 才开始抓的场景），至少给得出「这些天涨了多少」；
+     *      代价是基准被推后，所以界面上必须**标明基准日**（baseDate / baseKind 一起回传）。
+     * 只有「本期内只有今天一天数据」且没有周日读数时才真的算不出来 ⇒ null（不伪造 0）。
      */
-    const baseDate = valueAt(key, periodStart) != null ? periodStart : (dates.find((d) => d < today && valueAt(key, d) != null) || null)
+    const hasPrevReading = valueAt(key, prevReadingDay) != null
+    const hasStartReading = valueAt(key, periodStart) != null
+    const baseDate = hasPrevReading && hasStartReading
+      ? prevReadingDay
+      : hasStartReading
+        ? periodStart
+        : (dates.find((d) => d < today && valueAt(key, d) != null) || null)
+    const baseKind = baseDate == null ? null : baseDate === prevReadingDay ? 'prev-period-day' : baseDate === periodStart ? 'period-start' : 'earliest-in-period'
     const bv = baseDate ? valueAt(key, baseDate) : null
     const periodDelta = v != null && bv != null ? v - bv : null
     rows.push({
@@ -171,7 +191,10 @@ export function deriveFanqieViews(
         periodDelta,
         baseRead: bv,
         baseDate,
+        baseKind,                                        // prev-period-day / period-start / earliest-in-period
         baseIsPeriodStart: baseDate === periodStart,
+        // 本周的增量基准日（期首前一天 = 上周日）：第 1 天就是与它比
+        weekBaseDay: prevReadingDay,
         periodStart,
         periodEnd,
         settledDays,
@@ -200,11 +223,19 @@ export function deriveFanqieViews(
   const coverage = dates.length
     ? '本期 ' + range + '：已结算 ' + settledDays + '/7 天（有数据的日期：' + datesLabel + '）'
     : '本期 ' + range + '：还没有任何数据快照'
-  // 期首缺快照 ⇒ 累积基准被推后，必须在说明里点出来（否则「期累计」看着像整周，实际不是）
-  const baseDate = dates[0] || null
-  const baseNote = baseDate && baseDate !== periodStart
-    ? '。⚠ 期首 ' + periodStart + ' 没有快照，「期累计」按本期内最早有数据的 ' + baseDate + ' 起算'
-    : ''
+  /**
+   * ★ 2026-11-06：基准日已改为「期首前一天（上周日）」，说明行必须写清它用哪一天当基准，
+   *   否则使用者会把「期累计」误读成「周一起的累计」；周日/期首缺快照时还要点出降级了。
+   */
+  const hasPrevDayData = opts.dataDates.includes(prevReadingDay)
+  const hasPeriodStartData = dates.includes(periodStart)
+  const baseNote = !dates.length
+    ? ''
+    : hasPrevDayData && hasPeriodStartData
+      ? '。基准日 = ' + prevReadingDay + '（期首前一天）：第 1 天 = 期首日在读 − 这天在读，「期累计」也从这天起算'
+      : hasPeriodStartData
+        ? '。⚠ 期首前一天（' + prevReadingDay + '）没有快照：第 1 天算不出来，「期累计」改从期首 ' + periodStart + ' 起算'
+        : '。⚠ 期首 ' + periodStart + ' 没有快照，「期累计」按本期内最早有数据的 ' + dates[0] + ' 起算'
   const note = (settledDays < 7 && settledDays < elapsed
     ? coverage + '。⚠ 应已过 ' + elapsed + ' 天，缺的那几天本地没有快照（不算结算）'
     : coverage) + baseNote
