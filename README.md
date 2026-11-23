@@ -67,7 +67,7 @@ npm 上那份是 CI 从源码构建的（包内自带 `lib/`，发布带 `--prov
 | 面板记忆 | 浮窗位置与尺寸、收起状态、当前页签、正在看哪天，都在刷新后恢复 |
 | 版本与更新 | 面板显示当前版本；**已发布到 npm**，装了 dsh-market 可查新版本并「一键更新」；npm 查不到时面板会明确提示，回退 Release 附件 / 仓库链接；没装 dsh-market 则只读 |
 | 防卡死 | 单请求 15s / 单榜 90s / 单站连败 3 次熔断 / 120s 无进展看门狗 / 扫描锁 + 心跳（心跳过期可接管） |
-| 书签 | 面板内收藏作品、备注夹、回收站、导出 |
+| 书签 | 面板内收藏作品、备注夹、回收站；导出可按站点或当前顺序，支持 CSV / JSON / Markdown / Word（.doc，97–2003 二进制格式）；首次发现含原站与具体榜名、名次和日期 |
 
 ## 用法
 
@@ -75,7 +75,7 @@ npm 上那份是 CI 从源码构建的（包内自带 `lib/`，发布带 `--prov
 
 | 页签 | 做什么 |
 |---|---|
-| **概览** | 采集摘要、需要处理的问题与今天的变化；全部榜单可展开，按站查看 |
+| **概览** | 极简态势顶栏、按需「盯盘」与单书 7/14 天本地走势、四大平台 2×2 活卡片（起点与起点图合并、统一动态精选、全局视角切换）与单站聚焦钻取 |
 | **榜单** | 选择站、榜、日期（批次榜为「批」）和排序后查看作品；采集条数与补全放在更多操作中；只有首订榜提供按日回看 |
 | **书签** | 紧凑卡片与搜索筛选；备注及书签夹显式保存；批量选择、导出、添加与回收站按需展开 |
 | **设置** | 抓取范围、扫描计划、数据与性能、关于与诊断；表单修改需保存，即时开关明确反馈结果 |
@@ -97,11 +97,14 @@ npm 上那份是 CI 从源码构建的（包内自带 `lib/`，发布带 `--prov
 | `GET /api/rank-scan/overview` | 概览：数据日期 / 基准日 / 五态计数 / 隐藏榜数 / 每站每榜状态与涨新退 |
 | `GET /api/rank-scan/board?boardId=&date=&sort=` | 当前榜单：列随榜、缺失显示「—」、当天无快照时回落最近可用并标注日期 |
 | `GET /api/rank-scan/changes` | 今天的变化：按站编组，组内固定 新入榜/回榜/上升/下降/退榜 |
+| `GET /api/rank-scan/book-detail?site=&bookId=` | 单本详情：连载状态、分类、多段简介、站点标签与全站上榜徽章（7 天本地缓存复用） |
+| `GET /api/rank-scan/book-trend?bookKey=&days=` · `GET /api/rank-scan/watch-summary` | 单书 7/14 天纯本地走势曲线与首页「盯盘」作品变动汇总 |
 | `GET /api/rank-scan/catalog` | 可选榜清单：站 → 榜种 → 分类 + 是否已勾选 + 各榜深度 + 定时状态 |
 | `POST /api/rank-scan/scan` `cancel` `retry` | 立刻扫一次（可带 `{boards}` 只扫指定榜）/ 取消 / 只重跑当天非 ok 的榜 |
 | `POST /api/rank-scan/select` `depth` `timer` | 抓取集与显示集 / 每榜取数（1–100）/ 定时开关与时刻 |
 | `POST /api/rank-scan/enrich?boardId=` `enrich-all` | 按需补全某榜或抓取集内全部分类榜的字段 |
 | `GET/POST /api/rank-scan/bookmarks` `bookmark` `bookmark/sync` `bookmark/export` `bookmark/trash` | 书签列表 / 单条增删改 / 同步 / 导出 / 回收站 |
+| `GET /api/rank-scan/bookmark/export` · `POST /api/rank-scan/bookmark/export-file` | `format=csv/json/md/doc`，`sort=site/current`（默认 site）；DOC 下载及落盘为二进制，非下载 JSON 响应使用 base64 并标 `encoding` |
 | `GET /api/rank-scan/version` `update-check`，`POST /api/rank-scan/update` `update-restart` | 版本读数与一键更新（只走 dsh-market 公开的更新 API v1；宿主不支持重启时明确拒绝并提示自行重启） |
 
 来源闸（宿主对 `/api/rank-scan/*` 不做鉴权，插件自己加了一道）：请求带了 `Origin` 或 `Referer`、且其 host 与本次请求的 Host 不同源 ⇒ **403**；`Origin: null`（沙箱 iframe / `file://`）也拒；**两个头都不带 ⇒ 放行**。最后这条是**有意为之**：curl、PowerShell 脚本、你自己机器上的进程本来就能直接操作系统，这道闸门防的是「浏览器里的第三方页面」，不是本地可控进程。

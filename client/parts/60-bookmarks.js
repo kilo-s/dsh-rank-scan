@@ -141,6 +141,7 @@
        */
       const [switchAsk, setSwitchAsk] = React.useState(null)
       const [detailKey, setDetailKey] = React.useState(null)
+      const [bmDet, setBmDet] = React.useState(null)
       const [selectMode, setSelectMode] = React.useState(false)
       const [sel, setSel] = React.useState([])
       const [exportOpen, setExportOpen] = React.useState(false)
@@ -156,6 +157,8 @@
       const fmtS = React.useState(function () { try { return localStorage.getItem('rank-scan-panel:export:fmt:v1') || 'csv' } catch (e) { return 'csv' } })
       const fmt = fmtS[0]
       const setFmt = fmtS[1]
+      const [exportSort, setExportSort] = React.useState(function () { try { return localStorage.getItem('rank-scan-panel:export:sort:v1') || 'site' } catch (e) { return 'site' } })
+      const [exportDesc, setExportDesc] = React.useState(function () { try { return localStorage.getItem('rank-scan-panel:export:desc:v1') !== '0' } catch (e) { return true } })
       const destS = React.useState(function () { try { return localStorage.getItem('rank-scan-panel:export:dest:v1') || '' } catch (e) { return '' } })
       const dest = destS[0]
       const setDest = destS[1]
@@ -174,6 +177,30 @@
       React.useEffect(function () { load() }, [flt.q, flt.site, flt.folder, flt.tag])
       /** C4：筛选或排序一变就回到第一批（别停在「已显示 200 条」却又换了筛选） */
       React.useEffect(function () { setPageCount(BM_PAGE) }, [flt.q, flt.site, flt.folder, flt.tag, sortKey])
+      /** 书签展开时按需懒加载作品详情（简介 / 站点标签 / 连载状态 / 分类 / 全站现榜），复用 7 天本地缓存 */
+      React.useEffect(function () {
+        if (!detailKey || selectMode || editKey === detailKey) return undefined
+        const ck = 'bm:' + detailKey
+        if (BOARD_DETAIL_CACHE[ck]) { setBmDet({ key: ck, loading: false, data: BOARD_DETAIL_CACHE[ck] }); return undefined }
+        const parts = String(detailKey).split(':')
+        const site = parts[0] || ''
+        const bookId = parts.slice(1).join(':')
+        if (!/^(qidian|qidiantu|fanqie|ciweimao|sfacg)$/.test(site) || !/^\d+$/.test(bookId)) return undefined
+        let dead = false
+        setBmDet({ key: ck, loading: true, data: null })
+        jget('/book-detail?site=' + encodeURIComponent(site) + '&bookId=' + encodeURIComponent(bookId))
+          .then(function (d) {
+            if (dead) return
+            if (d && d.ok) {
+              BOARD_DETAIL_CACHE[ck] = d
+              setBmDet({ key: ck, loading: false, data: d })
+            } else {
+              setBmDet({ key: ck, loading: false, data: null })
+            }
+          })
+          .catch(function () { if (!dead) setBmDet({ key: ck, loading: false, data: null }) })
+        return function () { dead = true }
+      }, [detailKey, selectMode, editKey])
       /** 排序切换：同时记住偏好（读不到 localStorage 的环境静默跳过） */
       const setSort = function (v) {
         setSortKey(v)
@@ -285,20 +312,26 @@
       }
       const doExport = function () {
         const fmtV = fmt
+        const sortV = exportSort
+        const descV = !!exportDesc
         const destV = String(dest || '').trim()
         setExporting(true)
         setExMsg('导出中…')
-        const keysP = scope === 'all'
-          ? jget('/bookmarks').then(function (r) { return ((r && r.bookmarks) || []).map(function (x) { return x.bookKey }) })
-          // C3：导出「当前筛选」按**当前排序**的顺序（不是 host 原顺序）
-          : Promise.resolve(scope === 'selected' ? sel.slice() : sorted.map(function (b) { return b.bookKey }))
+        const keysP = scope !== 'filtered'
+          ? jget('/bookmarks').then(function (r) {
+              return sortBookmarks((r && r.bookmarks) || [], sortKey).filter(function (b) { return scope !== 'selected' || sel.indexOf(b.bookKey) >= 0 }).map(function (b) { return b.bookKey })
+            })
+          // 各范围都按当前排序；已选条目即使被筛选隐藏也保留。
+          : Promise.resolve(sorted.map(function (b) { return b.bookKey }))
         keysP.then(function (keys) {
           if (!keys || !keys.length) { setExMsg('这个范围没有可导出的条目'); return null }
           try {
             localStorage.setItem('rank-scan-panel:export:fmt:v1', fmtV)
+            localStorage.setItem('rank-scan-panel:export:sort:v1', sortV)
+            localStorage.setItem('rank-scan-panel:export:desc:v1', descV ? '1' : '0')
             localStorage.setItem('rank-scan-panel:export:dest:v1', destV)
           } catch (e) {}
-          return jpost('/bookmark/export-file', { format: fmtV, bookKeys: keys, dest: destV || undefined })
+          return jpost('/bookmark/export-file', { format: fmtV, sort: sortV, includeDesc: descV, bookKeys: keys, dest: destV || undefined })
             .then(function (r) { setExMsg((r && r.note) || ('已导出 ' + keys.length + ' 条')) })
         }).catch(function (e) { setExMsg('导出失败：' + e) }).then(function () { setExporting(false) })
       }
@@ -309,6 +342,102 @@
           setManual('')
           return store.refreshList()
         }).then(function () { bump() }).catch(function (e) { store.msg = null; toast('error', '添加失败：' + e); bump() })
+      }
+      const copyLink = function (u) {
+        if (!u) return
+        if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          navigator.clipboard.writeText(u).then(function () { toast('success', '链接已复制') }).catch(function () { toast('warn', '复制失败，请手动复制') })
+        }
+      }
+      /** 备注编辑框自适应行数：最小 4 行、按文本长度与换行自动撑开，避免 200 字拆书笔记只露两行 */
+      const noteEditorRows = function (text) {
+        const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n')
+        let rows = 0
+        lines.forEach(function (ln) { rows += Math.max(1, Math.ceil((ln.length || 1) / 34)) })
+        return Math.max(4, Math.min(14, rows + 1))
+      }
+      const syncTextareaHeight = function (el) {
+        if (!el || !el.style) return
+        el.style.height = 'auto'
+        if (typeof el.scrollHeight === 'number' && el.scrollHeight > 0) {
+          el.style.height = Math.min(340, Math.max(88, el.scrollHeight + 4)) + 'px'
+        }
+      }
+      const fmtBrief = function (n) {
+        if (typeof n !== 'number' || !Number.isFinite(n)) return '—'
+        if (n >= 100000000) return (n / 100000000).toFixed(2).replace(/\.?0+$/, '') + '亿'
+        if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + '万'
+        return fmtRead(n)
+      }
+      /** 优先消费 host 算好的 boardSummary；离线单测/旧对象无该字段时在前端按 boardId 去重聚合兜底 */
+      const resolveSummary = function (b) {
+        if (b && b.boardSummary) return b.boardSummary
+        const raw = []
+        if (b && b.firstSeen) raw.push(b.firstSeen)
+        if (b && Array.isArray(b.seenBoards)) b.seenBoards.forEach(function (s) { if (s) raw.push(s) })
+        if (!raw.length) return { primary: null, others: [] }
+        const map = {}
+        const order = []
+        raw.forEach(function (s) {
+          const bid = String(s.boardId || '')
+          const key = bid || '__missing__'
+          const dt = String(s.dataDate || '')
+          const rk = typeof s.rank === 'number' && Number.isFinite(s.rank) ? s.rank : null
+          const isOfficial = !!bid && bid.indexOf('fanqie.derived.') !== 0 && bid.indexOf('qidiantu.') !== 0 && bid !== 'ciweimao.buy.latest'
+          if (!map[key]) {
+            order.push(key)
+            map[key] = {
+              dates: dt ? { [dt]: 1 } : {},
+              item: {
+                boardId: bid,
+                siteName: '',
+                boardName: boardLabel(bid),
+                source: null,
+                isOfficial: isOfficial,
+                firstDate: dt,
+                lastDate: dt,
+                days: 1,
+                firstRank: rk,
+                latestRank: rk,
+                bestRank: rk,
+              },
+            }
+          } else {
+            const slot = map[key]
+            const it = slot.item
+            if (dt) {
+              slot.dates[dt] = 1
+              it.days = Object.keys(slot.dates).length
+              if (!it.firstDate || dt < it.firstDate) { it.firstDate = dt; if (rk != null) it.firstRank = rk }
+              if (!it.lastDate || dt >= it.lastDate) { it.lastDate = dt; if (rk != null) it.latestRank = rk }
+            }
+            if (rk != null && (it.bestRank == null || rk < it.bestRank)) it.bestRank = rk
+          }
+        })
+        const all = order.map(function (k) { return map[k].item })
+        const firstId = b && b.firstSeen ? String(b.firstSeen.boardId || '') : ''
+        const official = all.filter(function (x) { return x.isOfficial })
+        let primary = null
+        if (official.length) {
+          primary = official.filter(function (x) { return x.boardId === firstId })[0] || official[0]
+        } else {
+          primary = all.filter(function (x) { return x.boardId === firstId })[0] || all[0]
+        }
+        return { primary: primary, others: all.filter(function (x) { return x !== primary }) }
+      }
+      const fmtBoardItem = function (it, bookSiteName) {
+        if (!it) return '—'
+        const showSite = it.siteName && it.siteName !== bookSiteName
+        const name = (showSite ? it.siteName + ' · ' : '') + (it.boardName || boardLabel(it.boardId)) + (it.source ? '（' + it.source + '）' : '')
+        const rk = it.latestRank != null ? it.latestRank : it.firstRank
+        const notes = []
+        if (it.bestRank != null && rk != null && it.bestRank < rk) notes.push('最高第 ' + it.bestRank + ' 名')
+        if (it.days > 1) notes.push('在榜 ' + it.days + ' 天')
+        const datePart = it.firstDate && it.lastDate && it.firstDate !== it.lastDate
+          ? it.firstDate.slice(5) + ' ~ ' + it.lastDate.slice(5)
+          : (it.lastDate || it.firstDate)
+        if (datePart) notes.push(datePart)
+        return name + ' 第 ' + (rk == null ? '—' : rk) + ' 名' + (notes.length ? '（' + notes.join('，') + '）' : '')
       }
       const collectTitle = function (b, lab) {
         const src = b.collectFrom === 'qidian-book-cache' ? '来自起点书页缓存（扫描后补全回填）'
@@ -371,10 +500,15 @@
               return h('label', { key: o[0], style: C.row },
                 h('input', { type: 'radio', name: 'rs-export-scope', checked: scope === o[0], onChange: function () { setScope(o[0]) } }),
                 h('span', null, o[1]))
-            })),
+            }),
+            h('label', { style: { ...C.row, marginLeft: 'auto' }, title: 'Markdown 默认折叠为点击展开块；Word 以浅灰小字附在笔记前；数据只读本地缓存、不额外联网' },
+              h('input', { type: 'checkbox', checked: exportDesc, onChange: function (e) { setExportDesc(!!e.target.checked) } }),
+              h('span', null, '附带作品简介'))),
           h('div', { style: C.row },
-            h('select', { style: C.input, value: fmt, onChange: function (e) { setFmt(e.target.value) } },
-              h('option', { value: 'csv' }, 'CSV'), h('option', { value: 'json' }, 'JSON'), h('option', { value: 'md' }, 'Markdown')),
+            h('select', { style: C.input, value: fmt, 'aria-label': '导出格式', onChange: function (e) { setFmt(e.target.value) } },
+              h('option', { value: 'csv' }, 'CSV'), h('option', { value: 'json' }, 'JSON'), h('option', { value: 'md' }, 'Markdown'), h('option', { value: 'doc' }, 'Word (.doc)')),
+            h('select', { style: C.input, value: exportSort, 'aria-label': '导出排序', title: '按站点：起点 → 起点图 → 刺猬猫 → 菠萝包 → 番茄；同站保持当前顺序', onChange: function (e) { setExportSort(e.target.value) } },
+              h('option', { value: 'site' }, '排序：按站点'), h('option', { value: 'current' }, '排序：当前顺序')),
             h('input', { style: { ...C.input, flex: 1, minWidth: '150px' }, placeholder: '导出目录（留空 = 默认目录）', value: dest, onChange: function (e) { setDest(e.target.value) } }),
             h('button', { className: 'rs-btn', disabled: exporting || scopeCount() === 0, title: scopeCount() === 0 ? '这个范围没有条目' : '', onClick: doExport }, exporting ? '导出中…' : '导出 ' + scopeCount() + ' 条'),
             h('button', { className: 'rs-btn', onClick: function () { jpost('/bookmark/open-folder', { path: String(dest || '').trim() || undefined }).then(function (r) { setExMsg('已打开 ' + ((r && r.opened) || '')) }).catch(function (e) { setExMsg('打不开：' + e) }) } }, '打开文件夹'),
@@ -388,91 +522,296 @@
         batch.rows.map(function (b) {
           const lab = b.collectLabel || (b.site === 'fanqie' ? '在读' : '收藏')
           const editing = editKey === b.bookKey
+          const expanded = detailKey === b.bookKey
           const noteText = String(b.note || '').replace(/\s+/g, ' ').trim()
-          const metricText = metricChipText(b.metric, b.collect, lab)
-          const oldMetric = b.metric && b.metric.value != null && b.metric.name === lab && b.metric.value !== b.collect ? b.metric.value : null
+          const summary = resolveSummary(b)
+          const rawMetricText = metricChipText(b.metric, b.collect, lab)
+          const hideDerivedMetric = b.metric && (b.metric.name === '今日涨幅' || b.metric.name === '七日累计') && summary.primary && summary.primary.isOfficial
+          const metricText = rawMetricText && !hideDerivedMetric && b.metric
+            ? b.metric.name + ' ' + fmtBrief(b.metric.value)
+            : null
+          const primaryShort = (function () {
+            const p = summary.primary
+            if (!p) return null
+            const rk = p.latestRank != null ? p.latestRank : p.firstRank
+            const name = p.boardName || boardLabel(p.boardId)
+            return name + (rk != null ? ' #' + rk : '')
+          })()
+          const kv = function (key, label, val, tip) {
+            return h('span', { key: key, style: { whiteSpace: 'nowrap' }, title: tip },
+              label ? h('span', { style: { color: T.muted, marginRight: '3px' } }, label) : null,
+              h('span', { style: { color: T.fg, fontWeight: 500 } }, val))
+          }
           /**
-           * C1：卡片最多三行（900 与 480 同一套，靠 nowrap + 省略，不写 480 特判）
-           *   ① 书名（itemTitle）+ 作者 + 右侧站点 chip
-           *   ② C.meta 中点串（收藏/在读 · 其他指标 · 截止）；只有状态类（超 7 天 / 待补）还用 chip
-           *   ③ 备注（没有就是淡色「＋ 备注」文字）+ #标签 / 夹，右侧外露「打开」「编辑」与「更多」
+           * C1：收起态紧凑三行，展开态就地切换为 DaoSearch 风格作品详情（零信息重复）：
+           *   ① 标题行：书名链接（C.itemTitle，点即开原书页）· 作者 + 右侧站点 chip / 编辑 / 更多 / 展开箭头
+           *   ② 收起态 C.meta 中点串（原官方榜名次 · 字数 · 收藏/在读 · 独立指标 · 日期）；展开态切换为「数据」卡格 +「上榜」徽章
+           *   ③ 备注 + 标签/夹：收起态 2 行左对齐预览（点即编辑）；展开态就地展开为完整多行笔记（不重复渲染）
            */
-          const metaBits = [
+          const metaBits = []
+          if (primaryShort) {
+            metaBits.push(h('span', {
+              key: 'rank',
+              style: { color: T.fg, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '45%' },
+              title: fmtBoardItem(summary.primary, siteLabel(b.site)),
+            }, primaryShort))
+          }
+          if (b.words != null) {
+            metaBits.push(kv('words', '', fmtBrief(b.words) + '字', '字数：' + fmtRead(b.words) + ' 字'))
+          }
+          metaBits.push(
             b.collect == null
-              ? h('span', { title: collectTitle(b, lab) }, lab + ' —')
-              : h('span', { title: collectTitle(b, lab) }, lab + ' ' + fmtRead(b.collect)),
-          ]
-          if (metricText) metaBits.push(h('span', null, metricText))
-          if (b.capturedAt) metaBits.push(h('span', { title: '这张卡的数据截止到这一天' }, '截止 ' + mdOf(b.capturedAt) + (b.ageDays != null ? '（' + b.ageDays + ' 天前）' : '')))
+              ? h('span', { key: 'col', style: { whiteSpace: 'nowrap' }, title: collectTitle(b, lab) }, lab + ' —')
+              : kv('col', lab, fmtBrief(b.collect), collectTitle(b, lab)),
+          )
+          if (metricText && b.metric) {
+            metaBits.push(kv('metric', b.metric.name, fmtBrief(b.metric.value), b.metric.name + '：' + fmtRead(b.metric.value)))
+          }
+          if (b.capturedAt) {
+            metaBits.push(h('span', {
+              key: 'date',
+              style: { color: T.muted, opacity: 0.8, whiteSpace: 'nowrap' },
+              title: '数据截止：' + String(b.capturedAt).slice(0, 10) + (b.ageDays != null ? '（' + b.ageDays + ' 天前）' : ''),
+            }, '截止 ' + mdOf(b.capturedAt)))
+          }
           const metaLine = []
           metaBits.forEach(function (x, k) {
             if (k) metaLine.push(metaDot('ms' + k))
             metaLine.push(x)
           })
+          const detailOthers = summary.primary && summary.primary.isOfficial
+            ? (summary.others || []).filter(function (x) { return String(x.boardId || '').indexOf('fanqie.derived.') !== 0 })
+            : (summary.others || [])
+          const honours = (summary.primary ? [summary.primary] : []).concat(detailOthers)
+          const srcLabel = b.valueFrom === 'book-page' ? '书页刷新'
+            : b.valueFrom === 'manual' ? '手动添加'
+            : b.valueFrom === 'snapshot' ? '榜单快照' : ''
+          const detKey = 'bm:' + b.bookKey
+          const det = bmDet && bmDet.key === detKey ? bmDet.data : BOARD_DETAIL_CACHE[detKey]
+          const detLoading = !!(bmDet && bmDet.key === detKey && bmDet.loading)
+          const detStatus = det && det.status ? det.status : null
+          const detCat = det && det.category ? det.category : null
+          const detDesc = det && det.desc ? det.desc : null
+          const detTags = det && Array.isArray(det.tags) ? det.tags : []
+          const statusBits = []
+          if (detStatus) statusBits.push(h('span', { key: 'sst', style: { color: T.fg, fontWeight: 500, whiteSpace: 'nowrap' } }, detStatus))
+          if (detCat) statusBits.push(h('span', { key: 'scat', style: { whiteSpace: 'nowrap' } }, '分类：', h('span', { style: { color: T.fg, fontWeight: 500 } }, detCat)))
+          statusBits.push(
+            b.words != null
+              ? kv('sw', '字数', fmtBrief(b.words), '字数：' + fmtRead(b.words) + ' 字')
+              : h('span', { key: 'sw', style: { whiteSpace: 'nowrap' }, title: '暂无字数' }, '字数 —'),
+          )
+          statusBits.push(
+            b.collect != null
+              ? kv('sc', lab, fmtBrief(b.collect), collectTitle(b, lab))
+              : h('span', { key: 'sc', style: { whiteSpace: 'nowrap' }, title: collectTitle(b, lab) }, lab + ' —'),
+          )
+          if (metricText && b.metric && b.metric.value != null) {
+            statusBits.push(kv('sm', b.metric.name, fmtBrief(b.metric.value), b.metric.name + '：' + fmtRead(b.metric.value)))
+          }
+          if (b.capturedAt) {
+            statusBits.push(h('span', {
+              key: 'sdt',
+              style: { color: T.muted, whiteSpace: 'nowrap' },
+              title: '数据截止：' + String(b.capturedAt).slice(0, 10) + (b.ageDays != null ? '（' + b.ageDays + ' 天前）' : ''),
+            }, '更新 ' + String(b.capturedAt).slice(0, 10) + (srcLabel ? '（' + srcLabel + '）' : '')))
+          } else if (srcLabel) {
+            statusBits.push(h('span', { key: 'ssrc', style: { color: T.muted, whiteSpace: 'nowrap' } }, srcLabel))
+          }
+          const statusLine = []
+          statusBits.forEach(function (x, k) {
+            if (k) statusLine.push(metaDot('st' + k))
+            statusLine.push(x)
+          })
+          // 现榜严格限定为纯官方全站榜（DaoSearch），与上方「历史」（本地长期追踪）职责清晰分离
+          const liveHonours = (det && Array.isArray(det.honours) ? det.honours : []).filter(function (it) {
+            return !!(it && it.label && it.source !== 'local')
+          })
+          const renderHonour = function (it, idx) {
+            const rk = it.latestRank != null ? it.latestRank : it.firstRank
+            const showSite = it.siteName && it.siteName !== siteLabel(b.site)
+            const name = (showSite ? it.siteName + ' · ' : '') + (it.boardName || boardLabel(it.boardId))
+            const extras = []
+            if (it.bestRank != null && rk != null && it.bestRank < rk) extras.push('最高 #' + it.bestRank)
+            if (it.days > 1) extras.push('在榜 ' + it.days + ' 天')
+            const dateSpan = it.firstDate && it.lastDate && it.firstDate !== it.lastDate
+              ? it.firstDate.slice(5) + ' ~ ' + it.lastDate.slice(5)
+              : (it.lastDate || it.firstDate)
+            if (dateSpan) extras.push(dateSpan)
+            if (!it.isOfficial && it.source) extras.push(it.source)
+            return detailHonourBadge({
+              key: 'h' + idx + (it.boardId || ''),
+              rank: rk,
+              label: name,
+              meta: extras.length ? extras.join(' · ') : null,
+              title: fmtBoardItem(it, siteLabel(b.site)),
+              onWhite: true,
+            })
+          }
+          const renderLiveHonour = function (it, idx) {
+            const rk = it && typeof it.rank === 'number' && Number.isFinite(it.rank) ? it.rank : null
+            return detailHonourBadge({
+              key: 'lh' + idx + '-' + (it.label || ''),
+              rank: rk,
+              label: it.label,
+              meta: shortHonourSub(it, detCat),
+              title: (it.label || '') + (rk != null ? ' 第 ' + rk + ' 名' : '') + (it.sub ? ' · ' + it.sub : '') + '（DaoSearch 官方全站榜）',
+              onWhite: true,
+            })
+          }
+          const openBook = function (e) {
+            e.preventDefault()
+            e.stopPropagation()
+            if (b.url) (props.openLink || function (u) { window.open(u, '_blank', 'noopener,noreferrer') })(b.url)
+          }
+          const isOpen = expanded && !selectMode && !editing
+          const cardStyle = isOpen
+            ? { ...C.card, margin: '8px 0', padding: '11px 13px', borderRadius: '10px', border: '1px solid ' + wash(T.accent, 48), boxShadow: 'inset 3px 0 0 ' + T.accent, cursor: 'pointer', textAlign: 'left' }
+            : { ...C.card, margin: '8px 0', padding: '10px 12px', borderRadius: '10px', cursor: 'pointer', textAlign: 'left' }
+          const hasTagsOrFolders = !!((b.tags || []).length || (b.folders || []).length)
           return h('div', {
             key: b.bookKey,
-            style: selectMode ? { ...C.card, padding: '6px 8px', cursor: 'pointer' } : { ...C.card, padding: '6px 8px' },
-            /* C6：批量选择时点卡片空白处即勾选（按钮 / 链接 / 输入框不算空白） */
+            className: isOpen ? 'rs-bm-card is-open' : 'rs-bm-card',
+            'aria-expanded': expanded ? 'true' : 'false',
+            style: cardStyle,
+            /* 统一榜单页交互：普通模式点卡片空白处展开/收起详情；批量模式点卡片空白处勾选 */
             onClick: function (e) {
-              if (!selectMode) return
               const t = e && e.target
               if (t && t.closest && t.closest('button,a,input,select,textarea,label')) return
-              toggleSel(b.bookKey)
+              if (selectMode) { toggleSel(b.bookKey); return }
+              if (t && t.closest && t.closest('[data-bm-panel="edit"]')) return
+              if (typeof window !== 'undefined' && window.getSelection && String(window.getSelection()).trim()) return
+              setDetailKey(expanded ? null : b.bookKey)
             },
           },
             /* ① 标题行 */
-            h('div', { style: { ...C.row, flexWrap: 'nowrap', marginTop: 0 } },
+            h('div', { style: { ...C.row, flexWrap: 'nowrap', gap: '4px', marginTop: 0, marginBottom: '3px', alignItems: isOpen ? 'flex-start' : 'center' } },
               selectMode ? h('input', { type: 'checkbox', style: { margin: '0 2px', flex: '0 0 auto' }, checked: sel.indexOf(b.bookKey) >= 0, onChange: function () { toggleSel(b.bookKey) } }) : null,
-              h('span', { style: { ...C.itemTitle, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: b.label }, b.label),
-              b.author ? h('span', { style: { ...C.muted, flex: '0 0 auto', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: b.author }, b.author) : null,
-              h('span', { style: { ...C.chip, marginLeft: 'auto', marginRight: 0, flex: '0 0 auto' } }, siteLabel(b.site))),
-            /* ② 元信息行：中点串；状态类才留 chip */
-            h('div', { style: { ...C.meta, display: 'flex', alignItems: 'center', overflow: 'hidden', marginTop: '2px' } },
-              metaLine,
-              b.ageDays != null && b.ageDays >= 7 ? h('span', { style: { ...C.chip, color: T.warn, flex: '0 0 auto', margin: '0 0 0 4px' }, title: '超过 7 天没有变新：点「更新本书数据」试试；仍不变则这个来源可能取不到数了' }, '数据已 ' + b.ageDays + ' 天未更新') : null,
-              b.valueFrom === 'manual' ? h('span', { style: { ...C.chip, flex: '0 0 auto', margin: '0 0 0 4px' } }, '待补') : null),
-            /* ③ 备注 + 标签/夹（左） · 操作（右） */
-            h('div', { style: { ...C.row, flexWrap: 'nowrap', marginTop: '2px' } },
-              noteText
-                ? h('button', {
-                    // 0.6.0 修：有备注的文字以前是「加粗 + 常驻下划线」，看着像链接（与 A1 冲突）。
-                    //   button 语义不变，样式交给 .rs-note-text：常规字重、正文色、只有 hover / focus-visible 出下划线。
-                    className: 'rs-note-text',
-                    style: { flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: T.fs.s, textAlign: 'left' },
-                    title: '编辑备注',
-                    onClick: function (e) { e.preventDefault(); startEdit(b) },
-                  }, noteText)
-                : h('button', {
-                    className: 'rs-btn is-ghost',
-                    style: { color: T.muted, flex: '0 0 auto' },
-                    title: '加备注',
-                    onClick: function (e) { e.preventDefault(); startEdit(b) },
-                  }, '＋ 备注'),
-              (b.tags || []).map(function (t) { return h('span', { key: 't' + t, style: { ...C.chip, flex: '0 0 auto' } }, '#' + t) }),
-              (b.folders || []).map(function (x) { return h('span', { key: 'f' + x, style: { ...C.chip, flex: '0 0 auto' } }, '夹 ' + x) }),
-              h('span', { style: { marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '4px', flex: '0 0 auto' } },
-                h('a', {
-                  href: b.url || '#', className: 'rs-btn is-ghost',
-                  style: { color: 'inherit', textDecoration: 'none' }, title: '在 DSH 侧栏浏览器打开',
-                  onClick: function (e) { e.preventDefault(); (props.openLink || function (u) { window.open(u, '_blank', 'noopener,noreferrer') })(b.url) },
-                }, '打开'),
-                h('button', { className: 'rs-btn is-ghost', onClick: function () { startEdit(b) }, title: '编辑备注/夹' }, '编辑'),
+              b.url
+                ? h('a', {
+                    href: b.url,
+                    className: 'rs-bm-title',
+                    style: { ...C.itemTitle, fontSize: isOpen ? '15px' : '14px', fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: isOpen ? 'normal' : 'nowrap', color: T.fg },
+                    title: b.label + ' · 在 DSH 侧栏浏览器打开',
+                    onClick: openBook,
+                  }, b.label)
+                : h('span', {
+                    className: 'rs-bm-title',
+                    style: { ...C.itemTitle, fontSize: isOpen ? '15px' : '14px', fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: isOpen ? 'normal' : 'nowrap' },
+                    title: b.label,
+                  }, b.label),
+              b.author ? metaDot('au') : null,
+              b.author ? h('span', { style: { ...C.muted, flex: '0 1 auto', maxWidth: '30%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: b.author }, b.author) : null,
+              h('span', { style: { marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '4px', flex: '0 0 auto' }, onClick: function (e) { e.stopPropagation() } },
+                b.watched ? h('span', { style: { ...C.chip, marginRight: '2px', fontSize: T.fs.xs, padding: '1px 6px', color: T.accent, background: wash(T.accent, 12) }, title: '已开启概览首页盯盘' }, '盯盘') : null,
+                h('span', { style: { ...C.chip, marginRight: '2px', fontSize: T.fs.xs, padding: '1px 6px' } }, siteLabel(b.site)),
+                h('button', { className: 'rs-btn is-ghost', style: { padding: '0 7px' }, onClick: function (e) { e.stopPropagation(); startEdit(b) }, title: '编辑备注/夹' }, '编辑'),
                 h(PopMenu, { label: '更多', width: 190, items: [
+                  { label: b.watched ? '取消首页盯盘' : '加入首页盯盘', onClick: function () {
+                    const want = !b.watched
+                    store.act({ action: 'watch', bookKey: b.bookKey, watched: want })
+                      .then(function () { toast('success', want ? '已加入首页盯盘' : '已取消首页盯盘'); return store.refreshList() })
+                      .then(bump)
+                      .catch(function (err) { toast('error', '切换盯盘失败：' + err) })
+                  }, title: '按需在概览首页追踪该书近期变动' },
                   { label: '更新本书数据（联网）', onClick: function () { doRefresh([b.bookKey]) }, title: '按书页取一次最新读数' },
-                  { label: detailKey === b.bookKey ? '收起详情' : '查看详情', onClick: function () { setDetailKey(detailKey === b.bookKey ? null : b.bookKey) } },
+                  b.url ? { label: '复制原页链接', onClick: function () { copyLink(b.url) } } : null,
                   { sep: true },
                   { label: '删除', onClick: function () { doRemove(b) } },
-                ] }))),
-            editing ? h('div', { style: { ...C.detail, marginTop: '4px' } },
-              h('div', { style: C.row },
-                h('span', { style: C.muted }, '备注'),
+                ].filter(Boolean) }),
+                h('span', {
+                  style: { color: T.muted, fontSize: '11px', lineHeight: 1, padding: '0 2px', userSelect: 'none', cursor: 'pointer' },
+                  'aria-hidden': 'true',
+                  title: expanded ? '收起详情' : '展开详情',
+                  onClick: function (e) { e.stopPropagation(); if (!selectMode) setDetailKey(expanded ? null : b.bookKey) },
+                }, expanded ? '▾' : '▸'))),
+            /* ② 元信息行：收起态/编辑态单行摘要；展开态统一为「作品事实 → 全宽简介 → 站点标签」 */
+            !isOpen
+              ? h('div', { style: { ...C.meta, ...C.num, display: 'flex', alignItems: 'center', overflow: 'hidden', marginTop: '2px', textAlign: 'left' } },
+                  metaLine,
+                  b.ageDays != null && b.ageDays >= 7 ? h('span', { style: { ...C.chip, color: T.warn, flex: '0 0 auto', margin: '0 0 0 6px' }, title: '超过 7 天没有变新：点「更新本书数据」试试；仍不变则这个来源可能取不到数了' }, '数据已 ' + b.ageDays + ' 天未更新') : null,
+                  b.valueFrom === 'manual' ? h('span', { style: { ...C.chip, flex: '0 0 auto', margin: '0 0 0 6px' } }, '待补') : null)
+              : h('div', { 'data-bm-panel': 'detail', style: { display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px', textAlign: 'left' } },
+                  h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '3px 0', fontSize: T.fs.s, color: T.muted, ...C.num, textAlign: 'left' } },
+                    statusLine,
+                    b.ageDays != null && b.ageDays >= 7 ? h('span', { style: { ...C.chip, color: T.warn, flex: '0 0 auto', margin: '0 0 0 6px' }, title: '超过 7 天没有变新：点「更新本书数据」试试' }, '数据已 ' + b.ageDays + ' 天未更新') : null,
+                    b.valueFrom === 'manual' ? h('span', { style: { ...C.chip, flex: '0 0 auto', margin: '0 0 0 6px' } }, '待补') : null),
+                  detDesc ? h('div', { style: { minWidth: 0, textAlign: 'left' } }, h(BoardDesc, { text: detDesc })) : (detLoading ? h('div', { style: C.muted }, '正在加载简介与标签…') : null),
+                  detTags.length ? detailKvRow('bm-tags', '标签', detTags.map(detailTagChip)) : null),
+            /* ③ 备注 + 标签/夹：收起态 2 行左对齐预览；展开态中间段展示完整笔记，底部接榜单历史与现榜 */
+            !editing
+              ? (isOpen
+                  ? [
+                      h('div', { key: 'bm-note-sec', style: { marginTop: '8px', paddingTop: '8px', borderTop: '1px solid ' + wash(T.border, 45), textAlign: 'left' } },
+                        detailKvRow('bm-note', '笔记',
+                          h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0, flex: '1 1 100%' } },
+                            b.note
+                              ? h('button', {
+                                  className: 'rs-note-text',
+                                  style: { display: 'block', width: '100%', textAlign: 'left', fontSize: T.fs.m, border: 'none', background: 'transparent', padding: 0, margin: 0, cursor: 'pointer', color: T.fg },
+                                  title: '点击编辑备注',
+                                  onClick: function (e) { e.preventDefault(); e.stopPropagation(); startEdit(b) },
+                                }, h('span', { className: 'rs-note-full', style: { display: 'block', width: '100%', whiteSpace: 'pre-wrap', wordBreak: 'break-word', textAlign: 'left', lineHeight: 1.68 } }, String(b.note)))
+                              : h('div', { style: { display: 'flex', alignItems: 'center' } },
+                                  h('button', {
+                                    className: 'rs-btn is-ghost',
+                                    style: { color: T.muted, height: '22px', padding: '0' },
+                                    title: '加备注',
+                                    onClick: function (e) { e.preventDefault(); e.stopPropagation(); startEdit(b) },
+                                  }, '＋ 备注')),
+                            hasTagsOrFolders
+                              ? h('div', { className: 'rs-bm-tags', style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px', marginTop: 0 } },
+                                  (b.tags || []).map(function (t) { return h('span', { key: 't' + t, style: { ...C.chip, marginRight: 0, fontSize: T.fs.xs, color: T.muted } }, '#' + t) }),
+                                  (b.folders || []).map(function (x) { return h('span', { key: 'f' + x, style: { ...C.chip, marginRight: 0, fontSize: T.fs.xs, color: T.muted } }, '夹 ' + x) }))
+                              : null))),
+                      h('div', { key: 'bm-hon-sec', style: { marginTop: '8px', paddingTop: '8px', borderTop: '1px solid ' + wash(T.border, 45), display: 'flex', flexDirection: 'column', gap: '6px', textAlign: 'left' } },
+                        honours.length
+                          ? detailKvRow('bm-hist', '历史', honours.map(renderHonour))
+                          : (!liveHonours.length ? detailKvRow('bm-hist', '历史', h('span', { style: { ...C.muted, lineHeight: '22px' } }, '手动添加 · 暂无上榜记录（点「更多 → 更新本书数据」可按书页刷新）')) : null),
+                        liveHonours.length ? detailKvRow('bm-live', '现榜', liveHonours.map(renderLiveHonour)) : null),
+                    ]
+                  : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '5px', marginTop: '6px', minWidth: 0, textAlign: 'left' } },
+                      noteText
+                        ? h('button', {
+                            className: 'rs-note-text',
+                            style: { display: 'block', width: '100%', textAlign: 'left', fontSize: T.fs.s, border: 'none', background: 'transparent', padding: 0, margin: 0, cursor: 'pointer', color: T.fg },
+                            title: '点击编辑备注',
+                            onClick: function (e) { e.preventDefault(); e.stopPropagation(); startEdit(b) },
+                          }, h('span', { className: 'rs-note-clamp', style: { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', width: '100%', textAlign: 'left' } }, noteText))
+                        : h('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px' } },
+                            h('button', {
+                              className: 'rs-btn is-ghost',
+                              style: { color: T.muted, height: '24px', padding: '0 4px', flex: '0 0 auto' },
+                              title: '加备注',
+                              onClick: function (e) { e.preventDefault(); e.stopPropagation(); startEdit(b) },
+                            }, '＋ 备注')),
+                      hasTagsOrFolders
+                        ? h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px' } },
+                            (b.tags || []).map(function (t) { return h('span', { key: 't' + t, style: { ...C.chip, marginRight: 0, fontSize: T.fs.xs, color: T.muted } }, '#' + t) }),
+                            (b.folders || []).map(function (x) { return h('span', { key: 'f' + x, style: { ...C.chip, marginRight: 0, fontSize: T.fs.xs, color: T.muted } }, '夹 ' + x) }))
+                        : null))
+              : (!noteText
+                  ? h('div', { style: { display: 'flex', alignItems: 'center', marginTop: '4px' } },
+                      h('button', {
+                        className: 'rs-btn is-ghost',
+                        style: { color: T.muted, height: '24px', padding: '0 4px', flex: '0 0 auto' },
+                        title: '加备注',
+                        onClick: function (e) { e.preventDefault(); e.stopPropagation(); startEdit(b) },
+                      }, '＋ 备注'))
+                  : null),
+            editing ? h('div', { 'data-bm-panel': 'edit', style: { ...C.detail, marginTop: '8px', padding: '10px 12px', textAlign: 'left' } },
+              h('div', { style: { ...C.row, alignItems: 'flex-start' } },
+                h('span', { style: { ...C.muted, paddingTop: '5px', width: '40px', flex: '0 0 auto' } }, '备注'),
                 h('textarea', {
-                  rows: 2, value: draft.note, placeholder: '可用 #标签',
-                  onChange: function (e) { setDraft({ ...draft, note: e.target.value }) },
-                  style: { ...C.input, height: 'auto', flex: 1, minWidth: '160px', resize: 'vertical', fontFamily: 'inherit' },
+                  ref: syncTextareaHeight,
+                  rows: noteEditorRows(draft.note),
+                  value: draft.note,
+                  placeholder: '写拆书笔记，可用 #标签',
+                  onChange: function (e) { setDraft({ ...draft, note: e.target.value }); syncTextareaHeight(e.target) },
+                  style: { ...C.input, height: 'auto', minHeight: '96px', maxHeight: '360px', flex: 1, minWidth: '160px', padding: '6px 8px', lineHeight: 1.6, resize: 'vertical', fontFamily: 'inherit', overflowY: 'auto', textAlign: 'left' },
                 })),
               h('div', { style: C.row },
-                h('span', { style: C.muted }, '书签夹'),
+                h('span', { style: { ...C.muted, width: '40px', flex: '0 0 auto' } }, '书签夹'),
                 h('input', {
                   style: { ...C.input, flex: 1, minWidth: '120px' }, value: draft.folders, placeholder: '空格分隔，可属于多个夹',
                   onChange: function (e) { setDraft({ ...draft, folders: e.target.value }) },
@@ -486,17 +825,7 @@
                       h('button', { className: 'rs-btn', onClick: function () { closeEdit() } }, '放弃'),
                       h('button', { className: 'rs-btn', onClick: function () { setDiscardAsk(false) } }, '继续编辑'))
                   : null,
-                editErr ? h('span', { style: { color: T.bad } }, editErr) : null)) : null,
-            detailKey === b.bookKey ? h('div', { style: { ...C.detail, marginTop: '4px' } },
-              oldMetric != null ? h('div', { style: C.muted }, '旧读数（书签记录）：' + lab + ' ' + fmtRead(oldMetric) + ' —— 最近一次自动更新时的值，与上面的实时值不是同一时点') : null,
-              b.firstSeen
-                ? h('div', { style: C.muted }, '首次发现：' + boardLabel(b.firstSeen.boardId) + ' 第 ' + (b.firstSeen.rank == null ? '—' : b.firstSeen.rank) + ' 名（' + b.firstSeen.dataDate + '）')
-                : h('div', { style: C.muted }, '手动添加 · 无榜单来源'),
-              b.source === 'manual' ? h('div', { style: C.muted }, '不在任何榜里 ⇒ 不会自动更新；点「更新本书数据」按书页取一次') : null,
-              (b.seenBoards || []).length > 1
-                ? h('div', { style: C.muted }, '也上过：' + (b.seenBoards || []).map(function (s) { return boardLabel(s.boardId) }).join('、'))
-                : null,
-              h('div', { style: C.muted }, '备注与夹只由你改：任何自动更新都不会覆盖。')) : null)
+                editErr ? h('span', { style: { color: T.bad } }, editErr) : null)) : null)
         }),
         /* C4：分批的底部计数；全选与导出「当前筛选」仍按**全量筛选结果**，不是这里的已渲染条数 */
         batch.hasMore ? h('div', { style: { ...C.row, marginTop: '4px' } },

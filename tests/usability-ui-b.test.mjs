@@ -187,32 +187,41 @@ test('列按可用宽度装：宽面板一列不少，变窄从最不重要的�
   assert.deepEqual(fitColumns([], 700), [])
 })
 
-test('★ 概览：问题在前、变化在后；没问题时不渲染空异常块', () => {
+test('★ 概览：问题在前、平台卡在后；没问题时不渲染空异常块', () => {
   const { mod } = load()
   const Overview = mod.__test.components.Overview
   const withIssue = textOf(expand(Overview({ ov: ovFixture(), busy: false, act() {}, reload() {}, narrow: false, rev: 'r1' })))
   assert.match(withIssue, /需要处理/, '有缺失榜时必须出现「需要处理」')
   assert.match(withIssue, /扫描已选榜/)
   assert.match(withIssue, /重新载入/)
-  assert.match(withIssue, /今天的变化/)
-  assert.ok(withIssue.indexOf('需要处理') < withIssue.indexOf('今天的变化'), '问题块要在变化之前')
-  const clean = ovFixture({ counts: { ok: 2, missing: 0, stale: 0, login_required: 0, truncated: 0 }, sites: [{ site: 'qidian', siteName: '起点', boards: [ovFixture().sites[0].boards[0]] }] })
+  assert.match(withIssue, /起点/)
+  assert.ok(withIssue.indexOf('需要处理') < withIssue.indexOf('轻小说'), '问题块要在平台内容之前')
+  const clean = ovFixture({ counts: { ok: 1, missing: 0, stale: 0, login_required: 0, truncated: 0 }, sites: [{ site: 'qidian', siteName: '起点', boards: [ovFixture().sites[0].boards[0]] }] })
   const okText = textOf(expand(Overview({ ov: clean, busy: false, act() {}, reload() {}, narrow: false, rev: 'r1' })))
   assert.ok(!/需要处理/.test(okText), '没有问题时不许留空异常框')
-  assert.match(okText, /待处理\s*无/)
-  assert.match(okText, /没有要处理的/)
+  assert.ok(!/项待处理/.test(okText), '没有问题时不显示待处理警报胶囊')
 })
 
-test('概览不再承担存储/保留（移到设置），全部榜单可折叠', () => {
+test('概览不再承担存储/保留（移到设置），起点与起点图合并为同一平台卡且未到计划不标红', () => {
   const { mod } = load()
   const Overview = mod.__test.components.Overview
-  const el = expand(Overview({ ov: ovFixture(), busy: false, act() {}, reload() {}, narrow: false, rev: 'r1' }))
+  const mergedOv = ovFixture({
+    counts: { ok: 1, missing: 1, stale: 0, login_required: 0, truncated: 0 },
+    sites: [
+      { site: 'qidian', siteName: '起点', boards: [ovFixture().sites[0].boards[0]] },
+      { site: 'qidiantu', siteName: '起点图', boards: [{ boardId: 'qidiantu.shouding', name: '首订榜', status: 'missing', scheduleState: 'waiting', plannedTime: '21:30', up: null, newCount: null, out: null, lastCapture: null, note: null, derived: false, displayed: true }] },
+    ],
+  })
+  const opened = []
+  const el = expand(Overview({ ov: mergedOv, busy: false, act() {}, reload() {}, onOpenBoard(id) { opened.push(id) }, narrow: false, rev: 'r1' }))
   const txt = textOf(el)
   assert.ok(!/保留 \d+ 天/.test(txt), '保留天数不许再占概览')
-  assert.match(txt, /全部榜单\s*（2）/)
-  const toggle = collect(el).filter((n) => n.type === 'button' && /^(收起|展开)$/.test(textOf(n)))
-  assert.equal(toggle.length, 1)
-  assert.equal(toggle[0].props['aria-expanded'], 'true', '默认展开，功能不许被藏掉')
+  assert.ok(!/需要处理/.test(txt), '未到计划的起点图榜不许触发假异常')
+  assert.match(txt, /1\/2\s*·\s*21:30/, '起点与起点图合并计数并显示下轮计划时间')
+  const shoudingBtn = collect(el).find((n) => n.type === 'button' && /首订/.test(textOf(n)))
+  assert.ok(shoudingBtn, '合并后的起点卡底应直接提供「首订」速跳胶囊')
+  shoudingBtn.props.onClick()
+  assert.deepEqual(opened, ['qidiantu.shouding'], '点击榜胶囊直接跳转到对应榜单页')
 })
 
 test('★ 书签：默认紧凑卡（不铺开编辑框），编辑与删除收进「更多」', () => {
@@ -233,7 +242,7 @@ test('★ 书签：默认紧凑卡（不铺开编辑框），编辑与删除收�
   const nodes = collect(el)
   assert.equal(nodes.filter((n) => n.type === 'textarea').length, 0, '默认不许铺开备注编辑框')
   assert.ok(nodes.some((n) => n.type === 'button' && /更多/.test(textOf(n))), '低频操作收进更多')
-  assert.ok(nodes.some((n) => n.type === 'a' && textOf(n) === '打开'))
+  assert.ok(nodes.some((n) => n.type === 'a' && /测试书/.test(textOf(n))), '点书名直接打开原书页')
   const region = SRC.slice(SRC.indexOf('function BookmarksTab'), SRC.indexOf('function BoardTab'))
   assert.ok(region.indexOf("target: '_blank'") < 0, '书签卡的打开必须走侧栏浏览器，不许裸新标签')
   assert.match(region, /保存失败：' \+ e \+ '　（草稿还在/, '保存失败要留草稿并说清楚')
@@ -1022,4 +1031,317 @@ test('Spec A：返回最新读取失败保留历史内容，重试可恢复最�
   click(tree, '重试'); tree = await app.flush(); tree = await app.flush()
   assert.match(textOf(tree), /最新书/)
   assert.doesNotMatch(textOf(tree), /直查边界书/)
+})
+
+test('书签导出控件：DOC、按站排序和当前顺序通过真实回调传给服务', async () => {
+  const shared = bmShared(BM_TWO)
+  const { mod, mount, calls, sandbox } = loadInteractive({ shared, routes: { '/bookmarks': shared.bookmarks.list, '/bookmark/export-file': { ok: true, note: '导出完成' } } })
+  const app = mount(mod.__test.components.BookmarksTab, {})
+  let tree = await app.flush()
+  click(tree, '更多 ▾'); tree = app.render()
+  const item = nodesOf(tree, n => textOf(n).trim() === '导出…' && typeof n.props.onClick === 'function')[0]
+  assert.ok(item)
+  item.props.onClick({ preventDefault() {}, stopPropagation() {} }); tree = app.render()
+  const select = label => nodesOf(tree, n => n.type === 'select' && n.props['aria-label'] === label)[0]
+  assert.equal(select('导出排序').props.value, 'site')
+  assert.match(textOf(select('导出格式')), /Word \(\.doc\)/)
+  tree = app.act(() => select('导出格式').props.onChange({ target: { value: 'doc' } }))
+  click(tree, '导出 2 条'); tree = await app.flush()
+  let request = calls.filter(c => c.url.endsWith('/bookmark/export-file')).at(-1).body
+  assert.equal(request.format, 'doc')
+  assert.equal(request.sort, 'site')
+  assert.equal(request.includeDesc, true, '默认开启附带作品简介')
+  assert.deepEqual(request.bookKeys, ['qidian:1', 'qidian:2'])
+  const descBox = nodesOf(tree, n => n.type === 'input' && n.props.type === 'checkbox')[0]
+  assert.ok(descBox && descBox.props.checked === true, '导出区应有默认勾选的「附带作品简介」复选框')
+  tree = app.act(() => descBox.props.onChange({ target: { checked: false } }))
+  tree = app.act(() => select('导出排序').props.onChange({ target: { value: 'current' } }))
+  click(tree, '导出 2 条'); tree = await app.flush()
+  request = calls.filter(c => c.url.endsWith('/bookmark/export-file')).at(-1).body
+  assert.equal(request.sort, 'current')
+  assert.equal(request.includeDesc, false, '取消勾选后应传 includeDesc:false')
+  assert.equal(sandbox.localStorage.getItem('rank-scan-panel:export:desc:v1'), '0')
+  assert.equal(sandbox.localStorage.getItem('rank-scan-panel:export:sort:v1'), 'current')
+  assert.equal(sandbox.localStorage.getItem('rank-scan-panel:export:fmt:v1'), 'doc')
+  const listSort = nodesOf(tree, n => n.type === 'select' && String(n.props.title || '').startsWith('只改列表顺序'))[0]
+  tree = app.act(() => listSort.props.onChange({ target: { value: 'collect' } }))
+  const allScope = nodesOf(tree, n => n.type === 'input' && n.props.type === 'radio').at(-1)
+  tree = app.act(() => allScope.props.onChange())
+  click(tree, '导出 2 条'); tree = await app.flush()
+  request = calls.filter(c => c.url.endsWith('/bookmark/export-file')).at(-1).body
+  assert.deepEqual(request.bookKeys, ['qidian:2', 'qidian:1'], '全部范围也保留当前列表排序')
+})
+
+test('书签导出已选范围：按当前排序而非选择顺序发送书签键', async () => {
+  const shared = bmShared(BM_TWO)
+  const { mod, mount, calls } = loadInteractive({ shared, routes: { '/bookmarks': shared.bookmarks.list, '/bookmark/export-file': { ok: true } } })
+  const app = mount(mod.__test.components.BookmarksTab, {})
+  let tree = await app.flush()
+  click(tree, '更多 ▾'); tree = app.render()
+  const item = nodesOf(tree, n => textOf(n).trim() === '批量选择' && typeof n.props.onClick === 'function')[0]
+  item.props.onClick({ preventDefault() {}, stopPropagation() {} }); tree = app.render()
+  click(tree, '全选当前筛选（2）'); tree = app.render()
+  click(tree, '导出已选'); tree = app.render()
+  const sort = nodesOf(tree, n => n.type === 'select' && String(n.props.title || '').startsWith('只改列表顺序'))[0]
+  tree = app.act(() => sort.props.onChange({ target: { value: 'collect' } }))
+  shared.bookmarks.list = { bookmarks: [BM_TWO[0]], folders: [] }
+  tree = app.render()
+  click(tree, '导出 2 条'); tree = await app.flush()
+  const request = calls.filter(c => c.url.endsWith('/bookmark/export-file')).at(-1).body
+  assert.deepEqual(request.bookKeys, ['qidian:2', 'qidian:1'])
+  assert.equal(request.sort, 'site')
+})
+
+test('书签卡片交互统一：点书名直开、点卡片展开详情、长备注编辑框自适应撑高', async () => {
+  const longNote = '第一行拆书长笔记：都市男主穿书，病娇多女主，开局是经典的植物人女主加偷听心声组合，都加了层反派人设叠了挺多元素，主角是反派赘婿，女主是女魔头。\n第二行写作参考要点：变百可以多参考这类屑主角后续会被女主清算的人设。'
+  const item = {
+    bookKey: 'fanqie:7701746603899505689',
+    label: '样书',
+    author: '某作者',
+    site: 'fanqie',
+    words: 243147,
+    collect: 292127,
+    collectLabel: '在读',
+    metric: { name: '在读', value: 310000 },
+    capturedAt: '2026-11-22T04:00:00Z',
+    ageDays: 0,
+    note: longNote,
+    folders: ['2026-11-20'],
+    tags: [],
+    url: 'https://fanqienovel.com/page/7701746603899505689',
+    source: 'board',
+    firstSeen: { boardId: 'fanqie.derived.period', rank: 10, dataDate: '2026-11-18' },
+    seenBoards: [
+      { boardId: 'fanqie.derived.period', rank: 10, dataDate: '2026-11-18' },
+      { boardId: 'fanqie.m.new.262', rank: 5, dataDate: '2026-11-18' },
+      { boardId: 'fanqie.m.new.262', rank: 5, dataDate: '2026-11-19' },
+      { boardId: 'fanqie.m.new.262', rank: 5, dataDate: '2026-11-20' },
+    ],
+    boardSummary: {
+      primary: { boardId: 'fanqie.m.new.262', siteName: '番茄', boardName: '男频新书榜 × 都市脑洞', source: null, isOfficial: true, firstDate: '2026-11-18', lastDate: '2026-11-20', days: 3, firstRank: 5, latestRank: 5, bestRank: 5 },
+      others: [{ boardId: 'fanqie.derived.period', siteName: '番茄', boardName: '在读周榜（候选池内）', source: '本地派生；非原站榜单', isOfficial: false, firstDate: '2026-11-18', lastDate: '2026-11-18', days: 1, firstRank: 10, latestRank: 10, bestRank: 10 }],
+    },
+  }
+  const opened = []
+  const shared = bmShared([item])
+  const { mod, mount } = loadInteractive({ shared, routes: { '/bookmarks': shared.bookmarks.list } })
+  const app = mount(mod.__test.components.BookmarksTab, { openLink(u) { opened.push(u) } })
+  let tree = await app.flush()
+  const baseTxt = textOf(tree)
+  assert.match(baseTxt, /男频新书榜 × 都市脑洞 #5/, '卡片第二行前置展示原官方榜名次')
+  assert.match(baseTxt, /24\.3万字/)
+  assert.match(baseTxt, /在读 29\.2万/)
+  // ① 点书名直接打开原书页
+  const titleLink = nodesOf(tree, n => n.type === 'a' && textOf(n).trim() === '样书')[0]
+  assert.ok(titleLink, '书名本身应是可点击链接')
+  let stopped = false
+  tree = app.act(() => titleLink.props.onClick({ preventDefault() {}, stopPropagation() { stopped = true } }))
+  assert.equal(stopped, true, '点书名应阻止冒泡，不误展开卡片')
+  assert.deepEqual(opened, ['https://fanqienovel.com/page/7701746603899505689'])
+  // ② 点卡片空白处就地展开：作品状态数据一行 + 榜单数据一行 + 直接接完整多行笔记（无提示废话行、零重复）
+  const card = nodesOf(tree, n => n.type === 'div' && String((n.props && n.props.className) || '').includes('rs-bm-card'))[0]
+  assert.ok(card, '应渲染书签卡片容器')
+  tree = app.act(() => card.props.onClick({ target: { closest() { return null } } }))
+  const txt = textOf(tree)
+  assert.match(txt, /第一行拆书长笔记[\s\S]*\n第二行写作参考要点/, '详情里展示完整多行备注')
+  assert.equal((txt.match(/第一行拆书长笔记/g) || []).length, 1, '展开态笔记只能出现一次，不重复显示')
+  assert.equal((txt.match(/24\.3万/g) || []).length, 1, '展开态字数只展示一次')
+  assert.equal((txt.match(/29\.2万/g) || []).length, 1, '展开态在读只展示一次')
+  assert.match(txt, /字数 24\.3万/)
+  assert.match(txt, /在读 29\.2万/)
+  assert.match(txt, /更新 2026-11-22/)
+  assert.match(txt, /男频新书榜 × 都市脑洞/)
+  assert.match(txt, /在榜 3 天 · 11-18 ~ 11-20/)
+  assert.ok(!txt.includes('点击文字可编辑'), '不要单独占一行的点击编辑说明')
+  assert.ok(!txt.includes('旧读数（书签记录）'))
+  // ③ 点备注或编辑 ⇒ 编辑框自适应撑高（>2 行）且编辑时不叠加重复详情/预览
+  click(tree, '编辑'); tree = app.render()
+  const ta = nodesOf(tree, n => n.type === 'textarea')[0]
+  assert.ok(ta && ta.props.rows >= 5, '长备注编辑框应自适应撑高，实得 rows=' + (ta && ta.props.rows))
+  assert.ok(!textOf(tree).includes('在榜 3 天'), '进入编辑态时隐藏详情区避免双份信息')
+  assert.equal((textOf(tree).match(/第一行拆书长笔记/g) || []).length, 0, '编辑态不重复渲染备注预览文本')
+  click(tree, '取消'); tree = app.render()
+  assert.match(textOf(tree), /在榜 3 天/, '取消编辑后保持原详情展开态')
+  const card2 = nodesOf(tree, n => n.type === 'div' && String((n.props && n.props.className) || '').includes('rs-bm-card'))[0]
+  tree = app.act(() => card2.props.onClick({ target: { closest() { return null } } }))
+  assert.ok(!textOf(tree).includes('在榜 3 天'), '再次点卡片空白处收起详情')
+})
+
+test('榜单行详情：点开按需拉取 /book-detail，呈现简介/标签/跨榜胶囊且不重复标题行', async () => {
+  const board = boardFixture({
+    boardId: 'sfacg.new.click',
+    dataDate: '2026-11-22',
+    columns: [{ key: 'rank', label: '名次' }, { key: 'title', label: '书名' }, { key: 'author', label: '作者' }, { key: 'words', label: '字数' }],
+    rows: [{
+      key: '785673',
+      rank: 2,
+      title: '屠龙少年上龙姬学院',
+      author: '永雏挞菲',
+      url: 'https://book.sfacg.com/Novel/785673/',
+      extra: { words: 259000, collect: 6371, monthlyTickets: 312, popularity: 378000 },
+    }],
+  })
+  const detailResp = {
+    ok: true,
+    site: 'sfacg',
+    bookId: '785673',
+    fromCache: false,
+    desc: '诺恩这辈子只干过一件事，那就是屠龙！\n一年后报考了龙姬学院。',
+    tags: ['VIP付费', '变身', '多女主'],
+    status: '连载中',
+    category: '奇幻',
+    honours: [
+      { rank: 3, label: '收藏月榜', sub: null, source: 'daosearch' },
+      { rank: 13, label: '月票月榜', sub: '魔幻第7名', source: 'daosearch' },
+    ],
+  }
+  const { mod, mount, calls } = loadInteractive({
+    routes: {
+      '/catalog': CATALOG,
+      '/board': board,
+      '/book-detail': detailResp,
+    },
+  })
+  const ovSf = { sites: [{ site: 'sfacg', boards: [{ boardId: 'sfacg.new.click', name: '新书榜（点击）' }] }] }
+  const app = mount(mod.__test.components.BoardTab, { ov: ovSf, openLink() {}, narrow: false, width: 900, rev: 'r1' })
+  let tree = await app.flush()
+  const row = nodesOf(tree, n => n.type === 'tr' && n.props && n.props['data-row-idx'] === 0)[0]
+  assert.ok(row, '应渲染数据行')
+  tree = app.act(() => row.props.onClick({ target: { closest() { return null } } }))
+  tree = await app.flush()
+  const detCall = calls.find(c => c.url.includes('/book-detail'))
+  assert.ok(detCall && detCall.url.includes('site=sfacg') && detCall.url.includes('bookId=785673'), '点开行应按需请求 /book-detail')
+  const txt = textOf(tree)
+  assert.equal((txt.match(/屠龙少年上龙姬学院/g) || []).length, 1, '详情卡不重复渲染已在行内的书名')
+  assert.match(txt, /连载中/)
+  assert.match(txt, /分类：\s*奇幻/)
+  assert.match(txt, /月票 312/)
+  assert.match(txt, /人气 37\.8万/)
+  assert.match(txt, /诺恩这辈子只干过一件事/)
+  assert.match(txt, /VIP付费/)
+  assert.match(txt, /多女主/)
+  assert.match(txt, /收藏月榜/)
+  assert.match(txt, /魔幻#7/)
+  const honourNode = collect(tree).find(n => n.props && n.props.className === 'rs-bd-honour' && /月票月榜/.test(String(n.props.title || '')))
+  assert.ok(honourNode && /魔幻第7名/.test(honourNode.props.title), '悬停提示保留完整频道名次')
+})
+
+test('书签展开详情与榜单同步：按「作品事实/简介/标签 → 笔记 → 历史/现榜」顺序渲染且现榜不重复历史榜', async () => {
+  const item = {
+    bookKey: 'ciweimao:100509717',
+    label: '测试刺猬猫书',
+    author: '测试作者',
+    site: 'ciweimao',
+    words: 126200,
+    collect: 16232,
+    collectLabel: '收藏',
+    capturedAt: '2026-11-22T04:00:00Z',
+    ageDays: 0,
+    note: '我的拆书笔记正文',
+    folders: ['2026-11-20'],
+    tags: [],
+    url: 'https://www.ciweimao.com/book/100509717',
+    source: 'board',
+    boardSummary: {
+      primary: { boardId: 'ciweimao.no-vip-click.week', siteName: '刺猬猫', boardName: '点击榜（非VIP·周）', source: null, isOfficial: true, firstDate: '2026-11-02', lastDate: '2026-11-22', days: 21, firstRank: 6, latestRank: 6, bestRank: 3 },
+      others: [],
+    },
+  }
+  const shared = bmShared([item])
+  const { mod, mount, calls } = loadInteractive({
+    shared,
+    routes: {
+      '/bookmarks': shared.bookmarks.list,
+      '/book-detail': {
+        ok: true,
+        site: 'ciweimao',
+        bookId: '100509717',
+        status: '连载中',
+        category: '玄幻奇幻',
+        desc: '杀哥布林就会变强，代价是一到夜晚就会变成野兽。',
+        tags: ['男频', '签约', '多女主'],
+        honours: [
+          { rank: 6, label: '点击榜（非VIP·周）', boardId: 'ciweimao.no-vip-click.week', source: 'local' },
+          { rank: 3, label: '收藏月榜', sub: '玄幻奇幻第1名', source: 'daosearch' },
+          { rank: 18, label: '新书月票月榜', sub: '玄幻奇幻第4名', source: 'daosearch' },
+        ],
+      },
+    },
+  })
+  const app = mount(mod.__test.components.BookmarksTab, {})
+  let tree = await app.flush()
+  const card = nodesOf(tree, n => n.type === 'div' && String((n.props && n.props.className) || '').includes('rs-bm-card'))[0]
+  tree = app.act(() => card.props.onClick({ target: { closest() { return null } } }))
+  tree = await app.flush()
+  const detCall = calls.find(c => c.url.includes('/book-detail'))
+  assert.ok(detCall && detCall.url.includes('site=ciweimao') && detCall.url.includes('bookId=100509717'), '展开书签应按需拉取 /book-detail')
+  const txt = textOf(tree)
+  const iFact = txt.indexOf('玄幻奇幻')
+  const iDesc = txt.indexOf('杀哥布林就会变强')
+  const iTag = txt.indexOf('标签')
+  const iNote = txt.indexOf('我的拆书笔记正文')
+  const iHist = txt.indexOf('在榜 21 天')
+  const iLive = txt.indexOf('收藏月榜')
+  assert.ok(iFact > 0 && iDesc > iFact && iTag > iDesc && iNote > iTag && iHist > iNote && iLive > iHist,
+    '顺序必须为：作品事实 → 简介 → 标签 → 我的笔记 → 榜单历史 → 现榜')
+  assert.equal((txt.match(/点击榜（非VIP·周）/g) || []).length, 1, '历史里已有的本地榜不得在现榜重复出现')
+  assert.match(txt, /收藏月榜\s+分类#1/, '现榜同步应用分类名次精简')
+})
+
+test('概览新版交互：按需盯盘默认折叠静默老书、点书看本地走势、点平台进入单站聚焦', async () => {
+  const ov = ovFixture({
+    counts: { ok: 2, missing: 0, stale: 0, login_required: 0, truncated: 0 },
+    sites: [
+      { site: 'qidian', siteName: '起点', boards: [{ boardId: 'qidian.sign.cat12', name: '签约榜 × 轻小说（移动端口径）', status: 'ok', up: 4, newCount: 2, out: 1, lastCapture: '2026-11-23T01:30:00Z', note: null, derived: false, displayed: true }] },
+      { site: 'qidiantu', siteName: '起点图', boards: [{ boardId: 'qidiantu.shouding', name: '首订榜', status: 'missing', scheduleState: 'waiting', plannedTime: '21:30', up: null, newCount: null, out: null, lastCapture: null, note: null, derived: false, displayed: true }] },
+    ],
+  })
+  const routes = {
+    '/changes': {
+      date: '2026-11-23',
+      count: 2,
+      sites: [{
+        site: 'qidian', siteName: '起点',
+        groups: [
+          { group: '新入榜', count: 1, items: [{ boardId: 'qidian.sign.cat12', boardName: '签约榜 × 轻小说（移动端口径）', key: '1001', title: '空降新书A', rank: 1, deltaNum: null, delta: '', metric: 'rank' }] },
+          { group: '上升', count: 1, items: [{ boardId: 'qidian.sign.cat12', boardName: '签约榜 × 轻小说（移动端口径）', key: '1002', title: '飙升书B', rank: 3, deltaNum: 5, delta: '↑5', metric: 'rank' }] },
+        ],
+      }],
+    },
+    '/watch-summary': {
+      ok: true,
+      dataDate: '2026-11-23',
+      activeCount: 1,
+      quietCount: 1,
+      items: [
+        { bookKey: 'qidian:1002', title: '飙升书B', site: 'qidian', siteName: '起点', boardId: 'qidian.sign.cat12', boardName: '签约榜 × 轻小说（移动端口径）', rank: 3, prevRank: 8, statText: '第 3 名', deltaText: '↑5', deltaType: 'up', quiet: false, trend: [10, 9, 8, 8, 3], invert: true, unit: '名次' },
+        { bookKey: 'qidian:9999', title: '已拆完老书C', site: 'qidian', siteName: '起点', boardId: 'qidian.sign.cat12', boardName: '签约榜 × 轻小说（移动端口径）', rank: null, prevRank: null, statText: '9 天未上榜', deltaText: '静默', deltaType: 'quiet', quiet: true, trend: [], invert: true, unit: '名次' },
+      ],
+    },
+    '/book-trend': {
+      ok: true, bookKey: 'qidian:1002', title: '飙升书B', boardId: 'qidian.sign.cat12', boardName: '签约榜 × 轻小说（移动端口径）',
+      unit: '名次', invert: true, watched: true,
+      dates: ['2026-11-21', '2026-11-22', '2026-11-23'],
+      values: [9, 8, 3],
+      points: [{ date: '2026-11-21', rank: 9, metric: null }, { date: '2026-11-22', rank: 8, metric: null }, { date: '2026-11-23', rank: 3, metric: null }],
+    },
+    '/enrich-status': { pending: 0 },
+    '/bookmark/sync': { ok: true, total: 1, map: { 'qidian:1002': { hasNote: false, folders: [], updatedAt: '', watched: true } } },
+  }
+  const { mod, mount, calls } = loadInteractive({ routes })
+  const app = mount(mod.__test.components.Overview, { ov, width: 900, rev: 'r1', act() {}, reload() {}, onOpenBoard() {} })
+  let tree = await app.flush()
+  const t0 = textOf(tree)
+  assert.match(t0, /盯盘/)
+  assert.match(t0, /飙升书B/)
+  assert.match(t0, /\+1 静默/, '老书默认折叠成静默按钮，不占首页行')
+  assert.ok(!/已拆完老书C/.test(t0), '默认态不铺开静默老书')
+  // 点书名展开单书本地走势
+  const rowB = nodesOf(tree, n => n.type === 'div' && String((n.props && n.props.className) || '').includes('rs-ov-row') && textOf(n).includes('飙升书B'))[0]
+  assert.ok(rowB, '应渲染飙升书B行')
+  tree = app.act(() => rowB.props.onClick())
+  tree = await app.flush()
+  assert.ok(calls.some(c => c.url.includes('/book-trend') && c.url.includes('qidian%3A1002')), '点书行应请求本地单书走势')
+  assert.match(textOf(tree), /#3/, '走势抽屉应展示逐日名次')
+  assert.match(textOf(tree), /取消盯盘/, '已盯盘作品显示取消盯盘开关')
 })

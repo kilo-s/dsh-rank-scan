@@ -14,6 +14,14 @@ import { join } from 'node:path'
  * - **只缓存真取到的值**，缺失一律 null、绝不补 0；一条都没取到 ⇒ 不写缓存（下次重试）；
  * - 原子写（tmp + rename）；容量上限 2000 条（超了按 fetchedAt 淘汰最旧）。
  */
+export interface BookHonour {
+  rank: number | null
+  label: string
+  sub?: string | null
+  boardId?: string | null
+  source?: 'local' | 'daosearch'
+}
+
 export interface BookPageEntry {
   collect: number | null
   words: number | null
@@ -21,6 +29,15 @@ export interface BookPageEntry {
   author: string | null
   score: number | null
   fetchedAt: string
+  /** 按需拉取的详情元数据（7 天复用，供榜单详情与书签共享） */
+  desc?: string | null
+  /** 简介来源：origin=原站保留完整分段，daosearch=第三方聚合；原站分段不被单段聚合覆盖 */
+  descSource?: 'origin' | 'daosearch' | null
+  tags?: string[] | null
+  status?: string | null
+  category?: string | null
+  honours?: BookHonour[] | null
+  detailFetchedAt?: string | null
 }
 
 type CacheFile = { version: number; entries: Record<string, BookPageEntry> }
@@ -59,8 +76,35 @@ export function cachedEntry(root: string, site: string, bookId: string, ttlMs: n
   return { hit: true, entry: e }
 }
 
-function hasValue(e: Omit<BookPageEntry, 'fetchedAt'>): boolean {
+/** 一次性读取全部书页缓存条目（只读，不限 TTL，供书签导出等批量拼接 O(1) 查询） */
+export function readDetailMap(root: string): Record<string, BookPageEntry> {
+  return load(root).entries
+}
+
+/** 命中详情元数据缓存（按 detailFetchedAt 判 TTL，与读数补全解耦） */
+export function cachedDetail(root: string, site: string, bookId: string, ttlMs: number): { hit: boolean; entry: BookPageEntry | null } {
+  const e = load(root).entries[keyOf(site, bookId)]
+  if (!e || !e.detailFetchedAt) return { hit: false, entry: null }
+  if (!(ttlMs > 0)) return { hit: true, entry: e }
+  const at = Date.parse(e.detailFetchedAt)
+  if (!Number.isFinite(at) || Date.now() - at >= ttlMs) return { hit: false, entry: null }
+  return { hit: true, entry: e }
+}
+
+function hasBasicValue(e: Omit<BookPageEntry, 'fetchedAt'>): boolean {
   return e.collect != null || e.words != null || (e.title != null && String(e.title).trim() !== '') || e.author != null || e.score != null
+}
+
+function hasDetailValue(e: Omit<BookPageEntry, 'fetchedAt'>): boolean {
+  return (e.desc != null && String(e.desc).trim() !== '') ||
+    (Array.isArray(e.tags) && e.tags.length > 0) ||
+    (e.status != null && String(e.status).trim() !== '') ||
+    (e.category != null && String(e.category).trim() !== '') ||
+    (Array.isArray(e.honours) && e.honours.length > 0)
+}
+
+function hasValue(e: Omit<BookPageEntry, 'fetchedAt'>): boolean {
+  return hasBasicValue(e) || hasDetailValue(e)
 }
 
 /** 写入一批（原子写）；**只接受至少取到一个字段的条目**，返回写入条数 */
@@ -72,15 +116,46 @@ export function putEntries(root: string, list: { site: string; bookId: string; e
   for (const x of good) {
     const k = keyOf(x.site, x.bookId)
     const prev = cur.entries[k]
-    // 合并而不是覆盖：本次没取到的字段保留上一次的值（例如这次只补到字数、上次有收藏）
-    cur.entries[k] = {
+    const basicHit = hasBasicValue(x.entry)
+    const detailHit = hasDetailValue(x.entry)
+    // 合并而不是覆盖：本次没取到的字段保留上一次的值（读数补全与详情元数据互不冲掉）
+    const merged: BookPageEntry = {
       collect: x.entry.collect != null ? x.entry.collect : (prev ? prev.collect : null),
       words: x.entry.words != null ? x.entry.words : (prev ? prev.words : null),
       title: x.entry.title != null && String(x.entry.title).trim() !== '' ? x.entry.title : (prev ? prev.title : null),
       author: x.entry.author != null && String(x.entry.author).trim() !== '' ? x.entry.author : (prev ? prev.author : null),
       score: x.entry.score != null ? x.entry.score : (prev ? prev.score : null),
-      fetchedAt: now,
+      fetchedAt: basicHit ? now : (prev ? prev.fetchedAt : now),
     }
+    const inDesc = x.entry.desc != null && String(x.entry.desc).trim() !== '' ? String(x.entry.desc).trim() : null
+    const prevDesc = prev && prev.desc ? prev.desc : null
+    const keepOriginDesc = !!(prev && prev.descSource === 'origin' && prevDesc && x.entry.descSource !== 'origin')
+    const desc = keepOriginDesc ? prevDesc : (inDesc || prevDesc)
+    const descSource = keepOriginDesc
+      ? 'origin'
+      : (inDesc ? (x.entry.descSource || (prev && prev.descSource ? prev.descSource : null)) : (prev && prev.descSource ? prev.descSource : null))
+    const tags = Array.isArray(x.entry.tags) && x.entry.tags.length ? x.entry.tags : (prev && Array.isArray(prev.tags) && prev.tags.length ? prev.tags : null)
+    const status = x.entry.status != null && String(x.entry.status).trim() !== '' ? String(x.entry.status).trim() : (prev && prev.status ? prev.status : null)
+    const category = x.entry.category != null && String(x.entry.category).trim() !== '' ? String(x.entry.category).trim() : (prev && prev.category ? prev.category : null)
+    const honours = Array.isArray(x.entry.honours) && x.entry.honours.length ? x.entry.honours : (prev && Array.isArray(prev.honours) && prev.honours.length ? prev.honours : null)
+    // 读数补全顺手写入原站简介（无标签/状态/上榜）时，不提前置位 detailFetchedAt，免得展开详情漏拉标签与现榜
+    const richDetailHit = !!(
+      x.entry.detailFetchedAt ||
+      (Array.isArray(x.entry.tags) && x.entry.tags.length) ||
+      (x.entry.status != null && String(x.entry.status).trim() !== '') ||
+      (x.entry.category != null && String(x.entry.category).trim() !== '') ||
+      (Array.isArray(x.entry.honours) && x.entry.honours.length) ||
+      (inDesc && x.entry.descSource !== 'origin')
+    )
+    const detailFetchedAt = x.entry.detailFetchedAt || (richDetailHit ? now : (prev && prev.detailFetchedAt ? prev.detailFetchedAt : null))
+    if (desc) merged.desc = desc
+    if (descSource) merged.descSource = descSource
+    if (tags) merged.tags = tags
+    if (status) merged.status = status
+    if (category) merged.category = category
+    if (honours) merged.honours = honours
+    if (detailFetchedAt) merged.detailFetchedAt = detailFetchedAt
+    cur.entries[k] = merged
   }
   const keys = Object.keys(cur.entries)
   if (keys.length > MAX_ENTRIES) {

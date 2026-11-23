@@ -67,7 +67,70 @@ export function parseBuy(json: any): Row[] {
 }
 
 const decode = (s: string) =>
-  s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+  s
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&#x27;/gi, "'")
+    .replace(/&#(\d+);/g, (_, d) => {
+      const n = Number(d)
+      return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : ''
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => {
+      const n = parseInt(h, 16)
+      return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : ''
+    })
+
+/**
+ * 解析刺猬猫原站单书页简介（纯函数，可离线单测）：
+ *   DaoSearch 收录刺猬猫时会把 `<br />` 剥掉粘成一整段，原站 `<div class="book-desc">` 保留了真实换行。
+ *   顺带过滤站方自动注入的黄色活动条（`color:#fbc02d`），只留作者真实分段简介。
+ */
+export function parseCiweimaoBookDesc(html: string): string | null {
+  if (!html || typeof html !== 'string') return null
+  const m = html.match(/<div[^>]*class="book-desc[^"]*"[^>]*>([\s\S]*?)<\/div>/i)
+    || html.match(/<div[^>]*id="J_BookDesc"[^>]*>([\s\S]*?)<\/div>/i)
+  if (!m) return null
+  const raw = m[1]
+    .replace(/<p[^>]*color\s*:\s*#fbc02d[^>]*>[\s\S]*?<\/p>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<p[^>]*>/gi, '')
+    .replace(/<[^>]+>/g, '')
+  const lines = decode(raw)
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((ln) => ln.replace(/^[\s\u3000]+|[\s\u3000]+$/g, ''))
+    .filter(Boolean)
+  return lines.length ? lines.join('\n') : null
+}
+
+/** 按需拉取刺猬猫原站单书页简介（走全局限速与超时保护，失败静默返回 null） */
+export async function fetchCiweimaoBookDesc(
+  bookId: string,
+  opts: { timeoutMs?: number; rateGate?: RequestGate } = {},
+): Promise<string | null> {
+  const id = String(bookId || '').trim()
+  if (!/^\d+$/.test(id)) return null
+  const url = 'https://www.ciweimao.com/book/' + id
+  const gateFn = opts.rateGate ? () => opts.rateGate! : defaultRequestGate
+  const doGet = withRateLimit(async (u: string) => {
+    const res = (await boundedFetch(u, {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'zh-CN,zh;q=0.9' },
+      timeoutMs: opts.timeoutMs ?? 10_000,
+    })) as unknown as { ok: boolean; text(): Promise<string> }
+    if (!res.ok) return null
+    return res.text()
+  }, gateFn)
+  try {
+    const html = await doGet(url)
+    return html ? parseCiweimaoBookDesc(html) : null
+  } catch {
+    return null
+  }
+}
 
 export function parseRankPage(html: string): Row[] {
   const rows: Row[] = []

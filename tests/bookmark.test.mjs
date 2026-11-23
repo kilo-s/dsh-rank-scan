@@ -269,7 +269,7 @@ test('导出（2026-10-16 需求）：可只导选择集、可导 csv、可选�
   // ② csv：表头 + 转义（含逗号的 URL 必须被引号包起来）
   const csv = s.exportData('csv').content
   assert.match(csv.split('\r\n')[0], /^bookKey,site,书名,作者,字数/)
-  assert.equal(csv.split('\r\n')[0].split(',').length, 12, '12 列')
+  assert.equal(csv.split('\r\n')[0].split(',').length, 22, '保留原有 18 列，追加 4 列作品详情')
   assert.ok(csv.includes('"u2,含逗号"'), '含逗号的值要按 RFC4180 转义')
   assert.ok(!csv.includes('丙书'), '回收站不进导出')
 

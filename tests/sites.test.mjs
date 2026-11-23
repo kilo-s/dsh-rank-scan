@@ -282,6 +282,11 @@ test('★ 票 50 通道：一次扫描里所有站共用一个闸门 ⇒ 抓取�
     else if (u.includes('qidiantu.com/bang/1/6/')) body = fixture('qidiantu-sanjiang.html')
     else if (u.includes('qidiantu.com/shouding')) body = fixture('qidiantu-shouding.html')
     else if (u.includes('m.qidian.com/rank')) body = fixture('qidian-sign-cat12.html')
+    else if (u.includes('daosearch.io/sfacg/rankings')) {
+      const m = u.match(/rank_type=([a-z0-9_]+)/)
+      const rt = m ? m[1] : 'clicks_week'
+      body = fixture(u.includes('page=2') ? 'sfacg-daosearch-p2.html' : 'sfacg-daosearch-p1.html').replace(/rank_type=clicks_week/g, 'rank_type=' + rt)
+    }
     else if (u.includes('book.sfacg.com')) body = fixture('sfacg-home.html')
     else throw new Error('未打桩的 URL：' + u)
     return { ok: true, status: 200, text: async () => body }

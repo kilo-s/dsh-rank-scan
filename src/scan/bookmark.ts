@@ -12,6 +12,158 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { bookKeyOf, displayLabel, extractTags, normalizeBookId, type SiteId } from './bookmark-parse.js'
+import { boardMeta } from './view.js'
+import { createStyledWordDoc, type WordBlock } from './word-doc.js'
+
+const EXPORT_SITES = ['qidian', 'qidiantu', 'ciweimao', 'sfacg', 'fanqie']
+const SITE_NAMES: Record<string, string> = { qidian: '起点', qidiantu: '起点图', ciweimao: '刺猬猫', sfacg: '菠萝包', fanqie: '番茄' }
+
+export interface BoardSummaryItem {
+  boardId: string
+  siteName: string
+  boardName: string
+  source: string | null
+  isOfficial: boolean
+  firstDate: string
+  lastDate: string
+  days: number
+  firstRank: number | null
+  latestRank: number | null
+  bestRank: number | null
+}
+
+export interface BookmarkBoardSummary {
+  primary: BoardSummaryItem | null
+  others: BoardSummaryItem[]
+}
+
+/** 易扫读数量：>=1亿用亿、>=1万用一位小数万、<1万用千分位 */
+export function fmtReadableCount(n: number | null | undefined): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '—'
+  if (n >= 100000000) return (n / 100000000).toFixed(2).replace(/\.?0+$/, '') + '亿'
+  if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + '万'
+  return n.toLocaleString('en-US')
+}
+
+export function fmtReadableWords(n: number | null | undefined): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '—'
+  return fmtReadableCount(n) + '字'
+}
+
+function fmtLocalDateTime(d: Date): string {
+  const p = (x: number) => String(x).padStart(2, '0')
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+}
+
+/** 只用于导出展示，不改写首次发现原记录。 */
+function exportBoard(seen: SeenOnBoard) {
+  const boardId = typeof seen?.boardId === 'string' ? seen.boardId : ''
+  const meta = boardMeta(boardId)
+  const known = meta.site !== 'other'
+    && (meta.site !== 'qidian' || /^qidian\.sign\.cat\d+$/.test(boardId) && meta.categoryScoped)
+    && (meta.site !== 'fanqie' || boardId === 'fanqie.derived.period' || /^fanqie\.m\.new\.\d+$/.test(boardId) && meta.categoryScoped)
+  const source = meta.source || (boardId.startsWith('fanqie.derived.') ? '本地派生；非原站榜单' : null)
+  const isOfficial = known && !source && meta.site !== 'qidiantu'
+  return {
+    ...seen,
+    boardId,
+    siteName: meta.siteName,
+    boardName: known ? meta.name : boardId ? '未知历史榜单（' + boardId + '）' : '未知历史榜单（缺少榜单标识）',
+    source,
+    isOfficial,
+  }
+}
+
+function boardDescription(seen: SeenOnBoard): string {
+  const meta = exportBoard(seen)
+  return meta.siteName + ' · ' + meta.boardName + (meta.source ? '（' + meta.source + '）' : '')
+}
+
+/**
+ * 按 boardId 去重汇总书签的上榜轨迹，优先把「原官方榜单」提为 primary，
+ * 避免同一榜连续上榜多天时在详情和导出里重复刷屏。
+ */
+export function summarizeBookmarkBoards(b: Pick<Bookmark, 'firstSeen' | 'seenBoards'>): BookmarkBoardSummary {
+  const raw: SeenOnBoard[] = []
+  if (b.firstSeen) raw.push(b.firstSeen)
+  for (const s of b.seenBoards || []) if (s) raw.push(s)
+  if (!raw.length) return { primary: null, others: [] }
+
+  const map = new Map<string, { item: BoardSummaryItem; dates: Set<string> }>()
+  for (const s of raw) {
+    const meta = exportBoard(s)
+    const key = meta.boardId || '__missing__'
+    const dt = typeof s.dataDate === 'string' ? s.dataDate : ''
+    const rk = typeof s.rank === 'number' && Number.isFinite(s.rank) ? s.rank : null
+    const slot = map.get(key)
+    if (!slot) {
+      const dates = new Set<string>()
+      if (dt) dates.add(dt)
+      map.set(key, {
+        dates,
+        item: {
+          boardId: meta.boardId,
+          siteName: meta.siteName,
+          boardName: meta.boardName,
+          source: meta.source,
+          isOfficial: meta.isOfficial,
+          firstDate: dt,
+          lastDate: dt,
+          days: dates.size || 1,
+          firstRank: rk,
+          latestRank: rk,
+          bestRank: rk,
+        },
+      })
+    } else {
+      const it = slot.item
+      if (dt) {
+        slot.dates.add(dt)
+        it.days = slot.dates.size
+        if (!it.firstDate || dt < it.firstDate) {
+          it.firstDate = dt
+          if (rk != null) it.firstRank = rk
+        }
+        if (!it.lastDate || dt >= it.lastDate) {
+          it.lastDate = dt
+          if (rk != null) it.latestRank = rk
+        }
+      } else if (rk != null && it.latestRank == null) {
+        it.latestRank = rk
+      }
+      if (rk != null && (it.bestRank == null || rk < it.bestRank)) it.bestRank = rk
+    }
+  }
+
+  const all = Array.from(map.values()).map((x) => x.item)
+  const firstId = b.firstSeen && typeof b.firstSeen.boardId === 'string' ? b.firstSeen.boardId : ''
+  const official = all.filter((x) => x.isOfficial)
+  let primary: BoardSummaryItem | null = null
+  if (official.length) {
+    primary = official.find((x) => x.boardId === firstId)
+      || official.slice().sort((a, b2) => (b2.lastDate.localeCompare(a.lastDate)) || ((a.bestRank ?? 9999) - (b2.bestRank ?? 9999)))[0]
+  } else {
+    primary = all.find((x) => x.boardId === firstId) || all[0]
+  }
+  const others = all.filter((x) => x !== primary)
+  return { primary, others }
+}
+
+/** 格式化单条榜单表现（简洁明确：榜名 + 名次 + 最高/在榜天数 + 日期） */
+export function formatBoardSummaryItem(it: BoardSummaryItem, opts: { omitSite?: string } = {}): string {
+  const showSite = !opts.omitSite || it.siteName !== opts.omitSite
+  const head = (showSite && it.siteName ? it.siteName + ' · ' : '') + it.boardName + (it.source ? '（' + it.source + '）' : '')
+  const rank = it.latestRank != null ? it.latestRank : it.firstRank
+  const rankText = ' 第 ' + (rank == null ? '—' : rank) + ' 名'
+  const notes: string[] = []
+  if (it.bestRank != null && rank != null && it.bestRank < rank) notes.push('最高第 ' + it.bestRank + ' 名')
+  if (it.days > 1) notes.push('在榜 ' + it.days + ' 天')
+  const datePart = it.firstDate && it.lastDate && it.firstDate !== it.lastDate
+    ? it.firstDate + ' ~ ' + it.lastDate.slice(5)
+    : (it.lastDate || it.firstDate)
+  const tailBits = [...notes, ...(datePart ? [datePart] : [])]
+  return head + rankText + (tailBits.length ? '（' + tailBits.join('，') + '）' : '')
+}
 
 export const BOOKMARKS_VERSION = 1
 export const TRASH_KEEP_DAYS = 30
@@ -54,6 +206,8 @@ export interface Bookmark {
   // 4 用户内容（★ 自动更新永不触碰）
   note: string
   folders: string[]
+  /** 按需首页盯盘开关（默认关闭；用户显式开启才进概览盯盘区，老书无变化自动静默） */
+  watched?: boolean
   createdAt: string
   updatedAt: string
   /** 软删除标记（有值即在回收站） */
@@ -64,7 +218,13 @@ export interface BookmarksFile { bookmarksVersion: number; bookmarks: Bookmark[]
 
 /** 面向前端的精简形态（不含回收站） */
 /** stale：数据超过 STALE_DAYS 天没变新（面板据此标「可能已无法更新」，避免旧值被当成现值） */
-export interface BookmarkView extends Bookmark { label: string; tags: string[]; ageDays: number | null; stale: boolean }
+export interface BookmarkView extends Bookmark {
+  label: string
+  tags: string[]
+  ageDays: number | null
+  stale: boolean
+  boardSummary: BookmarkBoardSummary
+}
 
 /** 超过这个天数没变新，就提示用户「这本可能取不到数了」 */
 export const STALE_DAYS = 7
@@ -101,6 +261,7 @@ function migrate(raw: any): BookmarksFile {
       input: b.input == null ? null : String(b.input),
       note: String(b.note || ''),
       folders: Array.isArray(b.folders) ? b.folders.map(String) : [],
+      watched: b.watched === true ? true : undefined,
       createdAt: String(b.createdAt || new Date(0).toISOString()),
       updatedAt: String(b.updatedAt || new Date(0).toISOString()),
       // 归一：文件里写成了 null 或空串也当「未删除」，避免软删除标记的假象（曾经踩过：赋 undefined → JSON 变 null）
@@ -157,6 +318,26 @@ export class BookmarkStore {
 
 export interface ServiceDeps { store: BookmarkStore; now: () => Date }
 
+export interface BookmarkExportDetail {
+  status?: string | null
+  category?: string | null
+  tags?: string[] | null
+  desc?: string | null
+  honours?: { rank: number | null; label: string; sub?: string | null; source?: string }[] | null
+  detailFetchedAt?: string | null
+}
+
+function cleanExportDesc(raw: string | null | undefined): string {
+  if (!raw) return ''
+  return String(raw)
+    .replace(/\u3000/g, ' ')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join('\n')
+}
+
 export class BookmarkService {
   private store: BookmarkStore
   private now: () => Date
@@ -182,7 +363,7 @@ export class BookmarkService {
     // ★ 2026-10-16：番茄读数的正确口径是「在读」（追读是早先写错的标签）。
     //   旧文件里已经落盘的 collectLabel 一并纠正，避免导出/卡片继续显示错口径。
     const collectLabel = b.site === 'fanqie' && b.collectLabel === '追读' ? '在读' : b.collectLabel
-    return { ...b, collectLabel, label: displayLabel(b), tags: extractTags(b.note), ageDays, stale }
+    return { ...b, collectLabel, label: displayLabel(b), tags: extractTags(b.note), ageDays, stale, boardSummary: summarizeBookmarkBoards(b) }
   }
 
   /** 全部书签（不含回收站），按打签时间倒序 */
@@ -207,10 +388,10 @@ export class BookmarkService {
   }
 
   /** 精简 map：面板挂载时一次拉取，避免逐行请求 */
-  sync(): { total: number; map: Record<string, { hasNote: boolean; folders: string[]; updatedAt: string }> } {
+  sync(): { total: number; map: Record<string, { hasNote: boolean; folders: string[]; updatedAt: string; watched: boolean }> } {
     const list = this.load().bookmarks.filter((b) => !b.deletedAt)
-    const map: Record<string, { hasNote: boolean; folders: string[]; updatedAt: string }> = {}
-    for (const b of list) map[b.bookKey] = { hasNote: !!b.note, folders: b.folders, updatedAt: b.updatedAt }
+    const map: Record<string, { hasNote: boolean; folders: string[]; updatedAt: string; watched: boolean }> = {}
+    for (const b of list) map[b.bookKey] = { hasNote: !!b.note, folders: b.folders, updatedAt: b.updatedAt, watched: b.watched === true }
     return { total: list.length, map }
   }
 
@@ -288,13 +469,29 @@ export class BookmarkService {
     return { created: true, bookmark: b }
   }
 
-  /** 只改用户内容（备注/夹） */
-  setUserContent(bookKey: string, patch: { note?: string; folders?: string[] }): Bookmark | null {
+  /** 只改用户内容（备注/夹/盯盘） */
+  setUserContent(bookKey: string, patch: { note?: string; folders?: string[]; watched?: boolean }): Bookmark | null {
     const f = this.load()
     const b = f.bookmarks.find((x) => x.bookKey === bookKey)
     if (!b) return null
     if (patch.note != null) b.note = String(patch.note)
     if (patch.folders) b.folders = patch.folders.map(String)
+    if (typeof patch.watched === 'boolean') {
+      if (patch.watched) b.watched = true
+      else delete b.watched
+    }
+    b.updatedAt = this.now().toISOString()
+    this.save(f)
+    return b
+  }
+
+  /** 切换单本首页盯盘标记（绝不触碰备注与书签夹） */
+  setWatched(bookKey: string, watched: boolean): Bookmark | null {
+    const f = this.load()
+    const b = f.bookmarks.find((x) => x.bookKey === bookKey && !x.deletedAt)
+    if (!b) return null
+    if (watched) b.watched = true
+    else delete b.watched
     b.updatedAt = this.now().toISOString()
     this.save(f)
     return b
@@ -400,56 +597,182 @@ export class BookmarkService {
    * 2026-10-16（使用者需求）：① 可按**选择集**导出（bookKeys，空=全部）② 支持 csv ③ 可选含回收站。
    */
   exportData(
-    format: 'json' | 'md' | 'csv' = 'json',
-    opts: { bookKeys?: string[] | null; includeTrash?: boolean } = {},
-  ): { format: string; content: string; count: number } {
+    format: 'json' | 'md' | 'csv' | 'doc' = 'json',
+    opts: {
+      bookKeys?: string[] | null
+      includeTrash?: boolean
+      sort?: 'site' | 'current'
+      includeDesc?: boolean
+      detailLookup?: (book: Bookmark) => BookmarkExportDetail | null
+    } = {},
+  ): { format: string; content: string | Buffer; count: number } {
     const active = this.all()
-    const all = opts.includeTrash ? active.concat(this.trash() as any) : active
+    const all = opts.includeTrash ? active.concat(this.trash()) : active
     const sel = opts.bookKeys && opts.bookKeys.length ? new Set(opts.bookKeys.map(String)) : null
-    const list = sel ? all.filter((b) => sel.has(b.bookKey)) : all
+    const order = new Map(Array.from(sel || []).map((key, i) => [key, i]))
+    const list = sel ? all.filter((b) => sel.has(b.bookKey)).sort((a, b) => order.get(a.bookKey)! - order.get(b.bookKey)!) : all
+    if (opts.sort !== 'current') {
+      const siteOrder = (site: string) => { const i = EXPORT_SITES.indexOf(site); return i < 0 ? EXPORT_SITES.length : i }
+      list.sort((a, b) => siteOrder(a.site) - siteOrder(b.site))
+    }
+    const wantDesc = opts.includeDesc !== false
+    const detailOf = (b: Bookmark): BookmarkExportDetail | null => {
+      if (!opts.detailLookup) return null
+      try { return opts.detailLookup(b) || null } catch { return null }
+    }
     if (format === 'csv') {
-      // 表格可直接进 Excel：列顺序固定，值里的逗号/引号/换行按 RFC4180 转义
+      // 表格可直接进 Excel：原有 18 列顺序不动，末尾追加详情缓存列；值按 RFC4180 转义
       const cell = (v: any) => {
         const s = v == null ? '' : String(v)
-        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+        return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
       }
-      const head = ['bookKey', 'site', '书名', '作者', '字数', '收藏(口径)', '收藏数', '数据日期', '夹', '标签', '备注', 'URL']
+      const head = ['bookKey', 'site', '书名', '作者', '字数', '收藏(口径)', '收藏数', '数据日期', '夹', '标签', '备注', 'URL', '首次发现站点', '首次发现榜单', '首次发现名次', '首次发现数据日期', '榜单来源说明', '也上过', '连载状态', '作品分类', '站点标签', '作品简介']
       const rows = [head.join(',')]
       for (const b of list) {
+        const det = detailOf(b)
+        const first = b.firstSeen ? exportBoard(b.firstSeen) : null
+        const seenOtherIds = new Set<string>()
+        const otherBoards: string[] = []
+        for (const s of b.seenBoards) {
+          const bid = typeof s?.boardId === 'string' ? s.boardId : ''
+          if (b.firstSeen && bid === b.firstSeen.boardId) continue
+          if (seenOtherIds.has(bid)) continue
+          seenOtherIds.add(bid)
+          otherBoards.push(boardDescription(s))
+        }
+        const descStr = wantDesc ? cleanExportDesc(det?.desc) : ''
+        const siteTagsStr = Array.isArray(det?.tags) ? det!.tags!.filter(Boolean).join(' ') : ''
         rows.push([
           b.bookKey, b.site, b.label, b.author, b.words == null ? '' : b.words,
           b.collect == null ? '' : (b.collectLabel || '收藏'), b.collect == null ? '' : b.collect,
           String(b.capturedAt || '').slice(0, 10), b.folders.join(' '), b.tags.join(' '), b.note || '', b.url || '',
+          first?.siteName, first?.boardName, first?.rank, first?.dataDate,
+          first ? first.source : '手动添加 · 无榜单来源',
+          otherBoards.join('、'),
+          det?.status || '', det?.category || '', siteTagsStr, descStr,
         ].map(cell).join(','))
       }
       return { format, count: list.length, content: rows.join('\r\n') + '\r\n' }
     }
     if (format === 'json') {
-      return { format, count: list.length, content: JSON.stringify({ bookmarksVersion: BOOKMARKS_VERSION, exportedAt: this.now().toISOString(), bookmarks: list }, null, 2) + '\n' }
+      return {
+        format,
+        count: list.length,
+        content: JSON.stringify({
+          bookmarksVersion: BOOKMARKS_VERSION,
+          exportedAt: this.now().toISOString(),
+          bookmarks: list.map((b) => {
+            const det = detailOf(b)
+            const hasDet = !!(det && (det.status || det.category || (det.tags && det.tags.length) || det.desc || (det.honours && det.honours.length)))
+            const base: any = { ...b, firstSeen: b.firstSeen ? exportBoard(b.firstSeen) : null, seenBoards: b.seenBoards.map(exportBoard) }
+            if (hasDet && det) {
+              base.detail = {
+                status: det.status || null,
+                category: det.category || null,
+                tags: Array.isArray(det.tags) ? det.tags : [],
+                desc: wantDesc ? (cleanExportDesc(det.desc) || null) : null,
+                honours: Array.isArray(det.honours) ? det.honours : [],
+                detailFetchedAt: det.detailFetchedAt || null,
+              }
+            }
+            return base
+          }),
+        }, null, 2) + '\n',
+      }
     }
-    const lines: string[] = ['# 我的书签（' + list.length + ' 条）', '', '- 导出时间：' + this.now().toISOString(), opts.includeTrash ? '- 含回收站' : '- 不含回收站', '']
+
+    const grouped = opts.sort !== 'current'
+    const siteCounts = new Map<string, number>()
+    for (const b of list) siteCounts.set(b.site, (siteCounts.get(b.site) || 0) + 1)
+
+    const mdLines: string[] = []
+    const docBlocks: WordBlock[] = []
+    const docTitle = '我的书签（' + list.length + ' 本）'
+    const docSub = '导出时间：' + fmtLocalDateTime(this.now()) + ' · ' + (opts.includeTrash ? '含回收站' : '不含回收站')
+    mdLines.push('# ' + docTitle, '', docSub, '')
+    docBlocks.push({ text: docTitle, kind: 'title' }, { text: docSub, kind: 'subtitle' })
+
+    let previousSite: string | null = null
+    let seq = 0
     for (const b of list) {
-      const bits: string[] = []
-      if (b.author) bits.push('作者 ' + b.author)
-      if (b.words != null) bits.push('字数 ' + b.words)
-      if (b.collect != null) bits.push((b.collectLabel || '收藏') + ' ' + b.collect)
-    // ★ 2026-10-16：与卡片同一口径 —— 没有数值的 metric（名次型榜）不进文本，避免导出/文本里出现「名次 —」
-    if (b.metric && b.metric.value != null) bits.push(b.metric.name + ' ' + b.metric.value)
-      bits.push('数据日期 ' + String(b.capturedAt).slice(0, 10))
-      lines.push('## ' + b.label)
-      lines.push('')
-      lines.push('- ' + bits.join(' · '))
-      if (b.firstSeen) lines.push('- 首次发现：' + b.firstSeen.boardId + ' 第 ' + (b.firstSeen.rank == null ? '—' : b.firstSeen.rank) + ' 名（' + b.firstSeen.dataDate + '）')
-      else lines.push('- 手动添加 · 无榜单来源')
-      const other = b.seenBoards.filter((s) => !b.firstSeen || s.boardId !== b.firstSeen.boardId)
-      if (other.length) lines.push('- 也上过：' + other.map((s) => s.boardId).join('、'))
-      if (b.folders.length) lines.push('- 夹：' + b.folders.join('、'))
-      if (b.tags.length) lines.push('- 标签：' + b.tags.map((t) => '#' + t).join(' '))
-      lines.push('- URL：' + (b.url || '—'))
-      if (b.note) lines.push('', '> ' + b.note.split('\n').join('\n> '))
-      lines.push('')
+      const det = detailOf(b)
+      const siteName = SITE_NAMES[b.site] || b.site
+      if (grouped && previousSite !== b.site) {
+        const sec = siteName + '（' + (siteCounts.get(b.site) || 0) + '）'
+        mdLines.push('---', '', '## ' + sec, '')
+        docBlocks.push({ text: sec, kind: 'section' })
+        seq = 0
+      }
+      previousSite = b.site
+      seq += 1
+
+      const summary = summarizeBookmarkBoards(b)
+      const lab = b.collectLabel || (b.site === 'fanqie' ? '在读' : '收藏')
+      const statsBits: string[] = []
+      if (!grouped) statsBits.push(siteName)
+      if (b.author) statsBits.push('作者 ' + b.author)
+      if (det?.status) statsBits.push(det.status)
+      if (det?.category) statsBits.push(det.category)
+      if (b.words != null) statsBits.push(fmtReadableWords(b.words))
+      if (b.collect != null) statsBits.push(lab + ' ' + fmtReadableCount(b.collect))
+      // 不同口径的有效成绩才附带（如首订/收藏增量）；避免与 collect 同名重复（如番茄双份在读），
+      // 已有原官方榜单时也不把派生榜的「今日涨幅」混在原站成绩里。
+      if (b.metric && b.metric.value != null && b.metric.name !== lab) {
+        const isDerivedMetric = b.metric.name === '今日涨幅' || b.metric.name === '七日累计'
+        if (!isDerivedMetric || !(summary.primary && summary.primary.isOfficial)) {
+          statsBits.push(b.metric.name + ' ' + fmtReadableCount(b.metric.value))
+        }
+      }
+      const dateStr = String(b.capturedAt || '').slice(0, 10)
+      const statsText = (statsBits.length ? statsBits.join(' · ') : '暂无成绩数据') + (dateStr ? '（截止 ' + dateStr + '）' : '')
+      const siteTagsText = Array.isArray(det?.tags) && det!.tags!.length ? det!.tags!.filter(Boolean).join(' / ') : ''
+      const descText = wantDesc ? cleanExportDesc(det?.desc) : ''
+
+      const omitSite = grouped ? siteName : undefined
+      const boardText = summary.primary
+        ? formatBoardSummaryItem(summary.primary, { omitSite })
+        : '手动添加 · 无榜单来源'
+
+      // 若已有原官方榜单，只列其他真实榜单（过滤纯本地派生榜，避免冗余）；否则列出所有去重后的其他榜
+      const otherList = summary.primary && summary.primary.isOfficial
+        ? summary.others.filter((x) => !String(x.boardId || '').startsWith('fanqie.derived.'))
+        : summary.others
+      const otherText = otherList.map((x) => formatBoardSummaryItem(x, { omitSite })).join('；')
+
+      const headingPrefix = grouped ? '### ' : '## '
+      const numTitle = seq + '. ' + b.label
+      const mdTitle = b.url ? seq + '. [' + b.label + '](' + b.url + ')' : numTitle
+      // 同步书签详情顺序：作品信息 / 标签 / 折叠简介 → 我的笔记 → 榜单历史
+      mdLines.push(headingPrefix + mdTitle)
+      mdLines.push('- **信息**：' + statsText)
+      if (siteTagsText) mdLines.push('- **标签**：' + siteTagsText)
+      mdLines.push('')
+      if (descText) {
+        // Markdown 里单换行会被折叠成同一段，段落之间用空行保证所有阅读器都正确分段
+        mdLines.push('<details>', '<summary>作品简介</summary>', '', descText.replace(/\n/g, '\n\n'), '', '</details>', '')
+      }
+      if (b.note) {
+        const cleanNote = b.note.replace(/\r\n?/g, '\n')
+        mdLines.push('> ' + cleanNote.replace(/\n/g, '\n> '), '')
+      }
+      mdLines.push('- **榜单**：' + boardText)
+      if (otherText) mdLines.push('- **也上过**：' + otherText)
+      mdLines.push('')
+
+      docBlocks.push({ text: numTitle, kind: 'heading' })
+      docBlocks.push({ text: '信息：' + statsText, kind: 'meta' })
+      if (siteTagsText) docBlocks.push({ text: '标签：' + siteTagsText, kind: 'meta' })
+      if (descText) docBlocks.push({ text: '简介：' + descText, kind: 'desc' })
+      if (b.note) docBlocks.push({ text: b.note, kind: 'note' })
+      docBlocks.push({ text: '榜单：' + boardText, kind: 'meta' })
+      if (otherText) docBlocks.push({ text: '也上过：' + otherText, kind: 'meta' })
+      if (b.url) docBlocks.push({ text: '链接：' + b.url, kind: 'link' })
     }
-    return { format, count: list.length, content: lines.join('\n') }
+
+    if (format === 'doc') {
+      return { format, count: list.length, content: createStyledWordDoc(docBlocks) }
+    }
+    return { format, count: list.length, content: mdLines.join('\n') }
   }
 }
 

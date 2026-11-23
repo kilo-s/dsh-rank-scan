@@ -1,0 +1,12 @@
+dsh-rank-scan
+
+The project is licensed under BSD-3-Clause except as noted below.
+
+src/scan/word-doc.ts (compiled as lib/scan/word-doc.js) uses the minimal
+CFB/DOC layout design adapted from the Quillwright DOC writer.
+Source: https://github.com/WrightDocumentSuite/quillwright
+Copyright (c) Quillwright contributors
+Licensed under the Apache License, Version 2.0.
+The full license is included in licenses/Apache-2.0.txt.
+
+The TypeScript implementation was adapted for plain-text bookmark exports.

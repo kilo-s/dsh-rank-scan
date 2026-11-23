@@ -29,12 +29,12 @@ function harness(sitesFactory = () => []) {
   },
   logger: { info() {} },
  }, { dataDir: root, timerFreshMs: 0, sitesFactory })
- async function call(url, body, headers={}) {
-  const listeners={}; let code; let raw=''
+ async function call(url, body, headers={}, rawResponse=false) {
+  const listeners={}; let code; let raw=''; const responseHeaders={}
   const req={url,method:body===undefined?'GET':'POST',headers:{host:'127.0.0.1:19387','content-type':'application/json',...headers},setEncoding(){},on(k,f){(listeners[k]||=[]).push(f);return req}}
-  const p=handler(req,{writeHead(c){code=c},setHeader(){},end(v){raw=String(v||'')}})
+  const p=handler(req,{writeHead(c,h){code=c;Object.assign(responseHeaders,h||{})},setHeader(k,v){responseHeaders[k]=v},end(v){raw=Buffer.isBuffer(v)?v:String(v||'')}})
   queueMicrotask(()=>{if(body!==undefined)for(const f of listeners.data||[])f(JSON.stringify(body));for(const f of listeners.end||[])f()})
-  await p; return {code,body:JSON.parse(raw)}
+  await p; return {code,body:rawResponse?raw:JSON.parse(raw),headers:responseHeaders}
  }
  return {
   root, file, book, call,
@@ -236,4 +236,59 @@ test('批次榜：起点图首订按上架日成批（一天一批），标签�
   assert.ok(changes.body.batchExcluded.includes(b))
   assert.equal(changes.body.count,0)
  }finally{h.cleanup()}
+})
+
+test('bookmark exports accept site/current ordering and return binary DOC attachments without a BOM', async()=>{
+ const h=harness()
+ try{
+  const book={...h.book,bookKey:'qidian:123',site:'qidian',title:'起点样本',source:'board',firstSeen:{boardId:'qidian.sign.cat12',rank:8,dataDate:'2026-11-18'}}
+  writeFileSync(h.file,JSON.stringify({bookmarksVersion:1,bookmarks:[h.book,book],savedAt:'2026-11-19T00:00:00Z'}))
+  const keys=encodeURIComponent([h.book.bookKey,book.bookKey].join(','))
+  const sorted=await h.call('/api/rank-scan/bookmark/export?format=json&sort=site&keys='+keys)
+  assert.equal(JSON.parse(sorted.body.content).bookmarks[0].bookKey,book.bookKey)
+  const current=await h.call('/api/rank-scan/bookmark/export?format=json&sort=current&keys='+keys)
+  assert.equal(JSON.parse(current.body.content).bookmarks[0].bookKey,h.book.bookKey)
+  const doc=await h.call('/api/rank-scan/bookmark/export?format=doc&download=1&sort=site',undefined,{},true)
+  assert.equal(doc.code,200,'host requires an explicit status for attachments')
+  assert.equal(doc.headers['Content-Type'],'application/msword')
+  assert.match(doc.headers['Content-Disposition'],/\.doc"$/)
+  assert.ok(Buffer.isBuffer(doc.body))
+  assert.equal(doc.body.subarray(0,8).toString('hex'),'d0cf11e0a1b11ae1')
+  const plain=doc.body.toString('utf16le')
+  assert.ok(plain.includes('榜单：签约榜 × 轻小说（移动端口径） 第 8 名（2026-11-18）'))
+  const encoded=await h.call('/api/rank-scan/bookmark/export?format=doc')
+  assert.equal(encoded.body.encoding,'base64')
+  assert.equal(Buffer.from(encoded.body.content,'base64').subarray(0,8).toString('hex'),'d0cf11e0a1b11ae1')
+ }finally{h.cleanup()}
+})
+
+test('bookmark export-file writes DOC, preserves sort, and avoids overwriting prior exports',async()=>{
+ const h=harness()
+ const previousHome=process.env.HOME, previousProfile=process.env.USERPROFILE
+ process.env.HOME=h.root; process.env.USERPROFILE=h.root
+ try{
+  const book={...h.book,bookKey:'qidian:123',site:'qidian',title:'起点样本'}
+  const original=JSON.stringify({bookmarksVersion:1,bookmarks:[h.book,book],savedAt:'2026-11-19T00:00:00Z'})
+  writeFileSync(h.file,original)
+  const request={format:'doc',sort:'site',bookKeys:[h.book.bookKey,book.bookKey],dest:join(h.root,'export')}
+  const first=await h.call('/api/rank-scan/bookmark/export-file',request)
+  assert.equal(first.code,200)
+  assert.match(first.body.path,/\.doc$/)
+  const content=readFileSync(first.body.path)
+  assert.equal(content.subarray(0,8).toString('hex'),'d0cf11e0a1b11ae1')
+  const second=await h.call('/api/rank-scan/bookmark/export-file',request)
+  assert.equal(second.code,200)
+  assert.notEqual(second.body.path,first.body.path)
+  assert.deepEqual(readFileSync(first.body.path),content)
+  const current=await h.call('/api/rank-scan/bookmark/export-file',{...request,format:'json',sort:'current'})
+  assert.equal(current.code,200)
+  assert.equal(JSON.parse(readFileSync(current.body.path,'utf8').replace(/^\uFEFF/,'' )).bookmarks[0].bookKey,h.book.bookKey)
+  const site=await h.call('/api/rank-scan/bookmark/export-file',{...request,format:'json'})
+  assert.equal(JSON.parse(readFileSync(site.body.path,'utf8').replace(/^\uFEFF/,'')).bookmarks[0].bookKey,book.bookKey)
+  assert.equal(readFileSync(h.file,'utf8'),original)
+ }finally{
+  if(previousHome===undefined)delete process.env.HOME;else process.env.HOME=previousHome
+  if(previousProfile===undefined)delete process.env.USERPROFILE;else process.env.USERPROFILE=previousProfile
+  h.cleanup()
+ }
 })

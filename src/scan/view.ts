@@ -93,7 +93,7 @@ export function boardMeta(boardId: string): BoardMeta {
     }
   }
   if (SFACG_NAMES[boardId]) {
-    return { ...base, site: 'sfacg', siteName: '菠萝包', name: SFACG_NAMES[boardId], caliber: '首页 SSR，每榜 10 条；书名被站点截断' }
+    return { ...base, site: 'sfacg', siteName: '菠萝包', name: SFACG_NAMES[boardId] }
   }
   if (CW_NAMES[boardId]) {
     return {

@@ -121,3 +121,100 @@
       return BOARD_NAMES[id] || (id || '—')
     }
 
+    /** 清洗简介文本：去掉每行首尾空白（含全角空格 U+3000）与空行，段落之间保留单个换行；空值返回 '' */
+    const cleanDesc = function (raw) {
+      if (raw == null) return ''
+      const lines = String(raw).replace(/\u3000/g, ' ').split(/\r?\n/).map(function (x) { return x.trim() }).filter(function (x) { return !!x })
+      return lines.join('\n')
+    }
+
+    /** 榜单/书签共用的作品简介（默认 3 行截断，实测溢出才显示「展开简介」） */
+    function BoardDesc(props) {
+      const [open, setOpen] = React.useState(false)
+      const [over, setOver] = React.useState(false)
+      const textRef = React.useRef(null)
+      const text = cleanDesc(props.text)
+      React.useEffect(function () {
+        if (!text) return undefined
+        const measure = function () {
+          const el = textRef.current
+          if (!el) return
+          // 收起态才量得出「被截断」；展开态下 scrollHeight == clientHeight
+          setOver(el.scrollHeight - el.clientHeight > 1)
+        }
+        measure()
+        // 字体/宽度变化都会改变行数：窗口 resize 与面板宽度变化都重量一次
+        if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('resize', measure)
+        return function () {
+          if (typeof window !== 'undefined' && window.removeEventListener) window.removeEventListener('resize', measure)
+        }
+      }, [text, open])
+      if (!text) return null
+      return h('div', { style: { textAlign: 'left' } },
+        h('div', {
+          ref: textRef,
+          style: open
+            ? { color: T.fg, fontSize: T.fs.m, whiteSpace: 'pre-line', lineHeight: 1.68, wordBreak: 'break-word', textAlign: 'left' }
+            : { color: T.fg, fontSize: T.fs.m, whiteSpace: 'pre-line', lineHeight: 1.68, wordBreak: 'break-word', textAlign: 'left', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' },
+        }, text),
+        (over || open)
+          ? h('button', { className: 'rs-btn is-ghost', style: { marginTop: '4px', height: '22px', padding: '0', color: T.accent, fontSize: T.fs.s }, onClick: function (e) { if (e && e.stopPropagation) e.stopPropagation(); setOpen(!open) } }, open ? '收起简介' : '展开简介')
+          : null)
+    }
+
+    /** 压缩上榜徽章冗余分类后缀（与顶部「分类：…」重复的频道名省略，总榜#1兼分类#1省略，完整信息保留在 hover title） */
+    function shortHonourSub(it, category) {
+      const sub = it && it.sub ? String(it.sub).trim() : ''
+      if (!sub) return null
+      const cats = String(category || '').split(/[·/／\s]+/).map(function (s) { return s.trim() }).filter(Boolean)
+      const sameCat = function (ch) { return cats.some(function (c) { return c === ch || c.indexOf(ch) === 0 }) }
+      if (sameCat(sub)) return null
+      const m = /^(.+?)第(\d+)名$/.exec(sub)
+      if (m) {
+        const ch = m[1].trim()
+        const subRk = Number(m[2])
+        if (sameCat(ch)) {
+          if (it.rank === 1 && subRk === 1) return null
+          return '分类#' + subRk
+        }
+        return ch + '#' + subRk
+      }
+      return sub
+    }
+
+    /** 同会话单本详情内存缓存（榜单与书签共用，已点开的作品再次展开 0ms 秒出） */
+    const BOARD_DETAIL_CACHE = {}
+
+    /** 统一左轴规格行（32px 浅灰键名 + 右侧全宽自动换行，消除左右分栏留白洞） */
+    const detailKvRow = function (key, label, items) {
+      return h('div', { key: key, className: 'rs-bd-kv', style: { display: 'grid', gridTemplateColumns: '32px minmax(0, 1fr)', gap: '8px', alignItems: 'start', textAlign: 'left' } },
+        h('span', { className: 'rs-bd-kv-label', style: { fontSize: T.fs.xs, fontWeight: 500, color: T.muted, lineHeight: '22px', userSelect: 'none' } }, label),
+        h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '5px', alignItems: 'center', minWidth: 0 } }, items))
+    }
+
+    /** 统一站点题材标签（无边框轻量 4px 软底块，不抢正文和上榜的视觉焦点） */
+    const detailTagChip = function (t, idx) {
+      return h('span', { key: 'tg-' + idx + '-' + t, className: 'rs-bd-tag', style: { display: 'inline-flex', alignItems: 'center', padding: '1px 7px', borderRadius: '4px', background: wash(T.fg, 6), fontSize: T.fs.xs, color: T.muted, lineHeight: 1.55 } }, t)
+    }
+
+    /** 统一上榜结构徽章（6px 徽章 + 4px 语义色名次方块；榜单浅灰底与书签白底自适应底色） */
+    const detailHonourBadge = function (opts) {
+      const rk = typeof opts.rank === 'number' && Number.isFinite(opts.rank) ? opts.rank : null
+      const rankBg = rk === 1 ? wash(T.warn, 18) : (rk != null && rk <= 3 ? wash(T.accent, 15) : wash(T.fg, 7))
+      const rankFg = rk === 1 ? T.warn : (rk != null && rk <= 3 ? T.accent : T.fg)
+      const badgeBg = opts.onWhite ? T.surface2 : wash(T.surface, 78)
+      return h('span', {
+        key: opts.key,
+        className: 'rs-bd-honour',
+        style: { display: 'inline-flex', alignItems: 'center', gap: '5px', maxWidth: '100%', padding: '2px 7px 2px 3px', borderRadius: T.r.s, background: badgeBg, border: '1px solid ' + wash(T.border, 48), fontSize: T.fs.xs, lineHeight: 1.35, color: T.fg },
+        title: opts.title || '',
+      },
+        h('span', {
+          className: rk === 1 ? 'rs-bd-rank is-first' : (rk != null && rk <= 3 ? 'rs-bd-rank is-top' : 'rs-bd-rank'),
+          style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: '18px', height: '17px', padding: '0 4px', borderRadius: '4px', fontSize: T.fs.xs, fontWeight: 600, fontVariantNumeric: 'tabular-nums', flex: '0 0 auto', background: rankBg, color: rankFg },
+        }, rk == null ? '—' : String(rk)),
+        h('span', { style: { fontWeight: 500, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, opts.label),
+        opts.meta ? h('span', { style: { color: T.muted, fontSize: T.fs.xs, whiteSpace: 'nowrap' } }, opts.meta) : null)
+    }
+
+

@@ -49,6 +49,7 @@
         }).catch(function (e) { self.error = String(e); self.done = true; if (typeof self._emit === 'function') self._emit(); return null })
       }
       if (typeof s.has !== 'function') s.has = function (k) { healStore(self); return !!self.map[k] }
+      if (typeof s.watched !== 'function') s.watched = function (k) { healStore(self); return !!(self.map[k] && self.map[k].watched) }
       if (typeof s.act !== 'function') s.act = function (body) {
         healStore(self)
         self.busy[body.bookKey] = true
@@ -104,6 +105,7 @@
         }).catch(function (e) { self.error = String(e); self.done = true; self._emit(); return null })
       },
       has: function (k) { healStore(this); return !!this.map[k] },
+      watched: function (k) { healStore(this); return !!(this.map[k] && this.map[k].watched) },
       act: function (body) {
         healStore(this)
         const self = this

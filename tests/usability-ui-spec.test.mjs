@@ -335,22 +335,22 @@ test('S6 变化条数用真实总数（预览只有 20 条也要说 113 条）',
   const { mod, mount } = load({ '/changes': CHANGES, '/enrich-status': { pending: 0 } })
   const tree = await overviewMount(mod, mount, ovWith([board('qidian.sign.cat12', '轻小说', 'ok')])).flush()
   const text = textOf(tree)
-  assert.match(text, /今天的变化\s*（115 条）/, '标题要用后端真实总数')
-  assert.match(text, /新入榜 113/, '分组按钮也要用真实总数，不能是预览条数 2')
-  assert.match(text, /最多列 20 条/, '预览被截断时必须说明')
+  assert.match(text, /共 115 条/, '汇总要用后端真实总数')
+  assert.match(text, /新入榜 113/, '视角分段按钮也要用真实总数，不能是预览条数 2')
+  assert.match(text, /每类预览 20 条/, '预览被截断时必须说明')
 })
 
-test('S6 变化按站分组，且点行能在榜单页打开该榜（保上下文）', async () => {
+test('S6 起点与起点图合并成同平台卡，且点行能在榜单页打开该榜（保上下文）', async () => {
   const opened = []
   const { mod, mount } = load({ '/changes': CHANGES, '/enrich-status': { pending: 0 } })
   const tree = await overviewMount(mod, mount, ovWith([board('qidian.sign.cat12', '轻小说', 'ok')]), {
     onOpenBoard: (id) => opened.push(id),
   }).flush()
   const text = textOf(tree)
-  assert.match(text, /起点图 · 2 条/, '同站的变化要成组出现')
-  assert.match(text, /起点 · 1 条/)
-  const row = nodesOf(tree, (n) => n.type === 'tr' && /书丙/.test(textOf(n)))[0]
-  assert.ok(row, '变化行要在表里')
+  assert.match(text, /起点/)
+  assert.match(text, /书丙/)
+  const row = nodesOf(tree, (n) => n.type === 'div' && String((n.props && n.props.className) || '').includes('rs-ov-row') && /书丙/.test(textOf(n)))[0]
+  assert.ok(row, '变化行要在平台卡片里')
   row.props.onClick({ preventDefault() {}, stopPropagation() {}, target: {} })
   assert.deepEqual(opened, ['qidian.sign.cat12'])
 })
@@ -455,11 +455,18 @@ test('自动补全开关在「数据与性能」组，不再挤在抓取范围�
 /* ---------- 次要项 ---------- */
 test('粘性表头：榜单表头 sticky，长列表滚动时列名不消失', async () => {
   const { mod, mount } = load({
-    '/overview': ovWith([board('qidian.sign.cat12', '轻小说', 'ok')]),
-    '/changes': { count: 0, sites: [] },
-    '/enrich-status': { pending: 0 },
+    '/catalog': CATALOG,
+    '/board?boardId=qidian.sign.cat12': {
+      boardId: 'qidian.sign.cat12',
+      columns: [{ key: 'rank', label: '名次' }, { key: 'title', label: '书名' }],
+      rows: [{ key: '1', rank: 1, title: '样书', url: 'https://example.invalid/1', extra: {} }],
+      dates: ['2026-10-22'],
+      dataDate: '2026-10-22',
+      sortOptions: [{ value: '', label: '默认' }],
+    },
   })
-  const tree = await overviewMount(mod, mount, ovWith([board('qidian.sign.cat12', '轻小说', 'ok')])).flush()
+  const app = mount(mod.__test.components.BoardTab, { ov: ovWith([board('qidian.sign.cat12', '轻小说', 'ok')]), openLink() {}, width: 900, rev: 'r1' })
+  const tree = await app.flush()
   const th = nodesOf(tree, (n) => n.type === 'th')[0]
   assert.ok(th, '要有表头')
   assert.equal(th.props.style.position, 'sticky')

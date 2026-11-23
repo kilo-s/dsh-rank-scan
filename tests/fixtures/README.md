@@ -11,7 +11,9 @@
 | `qidiantu-sanjiang.html` | 起点图三江·推荐效果页 | 三江解析：16 格表、7 天逐日增量、已结算天数 |
 | `ciweimao-no-vip-click-week.html` | 刺猬猫周榜页 | 榜单解析：10 条、名次型（无数值） |
 | `ciweimao-buy.json` | 刺猬猫「首订（约）」第三方接口响应 | 数值型解析 + 期号回退 |
-| `sfacg-home.html` | 菠萝包首页 SSR | 三个榜各 10 条 + 前两名才有字数/收藏 + **`li.list` 的真名次 `<i class="num">03</i>`**（名次来自页面，不按位置补号） |
+| `sfacg-home.html` | 菠萝包首页 SSR | 历史首页解析回归（`parseHomeBoard`） |
+| `sfacg-daosearch-p1.html` | DaoSearch SF轻小说人气周榜第 1 页 | 榜单解析：20 条、完整书名/作者/字数/收藏、`browse-num` 真名次、`canonical` 校验 |
+| `sfacg-daosearch-p2.html` | DaoSearch SF轻小说人气周榜第 2 页 | 翻页截取回归：21–40 名与第 1 页拼合按 `depth` 截取 |
 
 ## 三条纪律
 

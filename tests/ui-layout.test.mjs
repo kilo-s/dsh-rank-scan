@@ -84,11 +84,10 @@ test('⑤ 点行展开的详情必须就在那一行下面（不再挂到整张�
   assert.ok(!/\n\s+pick \? h\('div', \{ style: C\.detail \},/.test(s), '旧的「列表末尾挂一张详情」写法不许回来')
 })
 
-test('⑥ 概览在窄面板下换版式：变化列表改卡片行，全部榜单不再挤备注列', () => {
+test('⑥ 概览在窄面板下换版式：平台网格换单列，单站聚焦变化列表换双行卡片', () => {
   const s = src()
   assert.ok(s.includes('width: rect.w, rev: rev'), '概览要拿到面板宽度才能决定版式')
   assert.ok(s.includes('const chgNarrow = avail < 620'), '窄/宽要有个明确的阈值')
-  assert.ok(s.includes('shownEntries.length ? (chgNarrow'), '变化列表窄的时候走卡片行，不是四列硬挤')
-  assert.ok(s.includes('hasNoteCol && !chgNarrow'), '全部榜单窄的时候不显示备注列（会被压成一字一行）')
-  assert.ok(s.includes('hasNoteCol && chgNarrow && b.note'), '备注要改到榜名下面一行，不能直接丢掉')
+  assert.ok(s.includes("gridTemplateColumns: chgNarrow ? '1fr' : 'repeat(2, minmax(0, 1fr))'"), '宽窗 2×2，窄窗切单列')
+  assert.ok(s.includes('if (inFocus && chgNarrow)'), '单站聚焦在窄窗下换双行紧凑卡片')
 })

@@ -7,7 +7,9 @@
   "types": "./lib/types/index.d.ts",
   "files": [
     "lib",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "NOTICE",
+    "licenses"
   ],
   "license": "BSD-3-Clause",
   "repository": {

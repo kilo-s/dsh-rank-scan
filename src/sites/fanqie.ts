@@ -71,6 +71,10 @@ export function parseRankApi(json: any, decode?: (s: string) => string): Row[] {
     const rawAuthor = b.author ? String(b.author) : null
     const title = dec(rawTitle)
     const author = rawAuthor ? dec(rawAuthor) : null
+    const rawAbstract = b.abstract ? String(b.abstract) : ''
+    const decodedAbstract = rawAbstract ? dec(rawAbstract).trim() : ''
+    const statusRaw = b.creationStatus == null ? '' : String(b.creationStatus).trim()
+    const statusText = statusRaw === '1' ? '连载中' : statusRaw === '0' ? '已完结' : undefined
     rows.push({
       key: id,
       rank: numOrNull(b.currentPos),
@@ -84,6 +88,8 @@ export function parseRankApi(json: any, decode?: (s: string) => string): Row[] {
         lastChapterUpdateTime: numOrNull(b.lastChapterUpdateTime),
         uid: b.uid != null && String(b.uid).trim() !== '' ? String(b.uid) : null,
         catId: numOrNull(b.curent_category_id),
+        desc: decodedAbstract && !hasPua(decodedAbstract) ? decodedAbstract : undefined,
+        status: statusText,
         titlePua: hasPua(rawTitle) ? rawTitle : undefined,
         authorPua: rawAuthor && hasPua(rawAuthor) ? rawAuthor : undefined,
         titleSuspect: hasPua(title) || hasPua(author),

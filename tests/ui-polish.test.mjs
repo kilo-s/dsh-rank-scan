@@ -223,7 +223,7 @@ test('C1：卡片最多三行（① 标题 ② meta ③ 备注/标签 + 右侧�
   }
   assert.ok(body.includes('C.itemTitle'), '① 书名用 C.itemTitle')
   assert.ok(body.includes('{ ...C.meta,') || body.includes('...C.meta'), '② 元信息用 C.meta')
-  assert.ok(body.includes("'打开'") && body.includes("'编辑'"), '③ 行右侧要外露「打开」「编辑」')
+  assert.ok(body.includes("className: 'rs-bm-title'") && body.includes("'编辑'"), '书名直开原页、右侧保留「编辑」')
   assert.ok(!body.includes("borderStyle: 'dashed'"), "「＋ 备注」不许再用虚线框")
 })
 
@@ -401,10 +401,10 @@ test('0.6.1：全站统一不出「最近更新 / 更新时间」列（刺猬猫
 })
 
 test('0.6.2：条数只对真读 depth 的榜开放；派生榜说「全部 N 条」并隐藏扫描入口', () => {
-  // host：canDepth 按适配器是否真读 depth 判（起点/起点图/首订约/派生/菠萝包 = 不可调）
+  // host：canDepth 按适配器是否真读 depth 判（起点/起点图/首订约/派生 = 不可调；菠萝包已支持翻页可调）
   assert.ok(HOST.includes('const depthLocked = (boardId: string) =>'), '缺少口径函数（host catalog）')
-  // 口径：起点 / 起点图 / 刺猬猫首订约 / 番茄派生 / 菠萝包 = 不可调
-  for (const frag of ["boardId.startsWith('qidian.')", "boardId.startsWith('qidiantu.')", "boardId === 'ciweimao.buy.latest'", "boardId.startsWith('fanqie.derived.')", "boardId.startsWith('sfacg.')"]) {
+  // 口径：起点 / 起点图 / 刺猬猫首订约 / 番茄派生 = 不可调
+  for (const frag of ["boardId.startsWith('qidian.')", "boardId.startsWith('qidiantu.')", "boardId === 'ciweimao.buy.latest'", "boardId.startsWith('fanqie.derived.')"]) {
     assert.ok(HOST.includes(frag), 'canDepth 口径缺少：' + frag)
   }
   assert.ok(HOST.includes('canDepth: !depthLocked(boardId)'), 'catalog 必须用口径函数算 canDepth')

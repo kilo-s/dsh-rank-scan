@@ -6,7 +6,7 @@
  * 而 git 直装（dsh plugin add github:…）依赖 package.json 的 prepare 在**用户机器上**跑构建，
  * 所以构建入口必须是纯 Node。
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -47,5 +47,8 @@ for (const f of parts) {
   bundle += readFileSync(join(partsDir, f), 'utf8')
 }
 mkdirSync(join(root, 'lib'), { recursive: true })
-writeFileSync(join(root, 'lib', 'client.js'), bundle)
+const clientOut = join(root, 'lib', 'client.js')
+const clientTmp = clientOut + '.tmp'
+writeFileSync(clientTmp, bundle)
+renameSync(clientTmp, clientOut)
 console.log('build: 完成 → lib/（host 由 tsc 产出；面板 bundle 由 client/parts/*.js 按名拼接）')

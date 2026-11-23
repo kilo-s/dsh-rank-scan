@@ -70,56 +70,9 @@
         navigator.clipboard.writeText(text).then(function () { toast('success', '已复制链接') }).catch(fail)
       } catch (e) { fail() }
     }
-    /**
-     * 0.6 收尾：榜单行简介（起点榜单页 pageContext 里自带 desc，落盘在 extra.desc）。
-     * 纯函数便于单测：去掉每行首尾空白（含全角空格 U+3000）与空行，段落之间保留单个换行。
-     * 空值/只有空白 ⇒ 返回 '' ⇒ 调用方**什么都不渲染**（不显示「—」）。
-     */
-    const cleanDesc = function (raw) {
-      if (raw == null) return ''
-      const lines = String(raw).replace(/\u3000/g, ' ').split(/\r?\n/).map(function (x) { return x.trim() }).filter(function (x) { return !!x })
-      return lines.join('\n')
-    }
-    /**
-     * 简介块：默认 3 行（-webkit-line-clamp），**真的被截断时**才给「展开 / 收起」。没有简介就不渲染。
-     * ★ 2026-10-29：换成「实测溢出」判断（scrollHeight > clientHeight），窗口尺寸变化时重新量 ——
-     *   原来按字数猜（>60 字就给按钮），900 宽下简介只占两行、根本没截断也照样出按钮。
-     */
-    function BoardDesc(props) {
-      const [open, setOpen] = React.useState(false)
-      const [over, setOver] = React.useState(false)
-      const textRef = React.useRef(null)
-      const text = cleanDesc(props.text)
-      React.useEffect(function () {
-        if (!text) return undefined
-        const measure = function () {
-          const el = textRef.current
-          if (!el) return
-          // 收起态才量得出「被截断」；展开态下 scrollHeight == clientHeight
-          setOver(el.scrollHeight - el.clientHeight > 1)
-        }
-        measure()
-        // 字体/宽度变化都会改变行数：窗口 resize 与面板宽度变化都重量一次
-        if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('resize', measure)
-        return function () {
-          if (typeof window !== 'undefined' && window.removeEventListener) window.removeEventListener('resize', measure)
-        }
-      }, [text, open])
-      if (!text) return null
-      return h('div', { style: { marginTop: '4px' } },
-        h('div', {
-          ref: textRef,
-          style: open
-            ? { ...C.muted, whiteSpace: 'pre-line', lineHeight: 1.5 }
-            : { ...C.muted, whiteSpace: 'pre-line', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' },
-        }, text),
-        (over || open)
-          ? h('button', { className: 'rs-btn is-ghost', style: { marginTop: '2px' }, onClick: function (e) { if (e && e.stopPropagation) e.stopPropagation(); setOpen(!open) } }, open ? '收起简介' : '展开简介')
-          : null)
-    }
 
-    // 离线测试缝：只暴露第六步的纯函数，不改变运行路径
-    window.__rankScanBoardTableTest = { sortableCols: sortableCols, nextSort: nextSort, nextRowIdx: nextRowIdx, normalizeSortPref: normalizeSortPref, sortValueValid: sortValueValid }
+    // 离线测试缝：只暴露纯函数，不改变运行路径
+    window.__rankScanBoardTableTest = { sortableCols: sortableCols, nextSort: nextSort, nextRowIdx: nextRowIdx, normalizeSortPref: normalizeSortPref, sortValueValid: sortValueValid, shortHonourSub: shortHonourSub }
 
     function BoardTab(props) {
       const ov = props.ov
@@ -145,6 +98,8 @@
       const [data, setData] = React.useState(null)
       const [err, setErr] = React.useState(null)
       const [pick, setPick] = React.useState(null)
+      const [bookDet, setBookDet] = React.useState(null)
+      const detSeqRef = React.useRef(0)
       const [depth, setDepth] = React.useState('')
       const [info, setInfo] = React.useState({ max: 100, can: true, hint: '' })
       const [busy, setBusy] = React.useState(false)
@@ -323,6 +278,33 @@
         try { el.focus({ preventScroll: true }) } catch (e) { try { el.focus() } catch (e2) {} }
         if (el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
       }, [pick])
+      /** 点开行详情时按需拉取单本简介 / 标签 / 跨榜（先走内存 + 7 天盘缓存；未命中才发 1 请求） */
+      React.useEffect(function () {
+        const key = pick && pick.key != null ? String(pick.key).trim() : ''
+        const bSite = String(curBoard || '').split('.')[0]
+        if (!key || !/^\d+$/.test(key) || !bSite) { setBookDet(null); return }
+        const dDate = (data && data.dataDate) || ''
+        const ck = bSite + ':' + key + '@' + (curBoard || '') + '@' + dDate
+        if (BOARD_DETAIL_CACHE[ck]) {
+          setBookDet({ key: ck, loading: false, data: BOARD_DETAIL_CACHE[ck] })
+          return
+        }
+        const my = ++detSeqRef.current
+        setBookDet({ key: ck, loading: true, data: null })
+        const qUrl = '/book-detail?site=' + encodeURIComponent(bSite)
+          + '&bookId=' + encodeURIComponent(key)
+          + (curBoard ? '&boardId=' + encodeURIComponent(curBoard) : '')
+          + (dDate ? '&date=' + encodeURIComponent(dDate) : '')
+        jget(qUrl).then(function (res) {
+          if (my !== detSeqRef.current) return
+          const okRes = res && res.ok ? res : null
+          if (okRes) BOARD_DETAIL_CACHE[ck] = okRes
+          setBookDet({ key: ck, loading: false, data: okRes })
+        }).catch(function () {
+          if (my !== detSeqRef.current) return
+          setBookDet({ key: ck, loading: false, data: null })
+        })
+      }, [pick && pick.key, curBoard, data && data.dataDate])
       /** 只保存条数（**不采集**）；另有一个明确的「保存并扫描本榜」 */
       const saveDepth = function (alsoScan) {
         const n = Math.max(1, Math.min(info.max || 100, Number(depth) || 10))
@@ -551,43 +533,65 @@
         ? '站点固定 20 条（移动端单页 20 条，站点分页接口在反爬后）'
         : (info.hint || '该榜条数由站点/口径决定，不可调')
       const isOpen = function (r) { return !!(pick && pick.key === r.key) }
-      /**
-       * ★ 2026-10-23（点了没反应）：详情卡原来挂在**整张列表之后** ⇒ 列表一长就在视口外
-       *   （实测 820×640 面板：详情卡 top=738、可视区底 731，根本没进画面）。
-       *   现在改成「点哪一行，详情就展开在哪一行下面」。
-       */
+      const fmtBriefNum = function (n) {
+        if (typeof n !== 'number' || !Number.isFinite(n)) return null
+        if (n >= 100000000) return (n / 100000000).toFixed(2).replace(/\.?0+$/, '') + '亿'
+        return n >= 10000 ? (n / 10000).toFixed(1).replace(/\.0$/, '') + '万' : fmtRead(n)
+      }
+      const renderDetailHonour = function (it, idx, bookCat) {
+        const rk = it && typeof it.rank === 'number' && Number.isFinite(it.rank) ? it.rank : null
+        return detailHonourBadge({
+          key: 'dh-' + idx + '-' + (it.label || ''),
+          rank: rk,
+          label: it.label,
+          meta: shortHonourSub(it, bookCat),
+          title: (it.label || '') + (rk != null ? ' 第 ' + rk + ' 名' : '') + (it.sub ? ' · ' + it.sub : '') + '（DaoSearch 官方全站榜）',
+          onWhite: false,
+        })
+      }
+      /** 详情卡挂在被点行正下方（统一单列四层：事实条 → 全宽简介 → 同轴标签/上榜规格行 → 收藏与操作条） */
       const detailCard = function (r) {
         const ex = r.extra || {}
-        return h('div', { style: { ...C.detail, marginTop: '4px' } },
-          h('div', { style: { fontWeight: 600 } }, dash(r.title)),
-          h('div', { style: C.muted }, '作者 ' + dash(r.author) + ' · 名次 ' + dash(r.rank) + ' · 字数 ' + fmtWords(ex.wordsText || ex.wordsCnt || ex.wordNumber || ex.words)),
-          // ★ 0.6.1（使用者 2026-10-29「统一去掉」）：详情卡也不再显示「更新 …」——
-          //   它和榜单列的「更新时间」是同一个字段（番茄 `lastChapterUpdateTime`），留着就还是不一致。
-          // 简介：只有真有 desc 的行才渲染（没有就整块不出现，不显示「—」）
-          h(BoardDesc, { text: ex.desc }),
-          // 被当前宽度收起的列：在这里逐条列出（label + 与表格完全相同的渲染）
-          detailCols.length ? h('div', { style: { marginTop: '3px' } }, detailCols.map(function (c) {
-            return h('div', { key: 'dx-' + c.key, style: C.muted }, c.label + '：', cell(rowCellProps(r, c), r))
-          })) : null,
-          /**
-           * 0.6.0 修：星标原来与备注表单挤在同一个 C.row 里，会「悬」在表单盒子外面左侧；
-           *   现在星标与表单进同一列（星标贴左、表单占满其余宽度），表单本身也不再自套底色盒子。
-           */
-          h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: '6px', marginTop: '4px' } },
+        const ck = String(curBoard || '').split('.')[0] + ':' + r.key + '@' + (curBoard || '') + '@' + ((data && data.dataDate) || '')
+        const det = bookDet && bookDet.key === ck ? bookDet.data : BOARD_DETAIL_CACHE[ck]
+        const detLoading = !!(bookDet && bookDet.key === ck && bookDet.loading)
+        const richDesc = det && det.desc ? det.desc : null
+        const descNode = richDesc ? h(BoardDesc, { text: richDesc }) : h(BoardDesc, { text: ex.desc })
+        const hasDesc = !!cleanDesc(richDesc || ex.desc)
+        const detTags = (det && Array.isArray(det.tags) ? det.tags : [])
+        const detHonours = (det && Array.isArray(det.honours) ? det.honours : [])
+        const statusText = (det && det.status) || ex.status || null
+        const bookCat = (det && det.category) || [ex.cat, ex.subCat].filter(Boolean).join(' · ')
+        const detCat = !detailCols.some(function (c) { return c.key === 'cat' || c.key === 'subCat' }) && det && det.category ? det.category : null
+        const factItems = []
+        if (statusText) factItems.push(h('span', { key: 'f-st', style: { color: T.fg, fontWeight: 500, whiteSpace: 'nowrap' } }, statusText))
+        if (detCat) factItems.push(h('span', { key: 'f-cat', style: { whiteSpace: 'nowrap' } }, '分类：', h('span', { style: { color: T.fg, fontWeight: 500 } }, detCat)))
+        if (ex.monthlyTickets != null) factItems.push(h('span', { key: 'f-mt', style: { whiteSpace: 'nowrap' }, title: '月票：' + fmtRead(ex.monthlyTickets) }, h('span', { style: { marginRight: '3px' } }, '月票'), h('span', { style: { color: T.fg, fontWeight: 500 } }, fmtBriefNum(ex.monthlyTickets))))
+        if (ex.popularity != null) factItems.push(h('span', { key: 'f-pop', style: { whiteSpace: 'nowrap' }, title: '人气：' + fmtRead(ex.popularity) }, h('span', { style: { marginRight: '3px' } }, '人气'), h('span', { style: { color: T.fg, fontWeight: 500 } }, fmtBriefNum(ex.popularity))))
+        detailCols.forEach(function (c) {
+          factItems.push(h('span', { key: 'dx-' + c.key, style: { whiteSpace: 'nowrap' } }, c.label + '：', h('span', { style: { color: T.fg } }, cell(rowCellProps(r, c), r))))
+        })
+        const factLine = []
+        factItems.forEach(function (x, k) { if (k) factLine.push(metaDot('fd' + k)); factLine.push(x) })
+        return h('div', { style: { ...C.detail, marginTop: '4px', padding: '10px 14px', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: '8px' } },
+          factLine.length ? h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '3px 0', fontSize: T.fs.s, color: T.muted, ...C.num, textAlign: 'left' } }, factLine) : null,
+          hasDesc ? h('div', { style: { minWidth: 0, textAlign: 'left' } }, descNode) : (detLoading ? h('div', { style: C.muted }, '正在加载简介与标签…') : null),
+          (detTags.length || detHonours.length)
+            ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', paddingTop: '2px', textAlign: 'left' } },
+                detTags.length ? detailKvRow('kv-tags', '标签', detTags.map(detailTagChip)) : null,
+                detHonours.length ? detailKvRow('kv-honours', '上榜', detHonours.map(function (it, idx) { return renderDetailHonour(it, idx, bookCat) })) : null)
+            : null,
+          h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: '6px', paddingTop: '8px', borderTop: '1px solid ' + wash(T.border, 45) } },
             h(BookmarkStar, { bookKey: bookKeyOf(curBoard, r.key), row: r, boardId: curBoard, dataDate: data && data.dataDate }),
-            h('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' } },
+            h('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', gap: '4px' } },
               h(DetailBookmarkEditor, { bookKey: bookKeyOf(curBoard, r.key) }),
-              h('div', { style: { ...C.row, marginTop: '2px' } },
-                h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '在 DSH 侧栏浏览器打开'),
-                h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); copyLink(r.url) } }, '复制链接'),
-                h('a', { href: r.url || '#', target: '_blank', rel: 'noreferrer', className: 'rs-link-action', style: { color: 'inherit', padding: '3px 8px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
-                h('button', { className: 'rs-btn is-ghost', style: { marginLeft: 'auto' }, onClick: function (e) { e.stopPropagation(); closeDetail() } }, '关闭')))),
-          ex.qidiantuUrl || ex.sourceUrl
-            ? h('div', { style: C.row },
-                (ex.qidiantuUrl ? h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.qidiantuUrl) } }, '看起点图原始页') : null),
-                (ex.sourceUrl ? h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.sourceUrl) } }, '看原数据来源页') : null),
-                h('span', { style: C.muted }, '（数据口径以来源页为准）'))
-            : null)
+              h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px' } },
+                h('button', { className: 'rs-btn', onClick: function (e) { e.stopPropagation(); if (props.openLink) props.openLink(r.url); else window.open(r.url, '_blank', 'noopener,noreferrer') } }, '打开原页 ↗'),
+                h('button', { className: 'rs-btn is-ghost', onClick: function (e) { e.stopPropagation(); copyLink(r.url) } }, '复制链接'),
+                h('a', { href: r.url || '#', target: '_blank', rel: 'noreferrer', className: 'rs-link-action', style: { color: T.muted, fontSize: T.fs.s, padding: '3px 6px' }, onClick: function (e) { e.stopPropagation() } }, '新标签打开'),
+                ex.qidiantuUrl ? h('button', { className: 'rs-btn is-ghost', onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.qidiantuUrl) } }, '起点图原页') : null,
+                ex.sourceUrl ? h('button', { className: 'rs-btn is-ghost', onClick: function (e) { e.stopPropagation(); (props.openLink || window.open)(ex.sourceUrl) } }, '数据来源页') : null,
+                h('button', { className: 'rs-btn is-ghost', style: { marginLeft: 'auto' }, onClick: function (e) { e.stopPropagation(); closeDetail() } }, '收起')))))
       }
       const rowCellProps = function (r, c) {
         return { ...c, _openLink: props.openLink, _boardId: data.boardId, _dataDate: data.dataDate, _bmKey: bookKeyOf(data.boardId, r.key) }

@@ -3,24 +3,96 @@ import { boundedFetch } from '../scan/bounded-fetch.js'
 import { defaultRequestGate, withRateLimit, type RequestGate } from '../scan/rate-limit.js'
 
 /**
- * 菠萝包轻小说（book.sfacg.com）适配器 —— 首页 SSR 的三个榜（2026-10-14 使用者定）。
+ * 菠萝包轻小说适配器 —— 三个榜通过 DaoSearch（daosearch.io）SSR 榜页采集。
  * 实测事实：
- * - 首页 15 个区块，用 span.main-title 的文本定位；周期 tab 是**同页 div.tab-item**（不是 URL 参数），
- *   两个 tab 的数据都在 SSR 里；每个 tab 固定 10 条
- * - 名次 1–2 是图文形态 li.figure（书名被站点截断成「...」，另有 评分/字数/收藏），
- *   名次 3+ 是 li.list（i.num 是零填充名次，书名同样截断，**没有数值也没有作者**）
- * - 错误页也返回 HTTP 200（title「出错了」/「糟糕,页面找不到了」）⇒ 判 missing 不能只看状态码
+ * - 每页 20 条，翻页参数 `&page={N}`，支持按 depthOf 截取（对齐刺猬猫默认 30 条、上限 100）
+ * - 每条直接带完整书名、作者、字数与收藏（书号为 SF 原始 ID，链接统一拼回 book.sfacg.com）
+ * - 未知/失效 rank_type 会静默回退默认月票月榜（HTTP 200）⇒ 需核对 canonical 里的 rank_type
  */
-export const SFACG_BOARDS: Record<string, { title: string; tab: string; name: string }> = {
-  'sfacg.new.click': { title: '新书榜', tab: '点击', name: '新书榜（点击）' },
-  'sfacg.hot.week': { title: '轻小说热榜', tab: '周', name: '轻小说热榜（周）' },
-  'sfacg.vip.week': { title: 'VIP热销榜', tab: '周', name: 'VIP热销榜（周）' },
+export const SFACG_BOARDS: Record<string, { title: string; tab: string; name: string; rankType: string }> = {
+  'sfacg.new.click': { title: '新书榜', tab: '点击', name: '新书榜（点击）', rankType: 'new_collections_all' },
+  'sfacg.hot.week': { title: '轻小说热榜', tab: '周', name: '轻小说热榜（周）', rankType: 'clicks_week' },
+  'sfacg.vip.week': { title: 'VIP热销榜', tab: '周', name: 'VIP热销榜（周）', rankType: 'bestselling_week' },
 }
+
+const DAOSEARCH_BASE = 'https://daosearch.io/sfacg/rankings'
+const DAOSEARCH_PAGE_SIZE = 20
+const DEFAULT_UA = 'dsh-rank-scan/0.6'
 
 const num = (s?: string | null): number | null => {
   if (s == null) return null
   const n = Number(String(s).trim())
   return Number.isFinite(n) ? n : null
+}
+
+const decodeHtml = (s: string): string =>
+  s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&#x27;/gi, "'")
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+
+/** 解析中文缩写数量（如 "192.1万字"、"1.6万"、"1亿"、"7017"）；缺失/非法一律 null */
+export function parseCnCount(raw?: string | null): number | null {
+  if (raw == null) return null
+  const t = String(raw).replace(/[,，\s字]/g, '').trim()
+  if (!t) return null
+  const yi = t.match(/^(\d+(?:\.\d+)?)亿$/)
+  if (yi) return Math.round(Number(yi[1]) * 100000000)
+  const wan = t.match(/^(\d+(?:\.\d+)?)万$/)
+  if (wan) return Math.round(Number(wan[1]) * 10000)
+  if (!/^\d+(?:\.\d+)?$/.test(t)) return null
+  const n = Number(t)
+  return Number.isFinite(n) ? Math.round(n) : null
+}
+
+/** 解析 DaoSearch SF轻小说榜页 SSR（每页 20 条，完整书名/作者/字数/收藏） */
+export function parseDaoSearchRankPage(html: string): Row[] {
+  const rows: Row[] = []
+  const parts = html.split(/<li class="row-with-save">/).slice(1)
+  for (const part of parts) {
+    const block = part.split('</li>')[0]
+    if (!block) continue
+    const idm = block.match(/href="\/sfacg\/book\/(\d+)\//)
+    if (!idm) continue
+    const rankM = block.match(/class="browse-num"[^>]*>\s*(\d+)\s*</)
+    const titleM = block.match(/<strong>([\s\S]*?)<\/strong>/)
+    const title = titleM ? decodeHtml(titleM[1].replace(/<[^>]*>/g, '')).trim() : ''
+    const authorM = block.match(/class="chart-byline"[^>]*>([\s\S]*?)<\/span>/)
+    const authorRaw = authorM ? decodeHtml(authorM[1].replace(/<[^>]*>/g, '')).trim() : ''
+    const wordsM = block.match(/<use href="#i-lines"\s*\/?><\/svg>([^<]+)</) || block.match(/([\d.,]+(?:亿|万)?\s*字)/)
+    const words = parseCnCount(wordsM ? wordsM[1] : null)
+    let collect: number | null = null
+    let monthlyTickets: number | null = null
+    let popularity: number | null = null
+    for (const sm of block.matchAll(/class="chart-stat-val">([^<]+)<\/span><span class="chart-stat-lbl">([^<]+)<\/span>/g)) {
+      const lbl = sm[2].trim()
+      if (lbl === '收藏') collect = parseCnCount(sm[1])
+      else if (lbl === '月票') monthlyTickets = parseCnCount(sm[1])
+      else if (lbl === '人气') popularity = parseCnCount(sm[1])
+    }
+    rows.push({
+      key: idm[1],
+      rank: rankM ? Number(rankM[1]) : null,
+      value: null,
+      title,
+      author: authorRaw || null,
+      url: 'https://book.sfacg.com/Novel/' + idm[1] + '/',
+      extra: {
+        score: null,
+        words,
+        collect,
+        monthlyTickets,
+        popularity,
+        titleTruncated: /\.\.\.$/.test(title),
+        rankFromPage: rankM != null,
+      },
+    })
+  }
+  return rows
 }
 
 /**
@@ -103,13 +175,15 @@ export function parseHomeBoard(html: string, title: string, tab: string): Row[] 
 export function makeSfacgSite(opts: {
   boards?: string[]
   fetchText?: (url: string, ctx: BoardCtx) => Promise<string>
+  /** 每榜取多少条（每页 20 条，上限 100；缺省 30 对齐刺猬猫） */
+  depthOf?: (boardId: string) => number
   /** ★ 票 50：本适配器用的请求闸门（缺省 = 全局限速器；测试替身可用假时钟/假 sleep） */
   rateGate?: RequestGate
 } = {}): SiteAdapter {
   const boards = opts.boards && opts.boards.length ? opts.boards : Object.keys(SFACG_BOARDS)
   // ★ 票 50：默认请求通道过全局限速器
   const fetchText = opts.fetchText || withRateLimit(async (url: string, c?: BoardCtx) => {
-    const res = (await boundedFetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'zh-CN,zh;q=0.9' }, signal: c?.signal, timeoutMs: c?.requestTimeoutMs })) as unknown as {
+    const res = (await boundedFetch(url, { headers: { 'User-Agent': DEFAULT_UA, Accept: 'text/html,*/*;q=0.8', 'Accept-Language': 'zh-CN,zh;q=0.9' }, signal: c?.signal, timeoutMs: c?.requestTimeoutMs })) as unknown as {
       status: number
       ok: boolean
       text(): Promise<string>
@@ -126,19 +200,56 @@ export function makeSfacgSite(opts: {
       const spec = SFACG_BOARDS[id]
       if (!spec) throw new MissingError('未知榜 id：' + id)
       const t0 = Date.now()
-      const html = await fetchText('https://book.sfacg.com/', ctx)
-      if (/<title>出错了<\/title>|糟糕,页面找不到了|小说不存在/.test(html)) throw new MissingError('菠萝包错误页')
-      if (html.length < 5000) throw new MissingError('页面过小（可能被拦）')
-      const rows = parseHomeBoard(html, spec.title, spec.tab)
-      if (!rows) throw new MissingError('页面里找不到该榜/该 tab：' + spec.title + ' - ' + spec.tab)
-      if (!rows.length) throw new MissingError('该 tab 无条目')
-      const warnings: string[] = []
-      if (rows.some((r) => r.extra && r.extra.titleTruncated)) warnings.push('书名被站点截断（首页榜通病）：点面板「补全本榜」可换成全名并补作者（约 10 请求）')
-      // ★ 票 49：第 3 名起本该有名次（<i class="num">），没了就是改版 —— 补号照旧，但必须说出来
-      if (rows.some((r) => r.extra && r.extra.rankFromPage === false && (r.rank || 0) >= 3)) {
-        warnings.push('第 3 名起有名次不是页面给的（<i class="num"> 缺失？）—— 已按出现顺序补号，请核对')
+      const depth = Math.max(1, Math.min(100, opts.depthOf ? opts.depthOf(id) : 30))
+      const pages = Math.ceil(depth / DAOSEARCH_PAGE_SIZE)
+      let requests = 0
+      const seen = new Set<string>()
+      const rows: Row[] = []
+      for (let page = 1; page <= pages; page++) {
+        const url = DAOSEARCH_BASE + '?lang=zh&rank_type=' + spec.rankType + (page > 1 ? '&page=' + page : '')
+        const html = await fetchText(url, ctx)
+        requests += 1
+        if (/<title>(?:Just a moment|出错了|404)|cf-browser-verification|糟糕,页面找不到了|小说不存在/i.test(html)) {
+          if (page === 1) throw new MissingError('菠萝包榜单异常页')
+          break
+        }
+        if (html.length < 1500) {
+          if (page === 1) throw new MissingError('页面过小（可能被拦）')
+          break
+        }
+        const canonM = html.match(/<link\b[^>]*rel="canonical"[^>]*href="([^"]+)"/i)
+        if (canonM && !canonM[1].includes('rank_type=' + spec.rankType)) {
+          if (page === 1) throw new MissingError('页面未命中目标榜（可能 rank_type 已变更）：' + spec.rankType)
+          break
+        }
+        const part = parseDaoSearchRankPage(html)
+        if (!part.length) {
+          if (page === 1) throw new MissingError('页面里找不到榜单条目：' + spec.rankType)
+          break
+        }
+        let added = 0
+        for (const x of part) {
+          if (seen.has(x.key)) continue
+          seen.add(x.key)
+          rows.push(x)
+          added += 1
+          if (rows.length >= depth) break
+        }
+        if (!added || rows.length >= depth) break
       }
-      return { boardId: id, status: 'ok', rows, requests: 1, durationMs: Date.now() - t0, warnings }
+      if (!rows.length) throw new MissingError('榜单无条目')
+      // 名次优先用页面自带 browse-num；缺失时才顺位补号并留警告（票 49）
+      let auto = 1
+      for (const r of rows) {
+        if (r.rank == null) r.rank = auto
+        auto = (r.rank || auto) + 1
+      }
+      const warnings: string[] = []
+      if (rows.some((r) => r.extra && r.extra.titleTruncated)) warnings.push('书名被站点截断：点面板「补全本榜」可换成全名')
+      if (rows.some((r) => r.extra && r.extra.rankFromPage === false)) {
+        warnings.push('有名次不是页面给的（browse-num 缺失？）—— 已按出现顺序补号，请核对')
+      }
+      return { boardId: id, status: 'ok', rows, requests, durationMs: Date.now() - t0, warnings }
     },
   }
 }

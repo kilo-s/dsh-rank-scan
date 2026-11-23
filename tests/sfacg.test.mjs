@@ -3,13 +3,23 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join, dirname } from 'node:path'
-import { authorFromBookTitle, parseHomeBoard, makeSfacgSite, SFACG_BOARDS } from '../lib/sites/sfacg.js'
+import { authorFromBookTitle, parseCnCount, parseDaoSearchRankPage, parseHomeBoard, makeSfacgSite, SFACG_BOARDS } from '../lib/sites/sfacg.js'
 import { runScan } from '../lib/scan/run.js'
 import { MemoryStore } from '../lib/scan/store.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const home = readFileSync(join(here, 'fixtures', 'sfacg-home.html'), 'utf8')
+const dsP1 = readFileSync(join(here, 'fixtures', 'sfacg-daosearch-p1.html'), 'utf8')
+const dsP2 = readFileSync(join(here, 'fixtures', 'sfacg-daosearch-p2.html'), 'utf8')
 const clock = { now: () => new Date('2026-10-14T21:00:00+08:00') }
+
+/** 把夹具里的 canonical 替换成当前请求的 rank_type，供离线多榜/多页测试复用 */
+function pageFor(url) {
+  const m = String(url).match(/rank_type=([a-z0-9_]+)/)
+  const rt = m ? m[1] : 'clicks_week'
+  const base = String(url).includes('page=2') ? dsP2 : dsP1
+  return base.replace(/rank_type=clicks_week/g, 'rank_type=' + rt)
+}
 
 test('书页标题取作者：形如「书名 - 小说全文阅读 - 分类 - 作者 - SF轻小说」', () => {
   // 实测样例（2026-10-15 取 https://book.sfacg.com/Novel/783717/ 的 <title>）
@@ -22,19 +32,23 @@ test('书页标题取作者：形如「书名 - 小说全文阅读 - 分类 - �
   assert.equal(authorFromBookTitle('书名 - 小说全文阅读 - 分类 - 带空格的 作者名 - SF轻小说'), '带空格的 作者名')
   // 兜底分支：段数不足时用正则
   assert.equal(authorFromBookTitle('书名-小说全文阅读-分类-兜底作者-SF轻小说'), '兜底作者')
-  // 拿不到就 null，绝不瞎猜（首页榜本来就没有作者）
+  // 拿不到就 null，绝不瞎猜
   assert.equal(authorFromBookTitle(''), null)
   assert.equal(authorFromBookTitle('只有书名'), null)
   assert.equal(authorFromBookTitle('书名 - SF轻小说'), null)
 })
 
-test('首页榜本身没有作者（作者只能靠书页补全）', () => {
-  const rows = parseHomeBoard(home, '新书榜', '点击')
-  assert.ok(rows && rows.length, '首页榜应能解析出条目')
-  assert.ok(rows.every((r) => r.author === null), '首页 SSR 没有作者字段')
+test('中文数量缩写解析：支持万/亿/纯数字，缺失或非法一律 null', () => {
+  assert.equal(parseCnCount('192.1万字'), 1921000)
+  assert.equal(parseCnCount('1.6万'), 16000)
+  assert.equal(parseCnCount('1亿'), 100000000)
+  assert.equal(parseCnCount('7,017'), 7017)
+  assert.equal(parseCnCount(''), null)
+  assert.equal(parseCnCount('--'), null)
+  assert.equal(parseCnCount(null), null)
 })
 
-test('菠萝包首页（真实夹具）：三个榜都能解析出 10 条', () => {
+test('菠萝包首页解析（兼容回归）：三个榜都能解析出 10 条', () => {
   for (const [id, spec] of Object.entries(SFACG_BOARDS)) {
     const rows = parseHomeBoard(home, spec.title, spec.tab)
     assert.ok(rows, id + ' 应能定位到 ' + spec.title + '/' + spec.tab)
@@ -45,6 +59,7 @@ test('菠萝包首页（真实夹具）：三个榜都能解析出 10 条', () =
     assert.deepEqual(rows.map((r) => r.rank), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], id + ' 名次应连续')
   }
   const news = parseHomeBoard(home, '新书榜', '点击')
+  assert.ok(news.every((r) => r.author === null), '首页 SSR 没有作者字段')
   assert.equal(news[0].extra.score, 6)
   assert.ok(news[0].extra.words > 1000, '前两名有字数')
   assert.ok(news[0].extra.collect > 100, '前两名有收藏')
@@ -52,45 +67,69 @@ test('菠萝包首页（真实夹具）：三个榜都能解析出 10 条', () =
   assert.equal(news[9].extra.words, null, '第 3 名起没有数值 ⇒ null（不补 0）')
 })
 
-// ★ 票 49：夹具原来不含 <i class="num">（被裁剪掉），于是「名次来自页面」这条路径从没被走过 ——
-//   解析出的 1..10 其实全是按位置补号。夹具补回真名次结构（第 3 名起是 <i class="num">03</i>）。
-test('★ 票 49 菠萝包：名次来自页面 i.num（不是按位置补号）；页面不给名次时不静默', async () => {
-  const rows = parseHomeBoard(home, '新书榜', '点击')
-  assert.equal(rows.length, 10)
-  assert.deepEqual(rows.map((r) => r.rank), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-  assert.equal(rows[0].extra.rankFromPage, false, '前两名是图文卡 li.figure，页面确实不给名次（按位置 1、2 是既定口径）')
-  assert.equal(rows[2].extra.rankFromPage, true, '第 3 名起名次来自页面 i.num')
-  // 真名次结构：把「新书榜·点击」第 3 名（783195）的页面名次 03 改成 07 ⇒ 解析出的名次必须是 7
-  // （若仍是 3，说明名次其实是按位置补号的）
-  const mutRe = /<i class="num">\d+<\/i>(\s*<a href="\/Novel\/783195\/")/
-  assert.match(home, mutRe, '夹具必须含真名次结构 <i class="num">（曾被当「不影响输出」裁掉）')
-  const mutated = home.replace(mutRe, '<i class="num">07</i>$1')
-  assert.equal(parseHomeBoard(mutated, '新书榜', '点击')[2].rank, 7, '名次必须来自页面 i.num')
-  // 站点改版把 i.num 撤掉 ⇒ 名次退回按位置补号，必须留 warning（不再静默）
-  const noNum = home.replace(/<i class="num">\s*\d+\s*<\/i>/g, '')
-  const site = makeSfacgSite({ boards: ['sfacg.new.click'], fetchText: async () => noNum })
+test('菠萝包 DaoSearch 真实夹具：每页 20 条，完整书名/作者/字数/收藏与官网链接齐全', () => {
+  const p1 = parseDaoSearchRankPage(dsP1)
+  const p2 = parseDaoSearchRankPage(dsP2)
+  assert.equal(p1.length, 20)
+  assert.equal(p2.length, 20)
+  assert.deepEqual(p1.map((r) => r.rank), Array.from({ length: 20 }, (_, i) => i + 1))
+  assert.deepEqual(p2.map((r) => r.rank), Array.from({ length: 20 }, (_, i) => i + 21))
+  assert.equal(p1[0].key, '788076')
+  assert.equal(p1[0].title, '申请离职失败后被病娇上司当玩物')
+  assert.equal(p1[0].author, '大灰狼和小红帽')
+  assert.equal(p1[0].url, 'https://book.sfacg.com/Novel/788076/')
+  assert.equal(p1[0].extra.words, 116000)
+  assert.equal(p1[0].extra.collect, 3377)
+  assert.equal(p1[0].extra.titleTruncated, false)
+  assert.equal(p1[0].extra.rankFromPage, true)
+  assert.ok(p1.every((r) => r.author && r.extra.words > 0 && r.extra.collect > 0 && !r.extra.titleTruncated))
+})
+
+test('★ 票 49 菠萝包：名次来自页面 browse-num（不是按位置补号）；页面不给名次时不静默', async () => {
+  const mut = dsP1.replace(/class="browse-num"[^>]*>3<\/span>/, 'class="browse-num">7</span>')
+  assert.equal(parseDaoSearchRankPage(mut)[2].rank, 7, '名次必须来自页面 browse-num')
+  const noNum = dsP1.replace(/<span class="browse-num"[^>]*>\d+<\/span>/g, '')
+  const site = makeSfacgSite({ boards: ['sfacg.hot.week'], depthOf: () => 20, fetchText: async () => noNum })
   const rec = await runScan({ sites: [site], clock, store: new MemoryStore() })
   assert.equal(rec.boards[0].status, 'ok')
   assert.ok(rec.boards[0].warnings.some((w) => w.includes('名次')), '名次不是页面给的 ⇒ 必须 warning：' + JSON.stringify(rec.boards[0].warnings))
 })
 
-test('菠萝包：错误页 ⇒ missing；未知榜 ⇒ missing', async () => {
-  const bad = makeSfacgSite({ boards: ['sfacg.new.click'], fetchText: async () => '<html><title>出错了</title><body>很抱歉给您带来不便</body></html>' })
+test('菠萝包：错误页/挑战页/换榜回退 ⇒ missing；未知榜 ⇒ missing', async () => {
   const store = new MemoryStore()
+  const bad = makeSfacgSite({ boards: ['sfacg.new.click'], fetchText: async () => '<html><title>Just a moment...</title><body>cf-browser-verification</body></html>' })
   const rec = await runScan({ sites: [bad], clock, store })
   assert.equal(rec.boards[0].status, 'missing')
 
-  const unknown = makeSfacgSite({ boards: ['sfacg.zzz'], fetchText: async () => home })
-  const rec2 = await runScan({ sites: [unknown], clock, store: new MemoryStore() })
+  // canonical 回退默认月票月榜（不含目标 rank_type）⇒ 必须判 missing，防止静默串榜
+  const fallbackHtml = dsP1.replace(/rank_type=clicks_week/g, '')
+  const wrongBoard = makeSfacgSite({ boards: ['sfacg.hot.week'], fetchText: async () => fallbackHtml })
+  const recWrong = await runScan({ sites: [wrongBoard], clock, store })
+  assert.equal(recWrong.boards[0].status, 'missing')
+
+  const unknown = makeSfacgSite({ boards: ['sfacg.zzz'], fetchText: async (u) => pageFor(u) })
+  const rec2 = await runScan({ sites: [unknown], clock, store })
   assert.equal(rec2.boards[0].status, 'missing')
 })
 
-test('菠萝包：适配器端到端（离线）⇒ 落快照 + 截断警告', async () => {
-  const site = makeSfacgSite({ boards: ['sfacg.hot.week', 'sfacg.vip.week'], fetchText: async () => home })
+test('菠萝包：适配器端到端（离线）⇒ 默认翻 2 页截 30 条，三个现有榜全绿且无截断', async () => {
+  const urls = []
+  const site = makeSfacgSite({
+    boards: ['sfacg.new.click', 'sfacg.hot.week', 'sfacg.vip.week'],
+    depthOf: () => 30,
+    fetchText: async (u) => { urls.push(u); return pageFor(u) },
+  })
   const store = new MemoryStore()
   const rec = await runScan({ sites: [site], clock, store })
-  assert.deepEqual(rec.boards.map((b) => b.status), ['ok', 'ok'])
-  assert.equal(rec.boards[0].rows.length, 10)
-  assert.ok(rec.boards[0].warnings.some((w) => w.includes('截断')))
+  assert.deepEqual(rec.boards.map((b) => b.status), ['ok', 'ok', 'ok'])
+  for (const b of rec.boards) {
+    assert.equal(b.rows.length, 30, b.boardId + ' 应截取 30 条')
+    assert.equal(b.requests, 2, b.boardId + ' 30 条应发 2 页请求')
+    assert.deepEqual(b.rows.map((r) => r.rank), Array.from({ length: 30 }, (_, i) => i + 1))
+    assert.ok(b.rows.every((r) => !r.extra.titleTruncated && r.author && r.extra.words > 0 && r.extra.collect > 0))
+  }
+  assert.ok(urls.some((u) => u.includes('rank_type=new_collections_all')))
+  assert.ok(urls.some((u) => u.includes('rank_type=clicks_week') && u.includes('page=2')))
+  assert.ok(urls.some((u) => u.includes('rank_type=bestselling_week')))
   assert.ok(store.snapshot('sfacg.hot.week', '2026-10-14'))
 })

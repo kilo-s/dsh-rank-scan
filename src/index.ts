@@ -14,7 +14,7 @@ import { requestAllowed } from './scan/guard.js'
 import { FileStore } from './scan/store.js'
 import { makeQidianMobileSite } from './sites/qidian-mobile.js'
 import { makeQidiantuSite } from './sites/qidiantu.js'
-import { makeCiweimaoSite } from './sites/ciweimao.js'
+import { fetchCiweimaoBookDesc, makeCiweimaoSite, parseCiweimaoBookDesc } from './sites/ciweimao.js'
 import { makeFanqieSite } from './sites/fanqie.js'
 import { authorFromBookTitle, makeSfacgSite, SFACG_BOARDS } from './sites/sfacg.js'
 import { CIWEIMAO_BOARDS, CIWEIMAO_BUY_URL } from './sites/ciweimao.js'
@@ -24,7 +24,7 @@ import { QIDIANTU_BOARDS, periodStartOf } from './sites/qidiantu.js'
 import { deriveFanqieViews, poolDateOf } from './scan/derive.js'
 import { decodePua, hasPua, learnPair, loadFontMap, saveFontMap } from './scan/fontmap.js'
 import { applyColumnPolicy, batchKeyOf, batchKindOf, batchLabelOf, boardMeta, columnsFor, compareDesc, defaultSortFor, defaultSortKeyFor, enrichAttemptPolicy, enrichMissingCount, groupBySite, groupChanges, isBatchBoard, isEnrichableBoard, saleRangeOf, shouldShowDays, usesRankDelta, withFanqieCat } from './scan/view.js'
-import { BookmarkService, BookmarkStore } from './scan/bookmark.js'
+import { BookmarkService, BookmarkStore, fmtReadableCount } from './scan/bookmark.js'
 import { displayLabel, extractTags, parseBookInput, urlFor, type SiteId } from './scan/bookmark-parse.js'
 import { decodeIfPua } from './scan/fontmap.js'
 import { addDays, computeBoardDiff, daysOnBoard, guardCrossPeriod, jitterForBoard } from './scan/diff.js'
@@ -57,7 +57,8 @@ import {
 } from './scan/files.js'
 import { DEFAULT_FALLBACK_TIME, DEFAULT_SITE_TIMES, hmOf, planSiteRuns, RETRY_COOLDOWN_MIN, SITE_ORDER, siteOfBoard, timeReached, validTime } from './scan/schedule.js'
 import { cacheStats, cachedBook, clearCache, putCachedBooks } from './scan/qidian-cache.js'
-import { assignCachedStats, cacheStats as bookCacheStats, cachedEntry, clearCache as clearBookCache, putEntries } from './scan/book-cache.js'
+import { assignCachedStats, cacheStats as bookCacheStats, cachedDetail, cachedEntry, clearCache as clearBookCache, putEntries, readDetailMap } from './scan/book-cache.js'
+import { daoSearchSiteOf, fetchDaoSearchBook, mergeBookHonours } from './sites/daosearch-book.js'
 
 interface PluginCtx {
   tools: { register(tool: any): unknown }
@@ -185,14 +186,15 @@ function defaultState() {
     ],
     /**
      * 每个榜取多少条（面板可逐榜调）。
-     * 既定口径（2026-10-15）：**番茄与刺猬猫默认 30**；
+     * 既定口径：番茄、刺猬猫、菠萝包默认 30；
      * 起点移动端榜单单页就是 20 条（SSR 里 pageNum=1/总数 172，翻页接口在反爬挑战后面）⇒ 固定 20；
-     * 菠萝包首页每 tab 固定 10 ⇒ 固定 10；起点图首订当日榜 20–35 条、三江整期 ⇒ 固定。
+     * 起点图首订当日榜 20–35 条、三江整期 ⇒ 固定。
      */
     depths: {
       'fanqie.m.new.262': 30, 'fanqie.m.new.261': 30, 'fanqie.m.new.1014': 30, 'fanqie.m.new.257': 30,
       'fanqie.m.new.1140': 30, 'fanqie.m.new.258': 30, 'fanqie.m.new.539': 30, 'fanqie.m.new.1141': 30,
       'ciweimao.no-vip-click.week': 30, 'ciweimao.yp_new.week': 30,
+      'sfacg.new.click': 30, 'sfacg.hot.week': 30, 'sfacg.vip.week': 30,
     } as Record<string, number>,
     filters: { excludeDerivative: true, wordsMin: 0, wordsMax: 0, topN: 0, onlyChanged: true },
     sortBy: 'rank',
@@ -306,9 +308,9 @@ export function apply(ctx: PluginCtx, config: any): void {
   const writeState = (s: any) => writeJson(statePath, s)
 
   /** 按勾选的 boardId 前缀装配站点适配器（抓取集是 boardId 列表，站内细节由适配器管） */
-  /** 没配过深度的榜按站取默认：番茄 / 刺猬猫 30（每页 10 ⇒ 3 页），其余由站点自身决定 */
+  /** 没配过深度的榜按站取默认：番茄 / 刺猬猫 / 菠萝包 30，其余由站点自身决定 */
   function defaultDepthFor(boardId: string): number {
-    if (boardId.startsWith('fanqie.m.') || boardId.startsWith('ciweimao.')) return 30
+    if (boardId.startsWith('fanqie.m.') || boardId.startsWith('ciweimao.') || boardId.startsWith('sfacg.')) return 30
     return 10
   }
 
@@ -331,7 +333,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         decode: (s: string) => decodePua(s, map).text,
       }))
     }
-    if (sc.length) out.push(makeSfacgSite({ boards: sc }))
+    if (sc.length) out.push(makeSfacgSite({ boards: sc, depthOf: (b: string) => depths[b] || defaultDepthFor(b) }))
     return out
   }
 
@@ -369,8 +371,16 @@ export function apply(ctx: PluginCtx, config: any): void {
     let left = PER_BOARD_ENRICH_CAP * 4
     for (const b of targets) {
       if (left <= 0) { markEnrichPending(latestDataDate(), b); continue }
+      // 菠萝包榜页已自带完整书名/作者/字数/收藏时跳过自动逐本补全，省请求（手动补全仍可刷书页精确值）
+      if (b.startsWith('sfacg.')) {
+        const snapPre: any = new FileStore(root).readSnapshot(latestDataDate(), b)
+        const rowsPre: any[] = (snapPre && snapPre.rows) || []
+        if (rowsPre.length && needsEnrichRows(b, rowsPre) === 0 && !rowsPre.some((r: any) => !r.author || (r.extra && r.extra.titleTruncated))) {
+          continue
+        }
+      }
       try {
-        const r: any = await enrichBoard(b, true, left)
+        const r: any = await enrichBoard(b, !b.startsWith('sfacg.'), left)
         left = r && typeof r.requests === 'number' ? left - r.requests : left
         done.push({ boardId: b, ok: !!r.ok, filled: r.filled || 0, requests: r.requests || 0 })
       } catch (e) {
@@ -1533,11 +1543,42 @@ export function apply(ctx: PluginCtx, config: any): void {
       const isBatch = isBatchBoard(boardId)
       const diff = !isBatch && trusted && snap && latest && bPrev ? diffFor(boardId, latest, bPrev, undefined, slimAll) : null
       const c = diff && !diff.crossPeriod && (diff as any).counts ? (diff as any).counts : null
-      const batch = isBatch && snap && latest
+      const batch = isBatch && latest
         ? (() => {
+            // 今日未到计划时刻时（如 21:30 前的起点首订），自动回退读取最近一份可信本地快照供概览预览（fromPrevDay 诚实标明）
+            const prevBatchDate = !snap ? previousBoardDate(boardId, latest, dates) : null
+            const batchSnap = snap || (prevBatchDate ? store.readSnapshot(prevBatchDate, boardId) : null)
+            const batchSnapDate = snap ? latest : prevBatchDate
+            if (!batchSnap || !batchSnapDate) return null
             const kind = batchKindOf(boardId)
-            const key = batchKeyOf(kind, snap.rows) || (kind === 'date' ? addDays(latest, -1) : null)
-            return { key, label: batchLabelOf(kind, key), count: (snap.rows || []).length }
+            const key = batchKeyOf(kind, batchSnap.rows) || (kind === 'date' ? addDays(batchSnapDate, -1) : null)
+            // 按期批次榜（如刺猬猫首订每周一期）：只有今日实采且刚刚换新期当天才进概览精选，避免同一期霸屏一整周或次日未采时重复冒头
+            let freshForHighlights = kind === 'date'
+            if (kind === 'issue' && key && snap) {
+              const prevIssueDate = previousBoardDate(boardId, batchSnapDate, dates)
+              const prevIssueSnap = prevIssueDate ? store.readSnapshot(prevIssueDate, boardId) : null
+              const prevIssueKey = prevIssueSnap ? batchKeyOf(kind, prevIssueSnap.rows) : null
+              freshForHighlights = !prevIssueKey || prevIssueKey !== key
+            }
+            return {
+              kind,
+              key,
+              label: batchLabelOf(kind, key),
+              count: (batchSnap.rows || []).length,
+              dataDate: batchSnapDate,
+              fromPrevDay: !snap,
+              freshForHighlights,
+              items: (batchSnap.rows || []).slice(0, 20).map((r: any) => ({
+                key: r.key,
+                rank: typeof r.rank === 'number' ? r.rank : null,
+                title: r.title || '',
+                author: r.author || null,
+                url: r.url || null,
+                value: typeof r.value === 'number' && r.value > 0 ? r.value : null,
+                buyNumRaw: r.extra && r.extra.buyNumRaw ? String(r.extra.buyNumRaw) : null,
+                cat: r.extra && r.extra.cat ? String(r.extra.cat) : null,
+              })),
+            }
           })()
         : null
       /**
@@ -1574,6 +1615,8 @@ export function apply(ctx: PluginCtx, config: any): void {
         up: c ? c.up : null,
         newCount: c ? c.new + c.rebound : null,
         out: c ? c.out : null,
+        /** 当日快照行数（供概览动态精选按真实榜深归一化，20 本榜与 30 本榜自然对齐） */
+        rowCount: snap && Array.isArray(snap.rows) ? snap.rows.length : null,
         /** 批次榜：这一批是什么（不是「涨/新/退」，面板据此替换成「第 N 期 · M 本」） */
         batch,
         changesEligible: !isBatch,
@@ -1974,7 +2017,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         meta: { ...meta, mainLabel: mainLabelOf(boardId, meta) },
         defaultSortKey,
         sortOptions: sortOptionsFor(boardId, meta, { hasHistory }),
-        depth: (st.depths || {})[boardId] ?? (meta.site === 'fanqie' ? 30 : 10),
+        depth: (st.depths || {})[boardId] ?? defaultDepthFor(boardId),
         columns,
         dataDate: effDate,
         requestedDate: date,
@@ -2210,7 +2253,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       meta: { ...meta, mainLabel: mainLabelOf(boardId, meta) },
       defaultSortKey,
       sortOptions: sortOptionsFor(boardId, meta, { hasHistory }),
-      depth: (st.depths || {})[boardId] ?? (meta.site === 'fanqie' ? 30 : 10),
+      depth: (st.depths || {})[boardId] ?? defaultDepthFor(boardId),
       columns,
       dataDate: effDate,
       requestedDate: date,
@@ -2307,7 +2350,12 @@ export function apply(ctx: PluginCtx, config: any): void {
             /** ★ 工作包 A：该榜自己的对比基准日（各榜基准可能不同，顶层的 baselineDate 只是汇总） */
             baselineDate: d.baselineDate,
             group,
+            key: e.key,
             title: e.title,
+            author: e.author == null ? null : e.author,
+            url: e.url == null ? null : e.url,
+            rank: typeof e.rank === 'number' && Number.isFinite(e.rank) ? e.rank : null,
+            prevRank: typeof e.prevRank === 'number' && Number.isFinite(e.prevRank) ? e.prevRank : null,
             /** 面板上色用的**数值**（缺失 = null，不补 0） */
             deltaNum: n,
             /** 榜的指标类型：rank ⇒ 名次变化（↑↓）；value ⇒ 数值变化（+/-，番茄/起点图这类），面板据此换写法 */
@@ -2344,6 +2392,265 @@ export function apply(ctx: PluginCtx, config: any): void {
     }
   }
 
+  const BOOK_KEY_RE = /^(qidian|qidiantu|fanqie|ciweimao|sfacg):([A-Za-z0-9._-]+)$/
+
+  function fmtSignedCount(n: number): string {
+    const abs = Math.abs(n)
+    const body = abs >= 10000 ? fmtReadableCount(abs) : abs.toLocaleString('en-US')
+    return (n > 0 ? '+' : '-') + body
+  }
+
+  /**
+   * 纯本地单书多日走势抽取（0 联网，先读按站 slim，再兜底全站 slim 与单榜快照）。
+   * 起点与起点图共享 qidian 书号命名空间，查询时一并合并检索。
+   */
+  function readBookHistoryPoints(bookKey: string, days = 7, preferredBoardId?: string | null) {
+    const m = BOOK_KEY_RE.exec(String(bookKey || '').trim())
+    if (!m) return null
+    const ns = m[1]
+    const id = m[2]
+    const sitesToScan = (ns === 'qidian' || ns === 'qidiantu') ? ['qidian', 'qidiantu'] : [ns]
+    const { st, dates } = panelCtx()
+    const cap = Math.max(3, Math.min(30, Math.round(Number(days) || 7)))
+    const useDates = dates.slice(-cap)
+    const store = new FileStore(root)
+    const byBoard = new Map<string, Map<string, { rank: number | null; metric: number | null }>>()
+    const recordHit = (boardId: string, d: string, rank: number | null, metric: number | null) => {
+      if (store.isUntrusted(d, boardId)) return
+      let bm = byBoard.get(boardId)
+      if (!bm) { bm = new Map(); byBoard.set(boardId, bm) }
+      if (!bm.has(d)) bm.set(d, { rank, metric })
+    }
+    for (const d of useDates) {
+      let hadSlim = false
+      const checkedBoards = new Set<string>()
+      for (const s of sitesToScan) {
+        const sl = readSlim(root, d + '-' + s)
+        if (!sl || !sl.boards) continue
+        hadSlim = true
+        for (const [bid, rows] of Object.entries(sl.boards)) {
+          checkedBoards.add(bid)
+          const hit = (rows || []).find((r) => String(r.key) === id)
+          if (hit) recordHit(bid, d, hit.rank ?? null, hit.metric ?? null)
+        }
+      }
+      const slAll = readSlim(root, d)
+      if (slAll && slAll.boards) {
+        hadSlim = true
+        for (const [bid, rows] of Object.entries(slAll.boards)) {
+          if (checkedBoards.has(bid)) continue
+          const metaB = boardMeta(bid)
+          if (!sitesToScan.includes(metaB.site)) continue
+          checkedBoards.add(bid)
+          const hit = (rows || []).find((r) => String(r.key) === id)
+          if (hit) recordHit(bid, d, hit.rank ?? null, hit.metric ?? null)
+        }
+      }
+      // 兜底：若该日还没有写 slim（例如单测或早先快照），回退扫相关站的当日快照
+      if (!hadSlim) {
+        for (const bid of (st.boards as string[])) {
+          const metaB = boardMeta(bid)
+          if (!sitesToScan.includes(metaB.site)) continue
+          const snap = store.readSnapshot(d, bid)
+          if (!snap || !Array.isArray(snap.rows)) continue
+          const hit = snap.rows.find((r) => String(r.key) === id)
+          if (hit) recordHit(bid, d, typeof hit.rank === 'number' ? hit.rank : null, typeof hit.value === 'number' ? hit.value : null)
+        }
+      }
+    }
+    const boardIds = Array.from(byBoard.keys())
+    const scoreBoard = (bid: string) => {
+      const mDays = byBoard.get(bid)!
+      const latestD = Array.from(mDays.keys()).sort().slice(-1)[0] || ''
+      const officialBonus = bid.startsWith('fanqie.derived.') ? 0 : (isBatchBoard(bid) ? 200 : 1000)
+      return officialBonus + mDays.size * 10 + (latestD === useDates[useDates.length - 1] ? 5 : 0)
+    }
+    let primaryBoardId: string | null = null
+    // 从单日批次榜（首订）点进来时，若该书在连续榜（签约/周榜）有 2 天以上记录，优先展示连续多日曲线
+    const contBoards = boardIds.filter((bid) => !isBatchBoard(bid) && byBoard.get(bid)!.size >= 2)
+    if (preferredBoardId && byBoard.has(preferredBoardId) && !(isBatchBoard(preferredBoardId) && contBoards.length)) {
+      primaryBoardId = preferredBoardId
+    } else if (contBoards.length) {
+      primaryBoardId = contBoards.slice().sort((a, b) => scoreBoard(b) - scoreBoard(a))[0]
+    } else if (boardIds.length) {
+      primaryBoardId = boardIds.slice().sort((a, b) => scoreBoard(b) - scoreBoard(a))[0]
+    } else if (preferredBoardId) {
+      primaryBoardId = preferredBoardId
+    }
+
+    const primaryMap = primaryBoardId ? (byBoard.get(primaryBoardId) || new Map()) : new Map()
+    const points = useDates.map((d) => {
+      const hit = primaryMap.get(d) || null
+      return { date: d, rank: hit ? hit.rank : null, metric: hit ? hit.metric : null }
+    })
+    const meta = primaryBoardId ? boardMeta(primaryBoardId) : null
+    const hasNumericMetric = !!(meta && meta.metric === 'value' && points.some((p) => typeof p.metric === 'number'))
+    const metricKind: 'value' | 'rank' = hasNumericMetric ? 'value' : 'rank'
+    const unit = hasNumericMetric && primaryBoardId && meta ? mainLabelOf(primaryBoardId, meta) : '名次'
+    const invert = metricKind === 'rank'
+    const values = points.map((p) => (metricKind === 'value' ? p.metric : p.rank))
+
+    // 从最近一次命中的快照里顺手取回标题/作者/原页链接（最多读 1 个文件）
+    let snapInfo: { title: string | null; author: string | null; url: string | null } = { title: null, author: null, url: null }
+    if (primaryBoardId) {
+      for (let i = points.length - 1; i >= 0; i--) {
+        if (points[i].rank != null || points[i].metric != null) {
+          const snap = store.readSnapshot(points[i].date, primaryBoardId)
+          const row = snap && Array.isArray(snap.rows) ? snap.rows.find((r) => String(r.key) === id) : null
+          if (row) {
+            snapInfo = { title: row.title || null, author: row.author || null, url: row.url || null }
+            break
+          }
+        }
+      }
+    }
+
+    // 连续几天未在任何榜出现（从最新日往前数）
+    let absentDays = 0
+    for (let i = useDates.length - 1; i >= 0; i--) {
+      const d = useDates[i]
+      const onAny = boardIds.some((bid) => byBoard.get(bid)!.has(d))
+      if (onAny) break
+      absentDays += 1
+    }
+
+    return {
+      ok: true,
+      bookKey,
+      site: meta ? meta.site : ns,
+      siteName: meta ? meta.siteName : (SITE_CN[ns] || ns),
+      boardId: primaryBoardId,
+      boardName: meta ? meta.name : null,
+      title: snapInfo.title,
+      author: snapInfo.author,
+      url: snapInfo.url,
+      metricKind,
+      unit,
+      invert,
+      dates: useDates,
+      points,
+      values,
+      absentDays,
+      boards: boardIds.map((bid) => {
+        const mb = boardMeta(bid)
+        return { boardId: bid, boardName: mb.name, days: byBoard.get(bid)!.size }
+      }),
+    }
+  }
+
+  async function panelBookTrend(bookKey: string, days = 7, boardId?: string | null) {
+    const got = readBookHistoryPoints(bookKey, days, boardId)
+    if (!got) return { ok: false, error: 'bookKey 格式不正确（应如 qidian:12345）' }
+    const bm = BOOKMARKS ? BOOKMARKS.get(bookKey) : null
+    return {
+      ...got,
+      title: got.title || (bm ? displayLabel(bm) : null),
+      author: got.author || (bm ? bm.author : null),
+      url: got.url || (bm ? bm.url : null),
+      bookmarked: !!(bm && !bm.deletedAt),
+      watched: !!(bm && !bm.deletedAt && bm.watched === true),
+    }
+  }
+
+  async function panelWatchSummary() {
+    const { latest } = panelCtx()
+    const svc = BOOKMARKS
+    if (!svc) return { ok: true, dataDate: latest, items: [], activeCount: 0, quietCount: 0 }
+    const watchedList = svc.all().filter((b) => b.watched === true)
+    if (!watchedList.length) return { ok: true, dataDate: latest, items: [], activeCount: 0, quietCount: 0 }
+
+    const storeW = new FileStore(root)
+    const items = watchedList.map((b) => {
+      const prefBoard = (b.boardSummary && b.boardSummary.primary && b.boardSummary.primary.boardId) || b.metricBoard || null
+      const tr = readBookHistoryPoints(b.bookKey, 7, prefBoard)
+      const pts = (tr && tr.points) || []
+      const last = pts.length ? pts[pts.length - 1] : null
+      const prev = pts.length >= 2 ? pts[pts.length - 2] : null
+      const todayOn = !!(last && (last.rank != null || last.metric != null))
+      const prevOn = !!(prev && (prev.rank != null || prev.metric != null))
+      const quiet = !todayOn && !prevOn
+      const effBoardId = (tr && tr.boardId) || prefBoard
+      // 若主榜今天尚未采集（例如 14:30 前的菠萝包或 21:30 前的起点图），不要把昨日在榜书误判成红色「→ 榜外」
+      const boardScannedToday = !!(effBoardId && last && storeW.readSnapshot(last.date, effBoardId))
+
+      let deltaText = '—'
+      let deltaType: 'up' | 'down' | 'new' | 'out' | 'flat' | 'quiet' = 'flat'
+      let statText = ''
+      let displayRank = last ? last.rank : null
+      if (quiet) {
+        deltaText = '静默'
+        deltaType = 'quiet'
+        statText = tr && tr.absentDays > 0 ? tr.absentDays + ' 天未上榜' : '暂无近期记录'
+      } else if (!todayOn && prevOn && !boardScannedToday) {
+        deltaText = '待采集'
+        deltaType = 'flat'
+        displayRank = prev ? prev.rank : null
+        statText = prev && prev.rank != null ? '昨日 #' + prev.rank + ' · 今日未采' : '今日尚未采集'
+      } else if (!todayOn && prevOn) {
+        deltaText = '→ 榜外'
+        deltaType = 'out'
+        statText = prev && prev.rank != null ? '昨日 #' + prev.rank : '今日退榜'
+      } else if (todayOn && !prevOn) {
+        deltaText = '＋ 新'
+        deltaType = 'new'
+        statText = tr && tr.metricKind === 'value' && last && last.metric != null
+          ? tr.unit + ' ' + fmtReadableCount(last.metric)
+          : (b.collect != null ? (b.collectLabel || (b.site === 'fanqie' ? '在读' : '收藏')) + ' ' + fmtReadableCount(b.collect) : (last && last.rank != null ? '第 ' + last.rank + ' 名' : ''))
+      } else if (todayOn && prevOn && last && prev) {
+        if (tr && tr.metricKind === 'value' && last.metric != null && prev.metric != null) {
+          const diff = last.metric - prev.metric
+          statText = tr.unit + ' ' + fmtReadableCount(last.metric)
+          if (diff > 0) { deltaText = fmtSignedCount(diff); deltaType = 'up' }
+          else if (diff < 0) { deltaText = fmtSignedCount(diff); deltaType = 'down' }
+          else { deltaText = '0'; deltaType = 'flat' }
+        } else if (last.rank != null && prev.rank != null) {
+          const diff = prev.rank - last.rank
+          statText = b.collect != null
+            ? (b.collectLabel || (b.site === 'fanqie' ? '在读' : '收藏')) + ' ' + fmtReadableCount(b.collect)
+            : '第 ' + last.rank + ' 名'
+          if (diff > 0) { deltaText = '↑' + diff; deltaType = 'up' }
+          else if (diff < 0) { deltaText = '↓' + Math.abs(diff); deltaType = 'down' }
+          else { deltaText = '0'; deltaType = 'flat' }
+        } else {
+          statText = b.collect != null ? (b.collectLabel || '收藏') + ' ' + fmtReadableCount(b.collect) : ''
+          deltaText = '0'
+          deltaType = 'flat'
+        }
+      }
+
+      const siteEff = (tr && tr.site) || b.site
+      const siteNorm = siteEff === 'qidiantu' ? 'qidian' : siteEff
+      return {
+        bookKey: b.bookKey,
+        title: b.label,
+        author: b.author,
+        url: b.url,
+        site: siteNorm,
+        siteName: siteNorm === 'qidian' ? '起点' : ((tr && tr.siteName) || SITE_CN[siteNorm] || siteNorm),
+        boardId: effBoardId,
+        boardName: (tr && tr.boardName) || (prefBoard ? boardMeta(prefBoard).name : ''),
+        rank: displayRank,
+        prevRank: prev ? prev.rank : null,
+        statText,
+        deltaText,
+        deltaType,
+        quiet,
+        absentDays: tr ? tr.absentDays : 0,
+        metricKind: tr ? tr.metricKind : 'rank',
+        unit: tr ? tr.unit : '名次',
+        invert: tr ? tr.invert : true,
+        trend: tr ? tr.values : [],
+        dates: tr ? tr.dates : [],
+      }
+    })
+
+    const prio: Record<string, number> = { out: 0, up: 1, new: 2, down: 3, flat: 4, quiet: 5 }
+    items.sort((a, b) => (prio[a.deltaType] ?? 9) - (prio[b.deltaType] ?? 9))
+    const activeCount = items.filter((x) => !x.quiet).length
+    const quietCount = items.length - activeCount
+    return { ok: true, dataDate: latest, items, activeCount, quietCount }
+  }
+
   /** webServer 服务是可选依赖：用依赖光纤做晚绑定（直取 ctx.webServer 在运行时拿不到 —— T12 验收实测 404） */
   /** 可选榜清单（面板「抓什么」用）：站 → 榜种 → 分类，带是否已勾选 */
   function catalog() {
@@ -2358,24 +2665,22 @@ export function apply(ctx: PluginCtx, config: any): void {
      *     · 起点图 —— 整页给出，适配器不读 depth（首订当日 20–35、三江 17）
      *     · 刺猬猫首订（约）—— 第三方接口整批给出，depth 无意义
      *     · 番茄派生榜 —— 本地算，按候选池全量出（240 行）
-     *     · 菠萝包 —— 首页 SSR 每 tab 固定 10
-     *   其余（番茄分类榜、刺猬猫两个榜单）适配器真按 depth 翻页/截断，才给可调。
+     *   其余（番茄分类榜、刺猬猫两个榜单、菠萝包三个榜单）适配器真按 depth 翻页/截断，才给可调。
      *   注：canDepth=false 只是**不开放编辑**；config 里已有的旧值原样保留。
      */
     const depthLocked = (boardId: string) =>
       boardId.startsWith('qidian.') || boardId.startsWith('qidiantu.') ||
-      boardId === 'ciweimao.buy.latest' || boardId.startsWith('fanqie.derived.') ||
-      boardId.startsWith('sfacg.')
+      boardId === 'ciweimao.buy.latest' || boardId.startsWith('fanqie.derived.')
     const depthHintOf = (site: string, boardId: string) => {
       if (site === 'qidian') return '移动端榜单单页固定 20 条（站点分页接口在反爬挑战后面，暂不可调）'
       if (boardId === 'ciweimao.buy.latest') return '第三方接口整批给出（不按条数截取）'
       if (boardId.startsWith('fanqie.derived.')) return '本地派生榜不设条数（按候选池全量出）'
       if (site === 'qidiantu') return '起点图整页给出条数（不按深度截取；首订当日榜 20–35 行、三江 17 行左右）'
-      if (site === 'sfacg') return '首页 SSR 每个 tab 固定 10 条（不可调）'
+      if (site === 'sfacg') return '可调（每页 20 条，翻页取）'
       return '可调（每页 10 条，翻页取）'
     }
     const push = (site: string, siteName: string, group: string, boardId: string, label: string) => {
-      const cap = site === 'qidian' ? 20 : site === 'sfacg' ? 10 : 100
+      const cap = site === 'qidian' ? 20 : 100
       rows.push({
         site, siteName, group, boardId, label,
         captured: captured.has(boardId), displayed: shown.has(boardId),
@@ -2948,8 +3253,10 @@ export function apply(ctx: PluginCtx, config: any): void {
               if (w) { e.wordsCnt = numOf(w[1]); got = e.wordsCnt != null || got }
             }
             if (!got) e.enrichError = '书页里没解析出总收藏/总字数（页面结构可能变了）'
+            const origDesc = parseCiweimaoBookDesc(html)
             // ★ 2026-10-17：真解析出的字段回写书页缓存（只写本次真取到的，别把历史值当新值）
-            if (bid && got) {
+            // 顺带把原站带完整换行的简介落入缓存（零额外请求），避开 DaoSearch 剥离刺猬猫换行的缺陷
+            if (bid && (got || origDesc)) {
               pendingEntries.push({
                 site: kind,
                 bookId: bid,
@@ -2959,6 +3266,8 @@ export function apply(ctx: PluginCtx, config: any): void {
                   title: null,
                   author: null,
                   score: null,
+                  desc: origDesc,
+                  descSource: origDesc ? 'origin' : null,
                 },
               })
             }
@@ -3121,7 +3430,7 @@ export function apply(ctx: PluginCtx, config: any): void {
    * 起点/起点图复用 fetchBookStats（走书页缓存）；刺猬猫/菠萝包按站页特征解析；番茄走 api/book/info。
    * 1 请求/本，调用方负责 1s 间隔与预算。
    */
-  async function fetchBookProfile(site: string, id: string, urlHint?: string): Promise<{ ok: boolean; title?: string | null; author?: string | null; words?: number | null; collect?: number | null; error?: string }> {
+  async function fetchBookProfile(site: string, id: string, urlHint?: string): Promise<{ ok: boolean; title?: string | null; author?: string | null; words?: number | null; collect?: number | null; desc?: string | null; error?: string }> {
     const ua = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36', 'Accept-Language': 'zh-CN,zh;q=0.9' }
     try {
       if (site === 'qidian' || site === 'qidiantu') {
@@ -3164,7 +3473,8 @@ export function apply(ctx: PluginCtx, config: any): void {
         const g = seg.match(/总点击：<b>([^<]*)<\/b>[\s\S]{0,40}?总收藏：<b>([^<]*)<\/b>[\s\S]{0,40}?总字数：<b>([^<]*)<\/b>/)
         const t = html.match(/<title>([^<]{1,80})/)
         const mk = (s?: string | null) => { if (s == null) return null; const x = String(s).split(',').join('').trim(); const m = x.match(/^([0-9.]+)万$/); if (m) return Math.round(Number(m[1]) * 10000); const n = Number(x.replace(/[^0-9.]/g, '')); return Number.isFinite(n) && x !== '' ? n : null }
-        return { ok: true, title: t ? String(t[1]).replace(/最新章节.*$/, '').trim() : null, words: g ? mk(g[3]) : null, collect: g ? mk(g[2]) : null }
+        const origDesc = parseCiweimaoBookDesc(html)
+        return { ok: true, title: t ? String(t[1]).replace(/最新章节.*$/, '').trim() : null, words: g ? mk(g[3]) : null, collect: g ? mk(g[2]) : null, desc: origDesc }
       }
       if (site === 'sfacg') {
         const t = html.match(/<title>([^<]{1,120})<\/title>/)
@@ -3203,8 +3513,156 @@ export function apply(ctx: PluginCtx, config: any): void {
       valueFrom: 'book-page',
       capturedAt: new Date().toISOString(),
     })
+    if ((bm.site === 'ciweimao' || parts[0] === 'ciweimao') && (got as any).desc) {
+      putEntries(root, [{
+        site: 'ciweimao',
+        bookId: id,
+        entry: { collect: null, words: null, title: null, author: null, score: null, desc: (got as any).desc, descSource: 'origin' },
+      }])
+    }
+    // 刷新书签读数时顺带补一次详情缓存（不拖累主刷新成功态）
+    try { await ensureBookDetailCached(String(bm.site || parts[0] || 'qidian'), id) } catch { /* 静默 */ }
     return true
   }
+  /** 单本详情按需拉取：30 分钟负缓存（避免对未收录新书反复发请求）+ 并发去重 */
+  const detailMissAt = new Map<string, number>()
+  const detailInFlight = new Map<string, Promise<any>>()
+  const DETAIL_MISS_TTL_MS = 30 * 60 * 1000
+  let pluginDisposed = false
+  ctx.effect?.(() => () => { pluginDisposed = true })
+
+  /** 按需确保单本官方详情已落入 7 天本地缓存（供展开详情、加书签/刷新顺手预热复用） */
+  async function ensureBookDetailCached(site: string, bookId: string) {
+    if (pluginDisposed) return null
+    const dsSite = daoSearchSiteOf(site)
+    const id = String(bookId || '').trim()
+    if (!dsSite || !/^\d+$/.test(id)) return null
+    const cacheKey = dsSite + ':' + id
+    const needsOriginDesc = (e: any) =>
+      dsSite === 'ciweimao' && e?.descSource !== 'origin' && (!e?.desc || !String(e.desc).includes('\n'))
+    const hit = cachedDetail(root, dsSite, id, BOOK_CACHE_TTL_MS)
+    if (hit.hit && hit.entry) {
+      if (!needsOriginDesc(hit.entry)) return { fromCache: true, entry: hit.entry }
+      // 刺猬猫旧缓存若还是 DaoSearch 单段无换行文本，按需补一次原站带分段简介（写回缓存，7 天复用）
+      const missAtOrig = detailMissAt.get(cacheKey + ':orig')
+      if (missAtOrig && Date.now() - missAtOrig < DETAIL_MISS_TTL_MS) return { fromCache: true, entry: hit.entry }
+      let upg = detailInFlight.get(cacheKey + ':orig')
+      if (!upg) {
+        upg = fetchCiweimaoBookDesc(id, { timeoutMs: 10_000 })
+          .then((origDesc) => {
+            if (pluginDisposed || !existsSync(root)) return hit.entry
+            if (origDesc) {
+              detailMissAt.delete(cacheKey + ':orig')
+              putEntries(root, [{
+                site: dsSite,
+                bookId: id,
+                entry: {
+                  collect: null, words: null, title: null, author: null, score: null,
+                  desc: origDesc, descSource: 'origin', detailFetchedAt: hit.entry!.detailFetchedAt || new Date().toISOString(),
+                },
+              }])
+              return { ...hit.entry, desc: origDesc, descSource: 'origin' as const }
+            }
+            detailMissAt.set(cacheKey + ':orig', Date.now())
+            return hit.entry
+          })
+          .catch(() => hit.entry)
+          .finally(() => { detailInFlight.delete(cacheKey + ':orig') })
+        detailInFlight.set(cacheKey + ':orig', upg)
+      }
+      const upgraded = await upg
+      return { fromCache: true, entry: upgraded || hit.entry }
+    }
+    const missAt = detailMissAt.get(cacheKey)
+    if (missAt && Date.now() - missAt < DETAIL_MISS_TTL_MS) return null
+    let pending = detailInFlight.get(cacheKey)
+    if (!pending) {
+      pending = fetchDaoSearchBook(dsSite, id, { timeoutMs: 10_000 })
+        .then(async (got) => {
+          if (pluginDisposed || !existsSync(root)) return got
+          // 刺猬猫：若缓存里还没有原站分段简介且 DaoSearch 返回无换行文本，顺手取原站简介保留段落排版
+          const prevBasic = cachedEntry(root, dsSite, id, 0).entry
+          let finalDesc = (prevBasic && prevBasic.descSource === 'origin' && prevBasic.desc) ? prevBasic.desc : (got ? got.desc : null)
+          let finalDescSource: 'origin' | 'daosearch' | null = (prevBasic && prevBasic.descSource === 'origin' && prevBasic.desc) ? 'origin' : (got && got.desc ? 'daosearch' : null)
+          if (dsSite === 'ciweimao' && finalDescSource !== 'origin' && (!finalDesc || !finalDesc.includes('\n'))) {
+            const origDesc = await fetchCiweimaoBookDesc(id, { timeoutMs: 10_000 }).catch(() => null)
+            if (origDesc) {
+              finalDesc = origDesc
+              finalDescSource = 'origin'
+            }
+          }
+          if (got || finalDesc) {
+            detailMissAt.delete(cacheKey)
+            const entry = {
+              collect: null,
+              words: null,
+              title: null,
+              author: null,
+              score: null,
+              desc: finalDesc,
+              descSource: finalDescSource,
+              tags: got ? got.tags : null,
+              status: got ? got.status : null,
+              category: got ? got.category : null,
+              honours: got ? got.honours : null,
+              detailFetchedAt: new Date().toISOString(),
+            }
+            putEntries(root, [{ site: dsSite, bookId: id, entry }])
+            return { ...(got || { tags: [], status: null, category: null, honours: [] }), desc: finalDesc, descSource: finalDescSource }
+          }
+          detailMissAt.set(cacheKey, Date.now())
+          return null
+        })
+        .catch(() => null)
+        .finally(() => { detailInFlight.delete(cacheKey) })
+      detailInFlight.set(cacheKey, pending)
+    }
+    const got = await pending
+    return got ? { fromCache: false, entry: got } : null
+  }
+
+  /** 构造书签导出用的只读本地详情查询器（一次性读盘、不限 TTL、零联网） */
+  function makeExportDetailLookup() {
+    const map = readDetailMap(root)
+    return (b: { bookKey?: string; site?: string }) => {
+      const parts = String(b.bookKey || '').split(':')
+      const rawSite = parts[0] || String(b.site || '')
+      const id = parts.slice(1).join(':')
+      const dsSite = daoSearchSiteOf(rawSite) || daoSearchSiteOf(String(b.site || ''))
+      if (!dsSite || !id) return null
+      const e = map[dsSite + ':' + id]
+      if (!e) return null
+      return {
+        status: e.status || null,
+        category: e.category || null,
+        tags: e.tags || null,
+        desc: e.desc || null,
+        honours: e.honours || null,
+        detailFetchedAt: e.detailFetchedAt || null,
+      }
+    }
+  }
+
+  /** 全站详情与现榜统一取官方口径（DaoSearch），榜单页自动排除当前正看的同名榜 */
+  async function panelBookDetail(site: string, bookId: string, boardId?: string | null, _date?: string | null) {
+    const dsSite = daoSearchSiteOf(site)
+    if (!dsSite) return { ok: false, error: '不支持的站点' }
+    const curMeta = boardId ? boardMeta(boardId) : null
+    const got = await ensureBookDetailCached(site, bookId)
+    const entry = got ? got.entry : null
+    return {
+      ok: true,
+      site,
+      bookId,
+      fromCache: !!(got && got.fromCache),
+      desc: entry ? (entry.desc || null) : null,
+      tags: entry && Array.isArray(entry.tags) ? entry.tags : [],
+      status: entry ? (entry.status || null) : null,
+      category: entry ? (entry.category || null) : null,
+      honours: mergeBookHonours([], entry && Array.isArray(entry.honours) ? entry.honours : [], boardId, curMeta ? curMeta.name : null),
+    }
+  }
+
   const server: any = ctx.webServer || null
   const bindRoute = (s: any) => {
     if (!s || typeof s.register !== 'function') {
@@ -3372,7 +3830,30 @@ export function apply(ctx: PluginCtx, config: any): void {
             if (!b || !isValidBoardId(b)) return send(400, { error: 'boardId 必填且只能是字母、数字、点、下划线、连字符' })
             return send(200, await panelBoard(b, q.get('date') || undefined, q.get('sort') || undefined, Number(q.get('limit') || 0)))
           }
+          if (p === '/api/rank-scan/book-detail') {
+            const site = String(q.get('site') || '').trim().toLowerCase()
+            const bookId = String(q.get('bookId') || '').trim()
+            const boardId = q.get('boardId') ? String(q.get('boardId')).trim() : null
+            const rawDate = q.get('date') ? String(q.get('date')).trim() : null
+            if (!daoSearchSiteOf(site)) return send(400, { error: 'site 不支持（仅限 qidian/qidiantu/fanqie/ciweimao/sfacg）' })
+            if (!/^\d+$/.test(bookId)) return send(400, { error: 'bookId 必须是纯数字书号' })
+            if (boardId && !isValidBoardId(boardId)) return send(400, { error: 'boardId 含非法字符' })
+            let safeDate: string | null = null
+            if (rawDate) {
+              try { safeDate = assertDataDate(rawDate) } catch (e: any) { return send(400, { error: String(e?.message || '日期格式非法') }) }
+            }
+            return send(200, await panelBookDetail(site, bookId, boardId, safeDate))
+          }
           if (p === '/api/rank-scan/changes') return send(200, await panelChanges(q.get('date') || undefined))
+          if (p === '/api/rank-scan/book-trend') {
+            const bk = String(q.get('bookKey') || '').trim()
+            if (!BOOK_KEY_RE.test(bk)) return send(400, { ok: false, error: 'bookKey 必填且须为 <site>:<id>' })
+            const bid = q.get('boardId') ? String(q.get('boardId')).trim() : null
+            if (bid && !isValidBoardId(bid)) return send(400, { ok: false, error: 'boardId 含非法字符' })
+            const days = Number(q.get('days') || 7)
+            return send(200, await panelBookTrend(bk, days, bid))
+          }
+          if (p === '/api/rank-scan/watch-summary') return send(200, await panelWatchSummary())
           if (p === '/api/rank-scan/select') {
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })
             const body = await readBody(req)
@@ -3806,12 +4287,76 @@ export function apply(ctx: PluginCtx, config: any): void {
                 valueFrom: 'snapshot',
                 firstSeen: boardId ? { boardId, rank: typeof row.rank === 'number' ? row.rank : null, dataDate } : null,
               }, { note: body.note, folders: Array.isArray(body.folders) ? body.folders : undefined, seen: boardId ? { boardId, rank: typeof row.rank === 'number' ? row.rank : null, dataDate } : undefined })
+              // 加书签后后台顺手补一次官方详情缓存，不阻塞响应（供详情页和导出零联网秒出）
+              const addParts = String(bookKey).split(':')
+              if (!process.env.NODE_TEST_CONTEXT && addParts.length >= 2) void ensureBookDetailCached(addParts[0], addParts.slice(1).join(':'))
               return send(200, { ok: true, created: r.created, total: svc.sync().total, bookmark: r.bookmark })
             }
             if (action === 'update') {
-              const r = svc.setUserContent(bookKey, { note: body.note, folders: Array.isArray(body.folders) ? body.folders : undefined })
+              const r = svc.setUserContent(bookKey, {
+                note: body.note,
+                folders: Array.isArray(body.folders) ? body.folders : undefined,
+                watched: typeof body.watched === 'boolean' ? body.watched : undefined,
+              })
               if (!r) return send(404, { ok: false, error: '没有这条书签：' + bookKey })
               return send(200, { ok: true, bookmark: r })
+            }
+            if (action === 'watch') {
+              const want = body.watched !== false
+              const existed = svc.get(bookKey)
+              if (existed && !existed.deletedAt) {
+                const updated = svc.setWatched(bookKey, want)
+                return send(200, { ok: true, watched: want, total: svc.sync().total, bookmark: updated })
+              }
+              if (!want) return send(200, { ok: true, watched: false, total: svc.sync().total })
+              // 未在书签里且用户开启首页盯盘：从本地快照定位并建签，同时标记 watched=true
+              let rowW = body.row || null
+              let boardIdW = String(body.boardId || '')
+              if (boardIdW && !isValidBoardId(boardIdW)) return send(400, { error: 'boardId 含非法字符（只允许字母、数字、点、下划线、连字符）' })
+              let dataDateW = String(body.dataDate || '')
+              if (!rowW) {
+                const idW = String(bookKey).split(':').slice(1).join(':')
+                const titleW = String(body.title || '')
+                const stW = readState()
+                const datesW = listDataDates(root)
+                const storeW = new FileStore(root)
+                let foundW: any = null
+                for (let i = datesW.length - 1; i >= 0 && !foundW; i--) {
+                  const boardsW = boardIdW ? [boardIdW] : (stW.boards as string[])
+                  for (const b of boardsW) {
+                    const snapW: any = storeW.readSnapshot(datesW[i], b)
+                    if (!snapW || !Array.isArray(snapW.rows)) continue
+                    const hitW = snapW.rows.find((r: any) => (idW && String(r.key) === idW) || (titleW && String(r.title || '').trim() === titleW))
+                    if (hitW) { foundW = { row: hitW, boardId: b, dataDate: datesW[i] }; break }
+                  }
+                }
+                if (!foundW) return send(404, { ok: false, error: '本地快照里找不到这本书：' + bookKey })
+                rowW = foundW.row
+                boardIdW = foundW.boardId
+                dataDateW = foundW.dataDate
+              }
+              const exW = rowW.extra || {}
+              const metaW: any = boardMeta(boardIdW)
+              const createdW = svc.add({
+                bookKey,
+                site: (rowW.site || metaW.site || 'qidian') as SiteId,
+                url: String(rowW.url || ''),
+                source: 'board',
+                title: rowW.title == null ? null : String(rowW.title),
+                author: rowW.author == null ? null : String(rowW.author),
+                words: typeof exW.wordsCnt === 'number' ? exW.wordsCnt : typeof exW.wordNumber === 'number' ? exW.wordNumber : typeof exW.words === 'number' ? exW.words : null,
+                metric: typeof rowW.value === 'number' ? { name: mainLabelOf(boardIdW, metaW), value: rowW.value } : null,
+                ...((): any => { const c = collectOf(String((metaW && metaW.site) || rowW.site || ''), rowW); return { collect: c.value, collectLabel: c.label, collectFrom: c.from } })(),
+                metricBoard: boardIdW || null,
+                metricDate: dataDateW || null,
+                capturedAt: dataDateW ? new Date(dataDateW + 'T12:00:00+08:00').toISOString() : undefined,
+                valueFrom: 'snapshot',
+                firstSeen: boardIdW ? { boardId: boardIdW, rank: typeof rowW.rank === 'number' ? rowW.rank : null, dataDate: dataDateW } : null,
+              }, { seen: boardIdW ? { boardId: boardIdW, rank: typeof rowW.rank === 'number' ? rowW.rank : null, dataDate: dataDateW } : undefined })
+              const wBm = svc.setWatched(bookKey, true) || createdW.bookmark
+              const wParts = String(bookKey).split(':')
+              if (!process.env.NODE_TEST_CONTEXT && wParts.length >= 2) void ensureBookDetailCached(wParts[0], wParts.slice(1).join(':'))
+              return send(200, { ok: true, watched: true, created: createdW.created, total: svc.sync().total, bookmark: wBm })
             }
             if (action === 'remove') {
               if (!svc.remove(bookKey)) return send(404, { ok: false, error: '没有这条书签：' + bookKey })
@@ -3848,6 +4393,7 @@ export function apply(ctx: PluginCtx, config: any): void {
               capturedAt: new Date().toISOString(),
               valueFrom: got.ok ? 'book-page' : 'manual',
             }, { note })
+            if (!process.env.NODE_TEST_CONTEXT) void ensureBookDetailCached(ref.site, ref.key)
             return send(200, {
               ok: true, created: true, bookKey: ref.bookKey, fetched: got.ok,
               pending: !got.ok, note: got.ok ? '已加入书签（' + (got.title || ref.key) + '）' : '已加入书签，但取不到书页信息：先用你的备注兜底显示，标记「待补」',
@@ -3874,29 +4420,32 @@ export function apply(ctx: PluginCtx, config: any): void {
           }
           if (p === '/api/rank-scan/bookmark/export') {
             const svc = BOOKMARKS!
-            const format = q.get('format') === 'md' ? 'md' : q.get('format') === 'csv' ? 'csv' : 'json'
+            const format = q.get('format') === 'doc' ? 'doc' : q.get('format') === 'md' ? 'md' : q.get('format') === 'csv' ? 'csv' : 'json'
             const keys = q.get('keys') ? String(q.get('keys')).split(',').map((s) => s.trim()).filter(Boolean) : null
-            const data = svc.exportData(format as any, { bookKeys: keys, includeTrash: q.get('trash') === '1' })
+            const data = svc.exportData(format, { bookKeys: keys, includeTrash: q.get('trash') === '1', sort: q.get('sort') === 'current' ? 'current' : 'site', includeDesc: q.get('desc') !== '0', detailLookup: makeExportDetailLookup() })
             if (q.get('download') === '1') {
               // ★ 2026-10-16（使用者需求）：真的当文件下载 —— 旧版只在标签页里显示一段文本，用户拿不到文件
               const fname = 'rank-scan-bookmarks-' + localDate(clock.now()) + (keys ? '-selected' : '') + '.' + format
-              res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"')
-              res.setHeader('Content-Type', format === 'csv' ? 'text/csv; charset=utf-8' : format === 'md' ? 'text/markdown; charset=utf-8' : 'application/json; charset=utf-8')
-              res.end('\uFEFF' + data.content) // BOM：Excel/记事本打开中文不乱码
+              res.writeHead(200, {
+                'Content-Disposition': 'attachment; filename="' + fname + '"',
+                'Content-Type': format === 'doc' ? 'application/msword' : format === 'csv' ? 'text/csv; charset=utf-8' : format === 'md' ? 'text/markdown; charset=utf-8' : 'application/json; charset=utf-8',
+                'Cache-Control': 'no-store',
+              })
+              res.end(format === 'doc' ? data.content : String.fromCharCode(0xFEFF) + data.content) // 文本带 BOM；DOC 二进制保持原始字节
               return
             }
-            return send(200, { ok: true, format: data.format, count: data.count, content: data.content, note: keys ? '已按选择导出 ' + data.count + ' 条' : '不含回收站' })
+            return send(200, { ok: true, format: data.format, count: data.count, content: Buffer.isBuffer(data.content) ? data.content.toString('base64') : data.content, encoding: Buffer.isBuffer(data.content) ? 'base64' : undefined, note: keys ? '已按选择导出 ' + data.count + ' 条' : '不含回收站' })
           }
           if (p === '/api/rank-scan/bookmark/export-file') {
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })
             const svc2 = BOOKMARKS!
             const body2 = await readBody(req)
-            const format = body2.format === 'md' ? 'md' : body2.format === 'csv' ? 'csv' : 'json'
+            const format = body2.format === 'doc' ? 'doc' : body2.format === 'md' ? 'md' : body2.format === 'csv' ? 'csv' : 'json'
             const keys = Array.isArray(body2.bookKeys) ? body2.bookKeys.map(String) : null
             const dest = resolve(String(body2.dest || '').trim() || join(homedir(), 'Documents', 'rank-scan-export'))
             const rel0 = relative(resolve(homedir()), dest)
             if (!rel0 || rel0 === '..' || rel0.startsWith('..' + (process.platform === 'win32' ? '\\' : '/')) || isAbsolute(rel0)) return send(400, { error: '导出目录必须位于用户目录的子目录内' })
-            const data = svc2.exportData(format as any, { bookKeys: keys, includeTrash: body2.includeTrash === true })
+            const data = svc2.exportData(format, { bookKeys: keys, includeTrash: body2.includeTrash === true, sort: body2.sort === 'current' ? 'current' : 'site', includeDesc: body2.includeDesc !== false, detailLookup: makeExportDetailLookup() })
             // ★ 2026-10-16（疑问「是不是会覆盖」）：文件名带**到秒的时间戳**，同名再自动加序号
             //   ⇒ 同一天多次导出、不同选择集导出都不会互相覆盖。
             const d0 = clock.now()
@@ -3907,7 +4456,7 @@ export function apply(ctx: PluginCtx, config: any): void {
               mkdirSync(dest, { recursive: true })
               let file = join(dest, fname)
               for (let i = 2; existsSync(file) && i < 1000; i++) file = join(dest, fname.replace(/\.([a-z]+)$/, '-' + i + '.$1'))
-              writeFileSync(file, '\uFEFF' + data.content, 'utf8')
+              writeFileSync(file, format === 'doc' ? data.content : String.fromCharCode(0xFEFF) + data.content, 'utf8')
               ctx.logger?.info?.('[' + name + '] 导出 ' + data.count + ' 条书签 → ' + file)
               return send(200, { ok: true, path: file, dir: dest, count: data.count, note: '已导出 ' + data.count + ' 条到 ' + file })
             } catch (e) {

@@ -226,7 +226,7 @@
             h('button', { className: 'rs-btn', onClick: function () { setLeaveAsk(null) } }, '继续编辑')) : null,
           h(TabBoundary, { name: tab },
             tab === 'ov' ? h(Overview, {
-              ov: ov, busy: busy || scanActBusy, act: act, reload: reload, narrow: narrow, width: rect.w, rev: rev,
+              ov: ov, openLink: props.openLink, busy: busy || scanActBusy, act: act, reload: reload, narrow: narrow, width: rect.w, rev: rev,
               /** 刚点完扫描、overview 还没反映 running 时，按钮也要说「扫描中…」而不是「处理中…」 */
               scanStarting: scanActBusy && !scanLive,
               onOpenBoard: openBoard,
