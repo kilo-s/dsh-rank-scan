@@ -31,6 +31,17 @@
       const listId = 'rs-kw-datalist-' + (props.cardId || 'main')
 
       React.useEffect(function () {
+        if (!(props.layoutRev > 0)) return
+        const c = props.config || {}
+        const nextDays = typeof c.days === 'number' ? c.days : 30
+        patch(function (prev) {
+          if (prev.days === nextDays) return {}
+          return { days: nextDays, selectedId: -1, hoveredTreeId: -1, cLock: null, cHover: null }
+        })
+      }, [props.layoutRev])
+
+      React.useEffect(function () {
+        if (props.layoutLoaded === false) return undefined
         let alive = true
         patch({ loading: true, error: null })
         jget('/keywords?days=' + st.days).then(function (r) {
@@ -38,7 +49,7 @@
           patch({ loading: false, error: null, data: (r && r.ok && r.nodes) ? r : null })
         }).catch(function (e) { if (alive) patch({ loading: false, data: null, error: formatOvApiError(e) }) })
         return function () { alive = false }
-      }, [st.days, props.rev, props.reloadTick, st.retryTick])
+      }, [props.layoutLoaded, st.days, props.rev, props.reloadTick, st.retryTick])
 
       const model = React.useMemo(function () {
         return st.data && st.data.nodes ? prepareKwModel(st.data.nodes) : null
@@ -97,6 +108,16 @@
       }
 
       const cloudsObj = (st.data && st.data.clouds) || {}
+      const kwMeta = (st.data && st.data.meta) || null
+      const cov = kwMeta && kwMeta.coverage ? kwMeta.coverage : null
+      const covTip = cov && cov.bySite
+        ? ('含简介或作品标签占比（共 ' + cov.withText + '/' + (kwMeta.totalBooks || 0) + ' 本，含简介 ' + cov.withDesc + ' · 含标签 ' + cov.withTags + '）：'
+            + KW_SITES.map(function (s) {
+                const sc = cov.bySite[s.id]
+                return sc && sc.total > 0 ? (s.name + ' ' + sc.pct + '%(' + sc.withText + '/' + sc.total + ')') : ''
+              }).filter(Boolean).join(' · '))
+        : ''
+      const covColor = cov ? (cov.pct >= 50 ? T.ok : (cov.pct >= 25 ? T.fg : T.warn)) : T.muted
       const rootTerm = model && rootId >= 0 ? model.terms[rootId] : null
       const activeTreeId = st.hoveredTreeId >= 0 ? st.hoveredTreeId : st.selectedId
       const activeTreeTerm = model && activeTreeId >= 0 ? model.terms[activeTreeId] : null
@@ -122,7 +143,10 @@
         const rStr = KW_SITES.map(function (s, i) { return rootTerm.sc[i] ? s.name + rootTerm.sc[i] : '' }).filter(Boolean).join('·')
         return h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '6px', fontSize: T.fs.xs, color: T.muted, ...C.num } },
           h('span', { style: { color: T.fg, fontWeight: 500 } },
-            '中心「' + rootTerm.k + '」（' + rStr + '）· ' + treeData.gNodes.length + ' 词单连通骨架'),
+            '中心「' + rootTerm.k + '」（' + rStr + '）· ' + treeData.gNodes.length + ' 词单连通骨架',
+            kwMeta && kwMeta.totalBooks ? h('span', { style: { fontWeight: 400, color: T.muted }, title: covTip || undefined },
+              ' · ' + kwMeta.totalBooks + ' 本',
+              cov ? h('span', { style: { color: covColor } }, ' · 含简介/标签 ' + cov.pct + '%') : null) : null),
           h('span', { style: { display: 'inline-flex', flexWrap: 'wrap', gap: '8px' } },
             h('span', null, '双环=桥梁枢纽'),
             h('span', null, '实线=主骨架 · 虚线=跨枝共现'),
@@ -335,9 +359,14 @@
                       }, '以「' + actW.k + '」为枢纽展开树 ›') : null))
                 })(),
 
-        st.mode === 'tree' ? treeFootNode : (cloudPack ? h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '6px', fontSize: T.fs.xs, color: T.muted, ...C.num } },
-          h('span', null,
-            (st.data && st.data.meta && st.data.meta.dateRange ? st.data.meta.dateRange + ' · ' : '')
-            + '样本 ' + ((st.data && st.data.meta && st.data.meta.totalBooks) || 0) + ' 本 · '
-            + KW_SITES[activeSiteIdx].name + '命中 ' + cloudPack.total + ' 细词')) : null))
+        st.mode === 'tree' ? treeFootNode : (cloudPack ? (function () {
+          const siteCov = cov && cov.bySite ? cov.bySite[KW_SITES[activeSiteIdx].id] : null
+          return h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '6px', fontSize: T.fs.xs, color: T.muted, ...C.num } },
+            h('span', { title: covTip || undefined },
+              (kwMeta && kwMeta.dateRange ? kwMeta.dateRange + ' · ' : '')
+              + '样本 ' + ((kwMeta && kwMeta.totalBooks) || 0) + ' 本'
+              + (cov ? '（含简介/标签 ' + cov.pct + '%）' : '')
+              + ' · ' + KW_SITES[activeSiteIdx].name + '命中 ' + cloudPack.total + ' 细词'
+              + (siteCov && siteCov.total > 0 ? ' · 本站语料 ' + siteCov.pct + '%(' + siteCov.withText + '/' + siteCov.total + ')' : '')))
+        })() : null))
     }

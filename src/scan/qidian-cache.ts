@@ -18,7 +18,14 @@ import { join } from 'node:path'
  * 纪律：只缓存**拿到 collect 的结果**（拿不到说明这页没解析出东西，不入缓存，下次重试）；
  *      缺值一律 null，绝不补 0。
  */
-export interface BookStat { collect: number | null; wordsCnt: number | null; title?: string | null; fetchedAt: string }
+export interface BookStat {
+  collect: number | null
+  wordsCnt: number | null
+  title?: string | null
+  desc?: string | null
+  tags?: string[] | null
+  fetchedAt: string
+}
 type CacheFile = { version: number; books: Record<string, BookStat> }
 
 const VERSION = 1
@@ -47,19 +54,30 @@ export function cachedBook(root: string, bid: string, ttlMs: number): { hit: boo
   return { hit: true, hitAt: e.fetchedAt, stat: e }
 }
 
-/** 写入一批（原子写：tmp + rename）；只接受拿到 collect 的条目 */
-export function putCachedBooks(root: string, entries: { key: string; collect: number | null; wordsCnt: number | null; title?: string | null }[]): number {
+/** 写入一批（原子写：tmp + rename）；只接受拿到 collect 的条目，合并保留既有简介/标签 */
+export function putCachedBooks(
+  root: string,
+  entries: { key: string; collect: number | null; wordsCnt: number | null; title?: string | null; desc?: string | null; tags?: string[] | null }[],
+): number {
   const good = entries.filter((e) => e.key && e.collect != null)
   if (!good.length) return 0
   const cur = load(root)
   const now = new Date().toISOString()
   for (const e of good) {
-    cur.books[String(e.key)] = {
+    const id = String(e.key)
+    const prev = cur.books[id]
+    const desc = (e.desc != null && String(e.desc).trim() !== '' ? String(e.desc).trim() : null) || (prev && prev.desc ? prev.desc : null)
+    const tags = (Array.isArray(e.tags) && e.tags.length ? e.tags : null) || (prev && Array.isArray(prev.tags) && prev.tags.length ? prev.tags : null)
+    const title = e.title != null && String(e.title).trim() !== '' ? e.title : (prev ? prev.title ?? null : null)
+    const next: BookStat = {
       collect: e.collect,
       wordsCnt: e.wordsCnt == null ? null : e.wordsCnt,
-      title: e.title == null ? null : e.title,
+      title,
       fetchedAt: now,
     }
+    if (desc) next.desc = desc
+    if (tags) next.tags = tags
+    cur.books[id] = next
   }
   // 只保留最近 MAX_ENTRIES 条（防止无限增长；不需要 LRU 这么讲究）
   const keys = Object.keys(cur.books)

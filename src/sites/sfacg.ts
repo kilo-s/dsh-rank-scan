@@ -117,6 +117,42 @@ export function authorFromBookTitle(title: string): string | null {
   return parts.length >= 2 ? parts[parts.length - 1] : null
 }
 
+/**
+ * 解析菠萝包原站单书页简介与标签（纯函数，零额外请求复用已抓书页 HTML）。
+ */
+export function parseSfacgBookMeta(html: string): { desc: string | null; tags: string[] } {
+  if (!html || typeof html !== 'string') return { desc: null, tags: [] }
+  let desc: string | null = null
+  const dm = html.match(/<(?:p|div)[^>]*class="[^"]*introduce[^"]*"[^>]*>([\s\S]*?)<\/(?:p|div)>/i)
+  if (dm) {
+    const raw = dm[1]
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<p[^>]*>/gi, '')
+      .replace(/<[^>]+>/g, '')
+    const lines = decodeHtml(raw)
+      .replace(/\r\n?/g, '\n')
+      .split('\n')
+      .map((ln) => ln.replace(/^[\s\u3000]+|[\s\u3000]+$/g, ''))
+      .filter(Boolean)
+    if (lines.length) desc = lines.join('\n')
+  }
+  const tags: string[] = []
+  const seen = new Set<string>()
+  const tb = html.match(/<(?:ul|div)[^>]*class="[^"]*tag-list[^"]*"[^>]*>([\s\S]*?)<\/(?:ul|div)>/i)
+  if (tb) {
+    for (const m of tb[1].matchAll(/<(?:span|a)[^>]*>([\s\S]*?)<\/(?:span|a)>/gi)) {
+      const t = decodeHtml(m[1].replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim()
+      if (t.length >= 2 && t.length <= 20 && !seen.has(t)) {
+        seen.add(t)
+        tags.push(t)
+        if (tags.length >= 16) break
+      }
+    }
+  }
+  return { desc, tags }
+}
+
 /** 取某个榜某个 tab 的条目（找不到榜/tab ⇒ null） */
 export function parseHomeBoard(html: string, title: string, tab: string): Row[] | null {
   const at = html.indexOf('>' + title + '<')

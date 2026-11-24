@@ -59,6 +59,8 @@ function bookIdOf(v: unknown): string | null {
   return /^\d+$/.test(s) ? s : null
 }
 
+const PUA_GLOBAL_RE = /[\uE000-\uF8FF]/g
+
 export function parseRankApi(json: any, decode?: (s: string) => string): Row[] {
   const list = json && json.data && json.data.book_list
   if (!Array.isArray(list)) return []
@@ -73,6 +75,23 @@ export function parseRankApi(json: any, decode?: (s: string) => string): Row[] {
     const author = rawAuthor ? dec(rawAuthor) : null
     const rawAbstract = b.abstract ? String(b.abstract) : ''
     const decodedAbstract = rawAbstract ? dec(rawAbstract).trim() : ''
+    const cleanedAbstract = decodedAbstract ? decodedAbstract.replace(PUA_GLOBAL_RE, '').replace(/[ \t]+\n/g, '\n').trim() : ''
+    const finalDesc = decodedAbstract && !hasPua(decodedAbstract)
+      ? decodedAbstract
+      : (cleanedAbstract.length >= 4 ? cleanedAbstract : undefined)
+    const rawTagList = Array.isArray(b.tags)
+      ? b.tags
+      : (typeof b.tags === 'string' && b.tags.trim() ? b.tags.split(/[,，、|/\s]+/) : [])
+    const tags: string[] = []
+    const seenTags = new Set<string>()
+    for (const rt of rawTagList) {
+      const t = dec(String(rt || '')).replace(PUA_GLOBAL_RE, '').trim()
+      if (t.length >= 2 && t.length <= 20 && !seenTags.has(t)) {
+        seenTags.add(t)
+        tags.push(t)
+        if (tags.length >= 12) break
+      }
+    }
     const statusRaw = b.creationStatus == null ? '' : String(b.creationStatus).trim()
     const statusText = statusRaw === '1' ? '连载中' : statusRaw === '0' ? '已完结' : undefined
     rows.push({
@@ -88,7 +107,8 @@ export function parseRankApi(json: any, decode?: (s: string) => string): Row[] {
         lastChapterUpdateTime: numOrNull(b.lastChapterUpdateTime),
         uid: b.uid != null && String(b.uid).trim() !== '' ? String(b.uid) : null,
         catId: numOrNull(b.curent_category_id),
-        desc: decodedAbstract && !hasPua(decodedAbstract) ? decodedAbstract : undefined,
+        desc: finalDesc,
+        ...(tags.length ? { tags } : {}),
         status: statusText,
         titlePua: hasPua(rawTitle) ? rawTitle : undefined,
         authorPua: rawAuthor && hasPua(rawAuthor) ? rawAuthor : undefined,

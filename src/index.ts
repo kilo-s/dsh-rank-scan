@@ -14,9 +14,9 @@ import { requestAllowed } from './scan/guard.js'
 import { FileStore } from './scan/store.js'
 import { makeQidianMobileSite } from './sites/qidian-mobile.js'
 import { makeQidiantuSite } from './sites/qidiantu.js'
-import { fetchCiweimaoBookDesc, makeCiweimaoSite, parseCiweimaoBookDesc } from './sites/ciweimao.js'
+import { fetchCiweimaoBookDesc, makeCiweimaoSite, parseCiweimaoBookDesc, parseCiweimaoBookTags } from './sites/ciweimao.js'
 import { makeFanqieSite } from './sites/fanqie.js'
-import { authorFromBookTitle, makeSfacgSite, SFACG_BOARDS } from './sites/sfacg.js'
+import { authorFromBookTitle, makeSfacgSite, parseSfacgBookMeta, SFACG_BOARDS } from './sites/sfacg.js'
 import { CIWEIMAO_BOARDS, CIWEIMAO_BUY_URL } from './sites/ciweimao.js'
 import { FANQIE_MALE } from './sites/fanqie.js'
 import { CATEGORIES as QIDIAN_CATEGORIES } from './sites/qidian-mobile.js'
@@ -59,7 +59,7 @@ import { DEFAULT_FALLBACK_TIME, DEFAULT_SITE_TIMES, hmOf, planSiteRuns, RETRY_CO
 import { cacheStats, cachedBook, clearCache, putCachedBooks } from './scan/qidian-cache.js'
 import { assignCachedStats, cacheStats as bookCacheStats, cachedDetail, cachedEntry, clearCache as clearBookCache, putEntries, readDetailMap } from './scan/book-cache.js'
 import { daoSearchSiteOf, fetchDaoSearchBook, mergeBookHonours } from './sites/daosearch-book.js'
-import { computeBookSeries, computeKeywordGraph, computeWeeklyRace, normalizeOverviewLayout, searchLocalBooks } from './scan/overview-analytics.js'
+import { computeBookSeries, computeKeywordGraph, computeWeeklyRace, normalizeOverviewLayout, pickCorpusBackfillCandidates, searchLocalBooks } from './scan/overview-analytics.js'
 
 interface PluginCtx {
   tools: { register(tool: any): unknown }
@@ -413,6 +413,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         if (snapQ && needsEnrichRows(b, snapQ.rows || []) > 0) markEnrichPending(latestDataDate(), b)
       }
     }
+    scheduleCorpusBackfill(only)
     return done
   }
 
@@ -656,6 +657,7 @@ export function apply(ctx: PluginCtx, config: any): void {
       await store.writeScan(rec)
       writeArtifacts()
       startEnrichWorker('扫描后后台补全')
+      if (!timerState.enrichWorker) scheduleCorpusBackfill(only)
       /**
        * ★ 关键：不再跑 postScanEnrich（同步阻塞那 5 分钟）。
        * 但**不能**提前 return —— doScan 后面还有「书签机会式更新」与「占用缓存刷新」，
@@ -2821,7 +2823,7 @@ export function apply(ctx: PluginCtx, config: any): void {
     let hits = 0
     let misses = 0
     let failed = 0
-    const pending: { key: string; collect: number | null; wordsCnt: number | null; title: string | null }[] = []
+    const pending: { key: string; collect: number | null; wordsCnt: number | null; title?: string | null; desc?: string | null; tags?: string[] | null }[] = []
     const out: any[] = []
     for (let i = 0; i < snap.rows.length; i++) {
       const row = snap.rows[i]
@@ -2839,7 +2841,14 @@ export function apply(ctx: PluginCtx, config: any): void {
       try {
         const stx = await site.fetchBookStats(key, ctxBoard)
         misses += 1
-        pending.push({ key, collect: stx.collect, wordsCnt: stx.wordsCnt, title: null })
+        pending.push({
+          key,
+          collect: stx.collect,
+          wordsCnt: stx.wordsCnt,
+          title: stx.title ?? null,
+          desc: stx.desc ?? null,
+          tags: Array.isArray(stx.tags) && stx.tags.length ? stx.tags : null,
+        })
         out.push(mergeStat(row, stx, 'book-page', new Date().toISOString()))
       } catch (e) {
         failed += 1
@@ -3109,6 +3118,7 @@ export function apply(ctx: PluginCtx, config: any): void {
         } catch { /* 同上 */ }
         timerState.enrichWorker = false
         if (done > 0 || requests > 0) timerLog('后台补全完成：' + done + ' 个榜、' + requests + ' 请求（' + reason + '）')
+        if (retryablePendingCount() === 0) scheduleCorpusBackfill()
       }
     }
     if (timer) timer(run, 3000)
@@ -3255,9 +3265,10 @@ export function apply(ctx: PluginCtx, config: any): void {
             }
             if (!got) e.enrichError = '书页里没解析出总收藏/总字数（页面结构可能变了）'
             const origDesc = parseCiweimaoBookDesc(html)
+            const origTags = parseCiweimaoBookTags(html)
             // ★ 2026-10-17：真解析出的字段回写书页缓存（只写本次真取到的，别把历史值当新值）
-            // 顺带把原站带完整换行的简介落入缓存（零额外请求），避开 DaoSearch 剥离刺猬猫换行的缺陷
-            if (bid && (got || origDesc)) {
+            // 顺带把原站带完整换行的简介与原站标签落入缓存（零额外请求），不提前置位 detailFetchedAt
+            if (bid && (got || origDesc || origTags.length)) {
               pendingEntries.push({
                 site: kind,
                 bookId: bid,
@@ -3269,6 +3280,8 @@ export function apply(ctx: PluginCtx, config: any): void {
                   score: null,
                   desc: origDesc,
                   descSource: origDesc ? 'origin' : null,
+                  tags: origTags.length ? origTags : null,
+                  skipDetailStamp: true,
                 },
               })
             }
@@ -3301,8 +3314,9 @@ export function apply(ctx: PluginCtx, config: any): void {
             }
             // 只在真拿到数时标记「已从书页取过」；否则留待下次（或 force）重试
             if (got) e.fromBookPage = true
-            // ★ 2026-10-17：回写书页缓存（字数/收藏/评分 + 干净书名与作者）
-            if (bid && got) {
+            const sfMeta = parseSfacgBookMeta(html)
+            // ★ 2026-10-17：回写书页缓存（字数/收藏/评分 + 干净书名与作者 + 零请求顺手落盘简介/标签）
+            if (bid && (got || sfMeta.desc || sfMeta.tags.length)) {
               pendingEntries.push({
                 site: kind,
                 bookId: bid,
@@ -3312,6 +3326,10 @@ export function apply(ctx: PluginCtx, config: any): void {
                   title: next.title || null,
                   author: next.author || null,
                   score: s ? Number(s[1]) : null,
+                  desc: sfMeta.desc,
+                  descSource: sfMeta.desc ? 'origin' : null,
+                  tags: sfMeta.tags.length ? sfMeta.tags : null,
+                  skipDetailStamp: true,
                 },
               })
             }
@@ -3336,6 +3354,17 @@ export function apply(ctx: PluginCtx, config: any): void {
     //   换一天又是新的私用区码点 ⇒ 没缓存就每天把整榜重打一遍（实测这些书号 88% 与前一天重合）。
     let cacheHits = 0
     const pendingEntries: { site: string; bookId: string; entry: any }[] = []
+    const fetchedMeta = new Map<string, { desc: string | null; tags: string[] }>()
+    const parseFqTags = (raw: unknown): string[] => {
+      const arr = Array.isArray(raw) ? raw : (typeof raw === 'string' && raw.trim() ? raw.split(/[,，、|/\s]+/) : [])
+      const out: string[] = []
+      const seen = new Set<string>()
+      for (const x of arr) {
+        const t = String(x || '').replace(/[\uE000-\uF8FF]/g, '').trim()
+        if (t.length >= 2 && t.length <= 20 && !seen.has(t)) { seen.add(t); out.push(t); if (out.length >= 12) break }
+      }
+      return out
+    }
     for (const r of rows) {
       let next = { ...r, extra: { ...(r.extra || {}) } }
       const bid = String(r.key || '')
@@ -3380,6 +3409,13 @@ export function apply(ctx: PluginCtx, config: any): void {
           if (name) { next.title = String(name); next.extra.titleSuspect = false }
           if (author) next.author = String(author)
           if (words != null) next.extra.wordNumber = Number(words)
+          const rawAbs = info.abstract || info.book_abstract_v2 || null
+          const cleanAbs = rawAbs ? String(rawAbs).replace(/[\uE000-\uF8FF]/g, '').trim() : ''
+          const fqTags = parseFqTags(info.tags || info.category_v2)
+          if (cleanAbs.length >= 4 && !next.extra.desc) next.extra.desc = cleanAbs
+          if (bid && (cleanAbs.length >= 4 || fqTags.length)) {
+            fetchedMeta.set(bid, { desc: cleanAbs.length >= 4 ? cleanAbs : null, tags: fqTags })
+          }
         }
         // 接口偶尔不吐书名 ⇒ 退一步抓书页 og:title / description（同 1s 限速内）
         if (next.extra.titleSuspect !== false) {
@@ -3412,15 +3448,25 @@ export function apply(ctx: PluginCtx, config: any): void {
     }
     if (learned > 0) saveFontMap(root, fontMap)
     ;(globalThis as any).__rankLastLearn = learned
-    // 回写缓存：书名/作者/字数（只写本次真拿到的）
+    // 回写缓存：书名/作者/字数 + 零请求顺手落盘简介与标签（不提前置位 detailFetchedAt）
     for (const r of out) {
       const bid = String(r.key || '')
       if (!bid) continue
       const t = r.extra && r.extra.titleSuspect === false ? String(r.title || '') : ''
       const a = r.author ? String(r.author) : ''
       const w = r.extra && typeof r.extra.wordNumber === 'number' ? r.extra.wordNumber : null
-      if (!t && !a && w == null) continue
-      pendingEntries.push({ site: 'fanqie', bookId: bid, entry: { collect: null, words: w, title: t || null, author: a || null, score: null } })
+      const meta = fetchedMeta.get(bid)
+      const desc = meta && meta.desc ? meta.desc : null
+      const tags = meta && meta.tags.length ? meta.tags : null
+      if (!t && !a && w == null && !desc && !tags) continue
+      pendingEntries.push({
+        site: 'fanqie',
+        bookId: bid,
+        entry: {
+          collect: null, words: w, title: t || null, author: a || null, score: null,
+          desc, descSource: desc ? 'origin' : null, tags, skipDetailStamp: true,
+        },
+      })
     }
     if (pendingEntries.length) putEntries(root, pendingEntries)
     return { rows: out, requests, learned, cacheHits } as any
@@ -3431,7 +3477,7 @@ export function apply(ctx: PluginCtx, config: any): void {
    * 起点/起点图复用 fetchBookStats（走书页缓存）；刺猬猫/菠萝包按站页特征解析；番茄走 api/book/info。
    * 1 请求/本，调用方负责 1s 间隔与预算。
    */
-  async function fetchBookProfile(site: string, id: string, urlHint?: string): Promise<{ ok: boolean; title?: string | null; author?: string | null; words?: number | null; collect?: number | null; desc?: string | null; error?: string }> {
+  async function fetchBookProfile(site: string, id: string, urlHint?: string): Promise<{ ok: boolean; title?: string | null; author?: string | null; words?: number | null; collect?: number | null; desc?: string | null; tags?: string[] | null; error?: string }> {
     const ua = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36', 'Accept-Language': 'zh-CN,zh;q=0.9' }
     try {
       if (site === 'qidian' || site === 'qidiantu') {
@@ -3439,7 +3485,10 @@ export function apply(ctx: PluginCtx, config: any): void {
         if (typeof siteImpl.fetchBookStats !== 'function') return { ok: false, error: '起点适配器没有 fetchBookStats' }
         const ctxB: any = { now: () => clock.now(), signal: new AbortController().signal, requestTimeoutMs: 15000 }
         const stx = await siteImpl.fetchBookStats(String(id), ctxB)
-        return { ok: true, words: stx.wordsCnt, collect: stx.collect }
+        if (stx && stx.collect != null) {
+          putCachedBooks(root, [{ key: String(id), collect: stx.collect, wordsCnt: stx.wordsCnt, title: stx.title ?? null, desc: stx.desc ?? null, tags: stx.tags ?? null }])
+        }
+        return { ok: true, title: stx.title ?? null, words: stx.wordsCnt, collect: stx.collect, desc: stx.desc ?? null, tags: stx.tags ?? null }
       }
       if (site === 'fanqie') {
         const resp: any = await boundedFetch('https://fanqienovel.com/api/book/info?bookId=' + encodeURIComponent(String(id)), { headers: { 'User-Agent': ua['User-Agent'] }, rateLimit: true, timeoutMs: 15000 })
@@ -3458,10 +3507,16 @@ export function apply(ctx: PluginCtx, config: any): void {
         // ★ 2026-10-16：0 一律当成「取不到」—— 书签只在非 null 时覆盖，真 0 会把真实在读擦掉。
         const rawRead = info.read_count != null ? info.read_count : info.readCount != null ? info.readCount : null
         const read = rawRead != null ? Number(String(rawRead).replace(/[^0-9]/g, '')) : null
+        const rawAbs = info.abstract || info.book_abstract_v2 || null
+        const cleanAbs = rawAbs ? String(rawAbs).replace(/[\uE000-\uF8FF]/g, '').trim() : ''
+        const rawTags: unknown[] = Array.isArray(info.tags) ? info.tags : (typeof info.tags === 'string' && info.tags.trim() ? info.tags.split(/[,，、|/\s]+/) : [])
+        const tags: string[] = rawTags.map((x: unknown) => String(x || '').replace(/[\uE000-\uF8FF]/g, '').trim()).filter((x: string) => x.length >= 2 && x.length <= 20)
         return {
           ok: true, title: name, author,
           words: Number.isFinite(words as number) ? words : null,
           collect: read != null && Number.isFinite(read) && read > 0 ? read : null,
+          desc: cleanAbs.length >= 4 ? cleanAbs : null,
+          tags: tags.length ? [...new Set<string>(tags)].slice(0, 12) : null,
         }
       }
       const url = urlHint || (site === 'ciweimao' ? 'https://www.ciweimao.com/book/' + id : site === 'sfacg' ? 'https://book.sfacg.com/Novel/' + id + '/' : '')
@@ -3475,14 +3530,16 @@ export function apply(ctx: PluginCtx, config: any): void {
         const t = html.match(/<title>([^<]{1,80})/)
         const mk = (s?: string | null) => { if (s == null) return null; const x = String(s).split(',').join('').trim(); const m = x.match(/^([0-9.]+)万$/); if (m) return Math.round(Number(m[1]) * 10000); const n = Number(x.replace(/[^0-9.]/g, '')); return Number.isFinite(n) && x !== '' ? n : null }
         const origDesc = parseCiweimaoBookDesc(html)
-        return { ok: true, title: t ? String(t[1]).replace(/最新章节.*$/, '').trim() : null, words: g ? mk(g[3]) : null, collect: g ? mk(g[2]) : null, desc: origDesc }
+        const origTags = parseCiweimaoBookTags(html)
+        return { ok: true, title: t ? String(t[1]).replace(/最新章节.*$/, '').trim() : null, words: g ? mk(g[3]) : null, collect: g ? mk(g[2]) : null, desc: origDesc, tags: origTags.length ? origTags : null }
       }
       if (site === 'sfacg') {
         const t = html.match(/<title>([^<]{1,120})<\/title>/)
         const clean = t ? String(t[1]).split(' - ')[0].trim() : null
         const w = html.match(/字数[：:]\s*([\d,]+)\s*字/)
         const c = html.match(/>收藏\s*([\d,]+)\s*</) || html.match(/id="J_BookCollectCount"[^>]*>\s*([\d,]+)/)
-        return { ok: true, title: clean, author: t ? authorFromBookTitle(String(t[1])) : null, words: w ? Number(String(w[1]).replace(/,/g, '')) : null, collect: c ? Number(String(c[1]).replace(/,/g, '')) : null }
+        const sfMeta = parseSfacgBookMeta(html)
+        return { ok: true, title: clean, author: t ? authorFromBookTitle(String(t[1])) : null, words: w ? Number(String(w[1]).replace(/,/g, '')) : null, collect: c ? Number(String(c[1]).replace(/,/g, '')) : null, desc: sfMeta.desc, tags: sfMeta.tags.length ? sfMeta.tags : null }
       }
       return { ok: false, error: '这个站暂不支持按书号补全：' + site }
     } catch (e) {
@@ -3514,11 +3571,17 @@ export function apply(ctx: PluginCtx, config: any): void {
       valueFrom: 'book-page',
       capturedAt: new Date().toISOString(),
     })
-    if ((bm.site === 'ciweimao' || parts[0] === 'ciweimao') && (got as any).desc) {
+    const bmSite = daoSearchSiteOf(String(bm.site || parts[0] || ''))
+    if (bmSite && (got.desc || (Array.isArray(got.tags) && got.tags.length))) {
       putEntries(root, [{
-        site: 'ciweimao',
+        site: bmSite,
         bookId: id,
-        entry: { collect: null, words: null, title: null, author: null, score: null, desc: (got as any).desc, descSource: 'origin' },
+        entry: {
+          collect: null, words: null, title: null, author: null, score: null,
+          desc: got.desc || null, descSource: got.desc ? 'origin' : null,
+          tags: Array.isArray(got.tags) && got.tags.length ? got.tags : null,
+          skipDetailStamp: true,
+        },
       }])
     }
     // 刷新书签读数时顺带补一次详情缓存（不拖累主刷新成功态）
@@ -3530,17 +3593,26 @@ export function apply(ctx: PluginCtx, config: any): void {
   const detailInFlight = new Map<string, Promise<any>>()
   const DETAIL_MISS_TTL_MS = 30 * 60 * 1000
   let pluginDisposed = false
-  ctx.effect?.(() => () => { pluginDisposed = true })
+  let corpusBackfillTimer: ReturnType<typeof setTimeout> | null = null
+  let corpusBackfillInFlight = false
+  let corpusBackfillDay = ''
+  let corpusBackfillDone = 0
+  const CORPUS_BACKFILL_RUN_CAP = 12
+  const CORPUS_BACKFILL_DAILY_CAP = 15
+  ctx.effect?.(() => () => {
+    pluginDisposed = true
+    if (corpusBackfillTimer) { clearTimeout(corpusBackfillTimer); corpusBackfillTimer = null }
+  })
 
-  /** 按需确保单本官方详情已落入 7 天本地缓存（供展开详情、加书签/刷新顺手预热复用） */
-  async function ensureBookDetailCached(site: string, bookId: string) {
+  /** 按需确保单本官方详情已落入 7 天本地缓存（供展开详情、加书签/刷新顺手预热及 1B 低速语料补缺复用） */
+  async function ensureBookDetailCached(site: string, bookId: string, opts?: { preferSingleRequest?: boolean }) {
     if (pluginDisposed) return null
     const dsSite = daoSearchSiteOf(site)
     const id = String(bookId || '').trim()
     if (!dsSite || !/^\d+$/.test(id)) return null
     const cacheKey = dsSite + ':' + id
     const needsOriginDesc = (e: any) =>
-      dsSite === 'ciweimao' && e?.descSource !== 'origin' && (!e?.desc || !String(e.desc).includes('\n'))
+      !opts?.preferSingleRequest && dsSite === 'ciweimao' && e?.descSource !== 'origin' && (!e?.desc || !String(e.desc).includes('\n'))
     const hit = cachedDetail(root, dsSite, id, BOOK_CACHE_TTL_MS)
     if (hit.hit && hit.entry) {
       if (!needsOriginDesc(hit.entry)) return { fromCache: true, entry: hit.entry }
@@ -3585,7 +3657,7 @@ export function apply(ctx: PluginCtx, config: any): void {
           const prevBasic = cachedEntry(root, dsSite, id, 0).entry
           let finalDesc = (prevBasic && prevBasic.descSource === 'origin' && prevBasic.desc) ? prevBasic.desc : (got ? got.desc : null)
           let finalDescSource: 'origin' | 'daosearch' | null = (prevBasic && prevBasic.descSource === 'origin' && prevBasic.desc) ? 'origin' : (got && got.desc ? 'daosearch' : null)
-          if (dsSite === 'ciweimao' && finalDescSource !== 'origin' && (!finalDesc || !finalDesc.includes('\n'))) {
+          if (!opts?.preferSingleRequest && dsSite === 'ciweimao' && finalDescSource !== 'origin' && (!finalDesc || !finalDesc.includes('\n'))) {
             const origDesc = await fetchCiweimaoBookDesc(id, { timeoutMs: 10_000 }).catch(() => null)
             if (origDesc) {
               finalDesc = origDesc
@@ -3620,6 +3692,65 @@ export function apply(ctx: PluginCtx, config: any): void {
     }
     const got = await pending
     return got ? { fromCache: false, entry: got } : null
+  }
+
+  /**
+   * 1B 极低速后台语料增量补缺：
+   * 仅在整站扫描且主补全空闲后运行，受 autoEnrich 开关、1s 全局限速器、单轮<=12本/每日<=15本硬上限保护；
+   * 优先补齐日常不访书页的菠萝包、刺猬猫旧缓存与起点三江/首订头部，写入 7 天 book-page-cache 复用。
+   */
+  async function backfillKeywordCorpus(onlyBoards?: string[]): Promise<{ fetched: number; filled: number }> {
+    if (pluginDisposed || !existsSync(root) || corpusBackfillInFlight) return { fetched: 0, filled: 0 }
+    const st = readState()
+    if (st.autoEnrich === false) return { fetched: 0, filled: 0 }
+    const today = localDate(clock.now())
+    if (corpusBackfillDay !== today) { corpusBackfillDay = today; corpusBackfillDone = 0 }
+    const rem = Math.min(CORPUS_BACKFILL_RUN_CAP, CORPUS_BACKFILL_DAILY_CAP - corpusBackfillDone)
+    if (rem <= 0) return { fetched: 0, filled: 0 }
+
+    const nowMs = Date.now()
+    const skipKeys = new Set<string>()
+    for (const [k, at] of detailMissAt.entries()) {
+      if (nowMs - at < DETAIL_MISS_TTL_MS) skipKeys.add(k)
+    }
+    const boards = Array.isArray(onlyBoards) && onlyBoards.length ? onlyBoards : (Array.isArray(st.boards) ? st.boards : null)
+    const cands = pickCorpusBackfillCandidates(root, { boards, limit: rem, skipKeys })
+    if (!cands.length) return { fetched: 0, filled: 0 }
+
+    corpusBackfillInFlight = true
+    let fetched = 0
+    let filled = 0
+    try {
+      for (const c of cands) {
+        if (pluginDisposed || !existsSync(root) || readState().autoEnrich === false) break
+        if (corpusBackfillDone >= CORPUS_BACKFILL_DAILY_CAP) break
+        const got = await ensureBookDetailCached(c.site, c.bookId, { preferSingleRequest: true })
+        if (!got || !got.fromCache) {
+          fetched += 1
+          corpusBackfillDone += 1
+        }
+        if (got && got.entry && (got.entry.desc || (Array.isArray(got.entry.tags) && got.entry.tags.length))) {
+          filled += 1
+        }
+      }
+      if (fetched > 0) timerLog('语料增量补缺：请求 ' + fetched + ' 本，补齐简介/标签 ' + filled + ' 本（今日累计 ' + corpusBackfillDone + '/' + CORPUS_BACKFILL_DAILY_CAP + '）')
+    } catch { /* 后台增量补缺失败静默，不影响主扫描 */ }
+    finally {
+      corpusBackfillInFlight = false
+    }
+    return { fetched, filled }
+  }
+
+  function scheduleCorpusBackfill(onlyBoards?: string[]): void {
+    if (pluginDisposed || !existsSync(root) || corpusBackfillInFlight || timerState.enrichWorker) return
+    if (readState().autoEnrich === false) return
+    if (corpusBackfillTimer) return
+    corpusBackfillTimer = setTimeout(() => {
+      corpusBackfillTimer = null
+      if (pluginDisposed || timerState.enrichWorker) return
+      void backfillKeywordCorpus(onlyBoards)
+    }, 4000)
+    if (typeof (corpusBackfillTimer as any)?.unref === 'function') (corpusBackfillTimer as any).unref()
   }
 
   /** 构造书签导出用的只读本地详情查询器（一次性读盘、不限 TTL、零联网） */

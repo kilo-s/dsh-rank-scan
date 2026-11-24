@@ -108,7 +108,7 @@ function hasValue(e: Omit<BookPageEntry, 'fetchedAt'>): boolean {
 }
 
 /** 写入一批（原子写）；**只接受至少取到一个字段的条目**，返回写入条数 */
-export function putEntries(root: string, list: { site: string; bookId: string; entry: Omit<BookPageEntry, 'fetchedAt'> }[]): number {
+export function putEntries(root: string, list: { site: string; bookId: string; entry: Omit<BookPageEntry, 'fetchedAt'> & { skipDetailStamp?: boolean } }[]): number {
   const good = (list || []).filter((x) => x && x.bookId && x.site && hasValue(x.entry))
   if (!good.length) return 0
   const cur = load(root)
@@ -117,7 +117,6 @@ export function putEntries(root: string, list: { site: string; bookId: string; e
     const k = keyOf(x.site, x.bookId)
     const prev = cur.entries[k]
     const basicHit = hasBasicValue(x.entry)
-    const detailHit = hasDetailValue(x.entry)
     // 合并而不是覆盖：本次没取到的字段保留上一次的值（读数补全与详情元数据互不冲掉）
     const merged: BookPageEntry = {
       collect: x.entry.collect != null ? x.entry.collect : (prev ? prev.collect : null),
@@ -134,12 +133,19 @@ export function putEntries(root: string, list: { site: string; bookId: string; e
     const descSource = keepOriginDesc
       ? 'origin'
       : (inDesc ? (x.entry.descSource || (prev && prev.descSource ? prev.descSource : null)) : (prev && prev.descSource ? prev.descSource : null))
-    const tags = Array.isArray(x.entry.tags) && x.entry.tags.length ? x.entry.tags : (prev && Array.isArray(prev.tags) && prev.tags.length ? prev.tags : null)
+    const inTags = Array.isArray(x.entry.tags) && x.entry.tags.length ? x.entry.tags : null
+    const prevTags = prev && Array.isArray(prev.tags) && prev.tags.length ? prev.tags : null
+    // 原站补全顺手带回标签（skipDetailStamp）时，与既有聚合详情标签并集去重，避免把更全的官方标签覆盖变少
+    const tags = inTags
+      ? (x.entry.skipDetailStamp && prevTags
+          ? Array.from(new Set([...prevTags, ...inTags]))
+          : inTags)
+      : prevTags
     const status = x.entry.status != null && String(x.entry.status).trim() !== '' ? String(x.entry.status).trim() : (prev && prev.status ? prev.status : null)
     const category = x.entry.category != null && String(x.entry.category).trim() !== '' ? String(x.entry.category).trim() : (prev && prev.category ? prev.category : null)
     const honours = Array.isArray(x.entry.honours) && x.entry.honours.length ? x.entry.honours : (prev && Array.isArray(prev.honours) && prev.honours.length ? prev.honours : null)
-    // 读数补全顺手写入原站简介（无标签/状态/上榜）时，不提前置位 detailFetchedAt，免得展开详情漏拉标签与现榜
-    const richDetailHit = !!(
+    // 读数补全顺手写入原站简介/标签（无全站现榜）时，不提前置位 detailFetchedAt，免得展开详情漏拉现榜与聚合标签
+    const richDetailHit = !x.entry.skipDetailStamp && !!(
       x.entry.detailFetchedAt ||
       (Array.isArray(x.entry.tags) && x.entry.tags.length) ||
       (x.entry.status != null && String(x.entry.status).trim() !== '') ||

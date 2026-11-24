@@ -52,11 +52,71 @@ export function parseRankPage(html: string): { total: number; rows: Row[] } {
   return { total: Number(data.total || rows.length), rows }
 }
 
-/** 书页解析：只取收藏与精确字数（缺失一律 null，不补 0） */
-export function parseBookPage(html: string): { collect: number | null; wordsCnt: number | null } {
-  const c = html.match(/"collect"\s*:\s*(\d+)/)
-  const w = html.match(/"wordsCnt"\s*:\s*(\d+)/)
-  return { collect: c ? Number(c[1]) : null, wordsCnt: w ? Number(w[1]) : null }
+export interface QidianBookStats {
+  collect: number | null
+  wordsCnt: number | null
+  title?: string | null
+  desc?: string | null
+  tags?: string[] | null
+}
+
+/** 书页解析：取收藏、精确字数，并零额外请求顺手提取书名、简介与官方标签（缺失一律 null，不补 0） */
+export function parseBookPage(html: string): QidianBookStats {
+  let collect: number | null = null
+  let wordsCnt: number | null = null
+  let title: string | null = null
+  let desc: string | null = null
+  const tags: string[] = []
+  const seenTags = new Set<string>()
+  const pushTag = (raw: unknown) => {
+    const t = String(raw || '').trim()
+    if (t.length >= 2 && t.length <= 20 && !seenTags.has(t) && tags.length < 12) {
+      seenTags.add(t)
+      tags.push(t)
+    }
+  }
+  const m = html.match(/<script[^>]*id="vite-plugin-ssr_pageContext"[^>]*>([\s\S]*?)<\/script>/)
+  if (m) {
+    try {
+      const bi = JSON.parse(m[1])?.pageContext?.pageProps?.pageData?.bookInfo
+      if (bi && typeof bi === 'object') {
+        if (typeof bi.collect === 'number' && Number.isFinite(bi.collect)) collect = bi.collect
+        if (typeof bi.wordsCnt === 'number' && Number.isFinite(bi.wordsCnt)) wordsCnt = bi.wordsCnt
+        if (typeof bi.bookName === 'string' && bi.bookName.trim()) title = bi.bookName.trim()
+        if (typeof bi.desc === 'string') {
+          const lines = bi.desc
+            .replace(/\r\n?/g, '\n')
+            .split('\n')
+            .map((ln: string) => ln.replace(/^[\s\u3000]+|[\s\u3000]+$/g, ''))
+            .filter(Boolean)
+          if (lines.length) desc = lines.join('\n')
+        }
+        if (Array.isArray(bi.bookLabels)) {
+          for (const it of bi.bookLabels) {
+            pushTag(typeof it === 'string' ? it : (it && (it.tag || it.name)))
+          }
+        }
+        if (typeof bi.subCateName === 'string' && bi.subCateName.trim() !== String(bi.chanName || '').trim()) {
+          pushTag(bi.subCateName)
+        }
+      }
+    } catch { /* 退回正则抽数值 */ }
+  }
+  if (collect == null) {
+    const c = html.match(/"collect"\s*:\s*(\d+)/)
+    if (c) collect = Number(c[1])
+  }
+  if (wordsCnt == null) {
+    const w = html.match(/"wordsCnt"\s*:\s*(\d+)/)
+    if (w) wordsCnt = Number(w[1])
+  }
+  return {
+    collect,
+    wordsCnt,
+    ...(title ? { title } : {}),
+    ...(desc ? { desc } : {}),
+    ...(tags.length ? { tags } : {}),
+  }
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -157,7 +217,7 @@ export function makeQidianMobileSite(opts: {
      * 单本取书页统计（供主人侧做**书页缓存**：同一本书在 TTL 内不再重复下载 103KB 页面）。
      * 刻意**不做内部重试**：单次请求、失败抛错，由调用方决定跳过（不缓存坏结果）。
      */
-    async fetchBookStats(bid: string, ctx: BoardCtx): Promise<{ collect: number | null; wordsCnt: number | null }> {
+    async fetchBookStats(bid: string, ctx: BoardCtx): Promise<QidianBookStats> {
       const html = await fetchText('https://m.qidian.com/book/' + encodeURIComponent(String(bid)) + '/', ctx)
       return parseBookPage(html)
     },

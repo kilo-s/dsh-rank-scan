@@ -1,15 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 import { readClientSource } from './_client-source.mjs'
 import { daoSearchSiteOf, mergeBookHonours, parseDaoSearchBookPage } from '../lib/sites/daosearch-book.js'
-import { parseCiweimaoBookDesc } from '../lib/sites/ciweimao.js'
+import { parseCiweimaoBookDesc, parseCiweimaoBookTags } from '../lib/sites/ciweimao.js'
 import { cachedDetail, cachedEntry, putEntries } from '../lib/scan/book-cache.js'
 import { parseRankApi } from '../lib/sites/fanqie.js'
-import { parseDaoSearchRankPage } from '../lib/sites/sfacg.js'
+import { parseDaoSearchRankPage, parseSfacgBookMeta } from '../lib/sites/sfacg.js'
+import { parseBookPage as parseQidianBookPage } from '../lib/sites/qidian-mobile.js'
+import { cachedBook, putCachedBooks } from '../lib/scan/qidian-cache.js'
 
 const SAMPLE_HTML = `
 <article class="book-page bc">
@@ -235,5 +238,71 @@ test('parseCiweimaoBookDesc：保留原站 <br /> 段落换行并过滤黄色活
     assert.deepEqual(hit.entry.tags, ['同人'])
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('零请求顺手落盘：番茄残余 PUA 简介保留正文、起点书页简介/标签缓存、刺猬猫/菠萝包原站标签解析与 skipDetailStamp', () => {
+  // 1. 番茄：单个未解码 PUA 字符不再导致整段简介被丢弃，纯 PUA 仍丢弃
+  const fqRows = parseRankApi({
+    data: {
+      book_list: [
+        { bookId: '101', bookName: '正常书', author: '作者', currentPos: 1, read_count: 5000, abstract: '修仙长生\uE123带着面板发育', tags: '修仙,系统' },
+        { bookId: '102', bookName: '纯坏简介', author: '作者', currentPos: 2, read_count: 3000, abstract: '\uE123\uE124' },
+      ],
+    },
+  })
+  assert.equal(fqRows[0].extra.desc, '修仙长生带着面板发育')
+  assert.deepEqual(fqRows[0].extra.tags, ['修仙', '系统'])
+  assert.equal(fqRows[1].extra.desc, undefined)
+
+  // 2. 起点真实书页夹具：零额外请求一并解析 desc、title 与官方标签，并写入 qidian-book-cache
+  const here = dirname(fileURLToPath(import.meta.url))
+  const qdHtml = readFileSync(join(here, 'fixtures', 'qidian-book-1049003034.html'), 'utf8')
+  const qdStat = parseQidianBookPage(qdHtml)
+  assert.equal(qdStat.title, '有仙则名')
+  assert.ok(qdStat.desc && qdStat.desc.includes('灵气'))
+  assert.ok(Array.isArray(qdStat.tags) && qdStat.tags.includes('轻松'))
+  const qRoot = mkdtempSync(join(tmpdir(), 'rank-scan-qdmeta-'))
+  try {
+    putCachedBooks(qRoot, [{ key: '1049003034', collect: qdStat.collect, wordsCnt: qdStat.wordsCnt, title: qdStat.title, desc: qdStat.desc, tags: qdStat.tags }])
+    // 后续仅更新读数时不冲掉已存简介与标签
+    putCachedBooks(qRoot, [{ key: '1049003034', collect: (qdStat.collect || 0) + 100, wordsCnt: qdStat.wordsCnt }])
+    const hit = cachedBook(qRoot, '1049003034', 7 * 86400000)
+    assert.equal(hit.hit, true)
+    assert.equal(hit.stat.desc, qdStat.desc)
+    assert.deepEqual(hit.stat.tags, qdStat.tags)
+  } finally {
+    rmSync(qRoot, { recursive: true, force: true })
+  }
+
+  // 3. 刺猬猫原站标签 + 菠萝包原站简介/标签 + skipDetailStamp 不提前置位 detailFetchedAt
+  const cwTags = parseCiweimaoBookTags('<p class="label-box"><span class="label">星铁</span><a href="#">多女主</a><span>星铁</span></p>')
+  assert.deepEqual(cwTags, ['星铁', '多女主'])
+  const sfMeta = parseSfacgBookMeta('<p class="introduce">　　转生异世界成为银龙少女<br/>展开日常冒险</p><ul class="tag-list"><li><span class="tag">橘味</span></li><li><a href="#">变身</a></li></ul>')
+  assert.equal(sfMeta.desc, '转生异世界成为银龙少女\n展开日常冒险')
+  assert.deepEqual(sfMeta.tags, ['橘味', '变身'])
+
+  const bRoot = mkdtempSync(join(tmpdir(), 'rank-scan-skipstamp-'))
+  try {
+    putEntries(bRoot, [{
+      site: 'sfacg', bookId: '785673',
+      entry: { collect: 2000, words: 80000, title: null, author: null, score: null, desc: sfMeta.desc, descSource: 'origin', tags: sfMeta.tags, skipDetailStamp: true },
+    }])
+    assert.equal(cachedDetail(bRoot, 'sfacg', '785673', 7 * 86400000).hit, false, '原站补全顺手写入标签时不应提前置位 detailFetchedAt')
+    const ce = cachedEntry(bRoot, 'sfacg', '785673', 0).entry
+    assert.equal(ce.desc, sfMeta.desc)
+    assert.deepEqual(ce.tags, sfMeta.tags)
+    // 若已拉过更全的聚合详情标签，后续原站补全（skipDetailStamp）应做并集去重而不冲掉既有标签
+    putEntries(bRoot, [{
+      site: 'sfacg', bookId: '785673',
+      entry: { collect: null, words: null, title: null, author: null, score: null, tags: ['橘味', '变身', '多女主', '西幻'] },
+    }])
+    putEntries(bRoot, [{
+      site: 'sfacg', bookId: '785673',
+      entry: { collect: 2100, words: 82000, title: null, author: null, score: null, tags: ['橘味', '日常'], skipDetailStamp: true },
+    }])
+    assert.deepEqual(cachedEntry(bRoot, 'sfacg', '785673', 0).entry.tags, ['橘味', '变身', '多女主', '西幻', '日常'])
+  } finally {
+    rmSync(bRoot, { recursive: true, force: true })
   }
 })

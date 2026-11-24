@@ -17,7 +17,7 @@
         return {
           watchOpen: true, watchShowQuiet: false, watchShowAll: false, watchTick: 0, watchBusy: false,
           lens: 'pick', focusPid: null, focusTab: 'changes', focusGroup: '', focusLimit: 30,
-          issuesOpen: true, trendPick: null, trendDays: 7, reloadTick: 0,
+          issuesOpen: true, trendPick: null, trendDays: 7, reloadTick: 0, layoutLoaded: false, layoutRev: 0,
         }
       })
       const patchUi = function (patch) { setUi(function (prev) { return Object.assign({}, prev, patch) }) }
@@ -43,8 +43,12 @@
       React.useEffect(function () {
         let alive = true
         jget('/layout').then(function (r) {
-          if (alive && r && r.ok && r.layout) setLayout(normalizeOvLayout(r.layout))
-        }).catch(function () {})
+          if (!alive) return
+          if (r && r.ok && r.layout) setLayout(normalizeOvLayout(r.layout))
+          setUi(function (prev) { return Object.assign({}, prev, { layoutLoaded: true, layoutRev: (prev.layoutRev || 0) + 1 }) })
+        }).catch(function () {
+          if (alive) setUi(function (prev) { return Object.assign({}, prev, { layoutLoaded: true }) })
+        })
         return function () { alive = false }
       }, [ui.reloadTick])
 
@@ -59,6 +63,7 @@
           })
           return next
         })
+        if (op === 'reset') setUi(function (prev) { return Object.assign({}, prev, { layoutRev: (prev.layoutRev || 0) + 1 }) })
       }
       const ptrDrag = useOvPointerDrag(function (fromId, toId) { commitLayout('reorder', fromId, toId) })
 
@@ -666,19 +671,20 @@
             body = spec.body
           } else if (card.type === 'weekly-race') {
             body = h(WeeklyRaceCard, {
-              cardId: card.id, config: card.config, narrow: cardNarrow, rev: rev, reloadTick: ui.reloadTick,
+              cardId: card.id, config: card.config, narrow: cardNarrow, rev: rev, reloadTick: ui.reloadTick, layoutLoaded: ui.layoutLoaded, layoutRev: ui.layoutRev,
               onConfigChange: function (p) { commitLayout('config', card.id, p) },
               onOpenTrend: openBookTrend,
             })
           } else if (card.type === 'book-compare') {
             body = h(BookCompareCard, {
               cardId: card.id, config: card.config, narrow: cardNarrow, rev: rev, reloadTick: ui.reloadTick,
+              layoutLoaded: ui.layoutLoaded, layoutRev: ui.layoutRev,
               seedBooks: watchSeeds, watchReady: watchData !== null,
               onConfigChange: function (p) { commitLayout('config', card.id, p) },
             })
           } else if (card.type === 'keywords') {
             body = h(KeywordAnalysisCard, {
-              cardId: card.id, config: card.config, narrow: cardNarrow, rev: rev, reloadTick: ui.reloadTick,
+              cardId: card.id, config: card.config, narrow: cardNarrow, rev: rev, reloadTick: ui.reloadTick, layoutLoaded: ui.layoutLoaded, layoutRev: ui.layoutRev,
               onConfigChange: function (p) { commitLayout('config', card.id, p) },
             })
           }

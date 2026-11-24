@@ -2,28 +2,6 @@
  * 36-overview-charts.js：概览可视化卡片（周榜竞速 WeeklyRaceCard、多书成长对比 BookCompareCard）。依赖 00/10/20/35。
  * 这个文件是同一闭包里的连续片段；顶层执行顺序由文件名排序保证。
  */
-    /** 生成简洁的 4~5 档坐标刻度 */
-    function chartNiceTicks(minV, maxV, count) {
-      const n = count || 4
-      if (!Number.isFinite(minV) || !Number.isFinite(maxV)) return [0, 1]
-      if (minV === maxV) {
-        const pad = minV === 0 ? 1 : Math.abs(minV) * 0.2
-        return [minV - pad, minV, minV + pad]
-      }
-      const span = maxV - minV
-      const rawStep = span / Math.max(1, n - 1)
-      const mag = Math.pow(10, Math.floor(Math.log10(Math.abs(rawStep) || 1)))
-      const norm = rawStep / mag
-      const step = (norm <= 1.2 ? 1 : norm <= 2.5 ? 2 : norm <= 6 ? 5 : 10) * mag
-      const lo = Math.floor(minV / step) * step
-      const hi = Math.ceil(maxV / step) * step
-      const out = []
-      for (let v = lo; v <= hi + step * 0.25 && out.length < 8; v += step) {
-        out.push(Math.abs(v) < 1e-9 ? 0 : Number(v.toFixed(4)))
-      }
-      return out.length >= 2 ? out : [minV, maxV]
-    }
-
     function fmtSignedBrief(n) {
       if (typeof n !== 'number' || !Number.isFinite(n)) return '—'
       if (n === 0) return '0'
@@ -58,6 +36,20 @@
       })
 
       React.useEffect(function () {
+        if (!(props.layoutRev > 0)) return
+        const c = props.config || {}
+        const nextSrc = c.source === 'fanqie' ? 'fanqie' : 'sanjiang'
+        const nextMode = c.mode === 'cumulative' ? 'cumulative' : 'daily'
+        patch(function (prev) {
+          if (prev.source === nextSrc && prev.mode === nextMode) return {}
+          return prev.source !== nextSrc
+            ? { source: nextSrc, mode: nextMode, period: '', cat: '', hoverKey: null, hoverDay: -1 }
+            : { mode: nextMode }
+        })
+      }, [props.layoutRev])
+
+      React.useEffect(function () {
+        if (props.layoutLoaded === false) return undefined
         let alive = true
         patch({ loading: true, error: null })
         const qs = '/weekly-race?source=' + encodeURIComponent(st.source)
@@ -72,7 +64,7 @@
           }
         }).catch(function (e) { if (alive) patch({ loading: false, data: null, error: formatOvApiError(e) }) })
         return function () { alive = false }
-      }, [st.source, st.period, st.cat, props.rev, props.reloadTick, st.retryTick])
+      }, [props.layoutLoaded, st.source, st.period, st.cat, props.rev, props.reloadTick, st.retryTick])
 
       const switchSource = function (nextSrc) {
         if (nextSrc === st.source) return
@@ -337,15 +329,16 @@
     function BookCompareCard(props) {
       const cfg = props.config || {}
       const narrow = !!props.narrow
-      const initKeys = Array.isArray(cfg.compareKeys)
-        ? cfg.compareKeys.slice(0, 8)
-        : (Array.isArray(cfg.bookKeys) ? cfg.bookKeys.slice(0, 8) : [])
+      const initKeys = dedupeCompareKeys(Array.isArray(cfg.compareKeys) ? cfg.compareKeys : (Array.isArray(cfg.bookKeys) ? cfg.bookKeys : []))
+      const initTouched = cfg.compareTouched === true || initKeys.length > 0
       const [st, patch] = useOvState('bc', function () {
         return {
           xAxis: cfg.xAxis === 'words' ? 'words' : 'date',
           yAxis: cfg.yAxis === 'pct' || cfg.yAxis === 'rank' ? cfg.yAxis : 'value',
+          yScale: cfg.yScale === 'log' ? 'log' : 'linear',
           days: typeof cfg.days === 'number' ? cfg.days : 30,
           keys: initKeys,
+          touched: initTouched,
           seriesData: null,
           loading: false,
           error: null,
@@ -357,36 +350,58 @@
           searchHits: [],
         }
       })
-      const keys = Array.isArray(st.keys) ? st.keys : []
+      const stRef = React.useRef(st)
+      stRef.current = st
+      const keys = dedupeCompareKeys(st.keys)
       const keysJoined = keys.join(',')
-      const seededRef = React.useRef(false)
+      const seededRef = React.useRef(initTouched)
       const searchBoxRef = React.useRef(null)
       useOvPopoverClose(st.searchOpen, function () { patch({ searchOpen: false }) }, searchBoxRef)
 
+      // 服务端 /layout 异步加载完成或用户点「恢复默认」时回填已持久化配置
       React.useEffect(function () {
-        if (seededRef.current || keys.length > 0) return undefined
-        const seeds = Array.isArray(props.seedBooks) ? props.seedBooks.filter(Boolean).slice(0, 3) : []
+        if (!(props.layoutRev > 0)) return
+        const c = props.config || {}
+        const savedKeys = dedupeCompareKeys(Array.isArray(c.compareKeys) ? c.compareKeys : (Array.isArray(c.bookKeys) ? c.bookKeys : []))
+        const savedTouched = c.compareTouched === true || savedKeys.length > 0
+        seededRef.current = savedTouched
+        patch({
+          xAxis: c.xAxis === 'words' ? 'words' : 'date',
+          yAxis: c.yAxis === 'pct' || c.yAxis === 'rank' ? c.yAxis : 'value',
+          yScale: c.yScale === 'log' ? 'log' : 'linear',
+          days: typeof c.days === 'number' ? c.days : 30,
+          keys: savedKeys,
+          touched: savedTouched,
+          hoverKey: null,
+        })
+      }, [props.layoutRev])
+
+      // 仅在 /layout 就绪且用户从未手动增删/清空时，自动回填 3 本示例作品（盯盘优先，否则搜书前 3）
+      React.useEffect(function () {
+        if (props.layoutLoaded === false) return undefined
+        if (st.touched || seededRef.current || keys.length > 0) return undefined
+        const seeds = dedupeCompareKeys(props.seedBooks).slice(0, 3)
         if (seeds.length) {
           seededRef.current = true
           patch({ keys: seeds, error: null })
           return undefined
         }
-        // 等盯盘列表返回后再决定是否兜底搜书，避免竞态与多余请求
         if (props.watchReady === false) return undefined
         let alive = true
         jget('/books-search?limit=5').then(function (r) {
-          if (!alive || seededRef.current) return
+          const cur = stRef.current
+          if (!alive || seededRef.current || cur.touched || (Array.isArray(cur.keys) && cur.keys.length > 0)) return
           const items = (r && Array.isArray(r.items)) ? r.items : []
           if (items.length) {
             seededRef.current = true
-            patch({ keys: items.slice(0, 3).map(function (x) { return x.bookKey }), error: null })
+            patch({ keys: dedupeCompareKeys(items.slice(0, 3).map(function (x) { return x.bookKey })), error: null })
           }
         }).catch(function (e) { if (alive) patch({ error: formatOvApiError(e) }) })
         return function () { alive = false }
-      }, [props.watchReady, props.seedBooks && props.seedBooks.length, props.reloadTick, st.retryTick])
+      }, [props.layoutLoaded, props.layoutRev, st.touched, keys.length, props.watchReady, props.seedBooks && props.seedBooks.length, props.reloadTick, st.retryTick])
 
       React.useEffect(function () {
-        if (!keysJoined) { patch({ seriesData: null }); return undefined }
+        if (!keysJoined) { patch({ loading: false, seriesData: null }); return undefined }
         let alive = true
         patch({ loading: true, error: null })
         const qs = '/books-series?bookKeys=' + encodeURIComponent(keysJoined) + '&days=' + st.days
@@ -409,73 +424,104 @@
       }, [st.searchOpen, st.searchQ])
 
       const persistCfg = function (next) {
-        if (props.onConfigChange) props.onConfigChange(Object.assign({ xAxis: st.xAxis, yAxis: st.yAxis, days: st.days, compareKeys: keys }, next))
+        if (!props.onConfigChange) return
+        const cur = stRef.current
+        props.onConfigChange(Object.assign({
+          xAxis: cur.xAxis,
+          yAxis: cur.yAxis,
+          yScale: cur.yScale,
+          days: cur.days,
+          compareKeys: dedupeCompareKeys(cur.keys),
+          compareTouched: !!cur.touched,
+        }, next))
       }
 
-      const addBook = function (bk) {
-        if (!bk) return
+      const commitKeys = function (nextRaw, extraPatch) {
+        const next = dedupeCompareKeys(nextRaw)
         seededRef.current = true
-        patch(function (prev) {
-          const cur = Array.isArray(prev.keys) ? prev.keys : []
-          if (cur.indexOf(bk) >= 0) return { searchOpen: false, searchQ: '' }
-          const next = cur.concat([bk]).slice(0, 8)
-          persistCfg({ compareKeys: next })
-          return { keys: next, searchOpen: false, searchQ: '' }
-        })
+        patch(Object.assign({ keys: next, touched: true, hoverKey: null }, extraPatch || null))
+        persistCfg({ compareKeys: next, compareTouched: true })
+      }
+
+      const addBook = function (bk, closeAfter) {
+        const nk = normOvBookKey(bk)
+        if (!nk) return
+        const cur = dedupeCompareKeys(stRef.current.keys)
+        if (cur.indexOf(nk) >= 0) {
+          if (closeAfter) patch({ searchOpen: false, searchQ: '' })
+          return
+        }
+        commitKeys(cur.concat([nk]).slice(0, 8), closeAfter ? { searchOpen: false, searchQ: '' } : null)
       }
 
       const removeBook = function (bk) {
-        seededRef.current = true
-        patch(function (prev) {
-          const cur = Array.isArray(prev.keys) ? prev.keys : []
-          const next = cur.filter(function (x) { return x !== bk })
-          persistCfg({ compareKeys: next })
-          return { keys: next }
-        })
+        const nk = normOvBookKey(bk)
+        if (!nk) return
+        const cur = dedupeCompareKeys(stRef.current.keys)
+        commitKeys(cur.filter(function (x) { return x !== nk }))
+      }
+
+      const toggleBook = function (bk) {
+        const nk = normOvBookKey(bk)
+        if (!nk) return
+        const cur = dedupeCompareKeys(stRef.current.keys)
+        if (cur.indexOf(nk) >= 0) removeBook(nk)
+        else addBook(nk, false)
+      }
+
+      const clearBooks = function () {
+        commitKeys([], { seriesData: null })
+      }
+
+      const restoreDefaultBooks = function () {
+        seededRef.current = false
+        patch({ keys: [], touched: false, seriesData: null, error: null })
+        persistCfg({ compareKeys: [], compareTouched: false })
       }
 
       const seriesData = st.seriesData
-      const books = (seriesData && Array.isArray(seriesData.books)) ? seriesData.books : []
+      const keySet = {}
+      const colorOfKey = {}
+      keys.forEach(function (k, i) {
+        keySet[k] = 1
+        colorOfKey[k] = OV_CHART_COLORS[i % OV_CHART_COLORS.length]
+      })
+      const rawBooks = (seriesData && Array.isArray(seriesData.books)) ? seriesData.books : []
+      const bookByKey = {}
+      rawBooks.forEach(function (b) { bookByKey[normOvBookKey(b.bookKey)] = b })
+      const books = keys.map(function (k) { return bookByKey[k] }).filter(Boolean)
       const dates = (seriesData && Array.isArray(seriesData.dates)) ? seriesData.dates : []
       const dateIndexMap = {}
       dates.forEach(function (d, i) { dateIndexMap[d] = i })
 
-      const yField = st.yAxis === 'pct' ? 'pct' : (st.yAxis === 'rank' ? 'rank' : 'value')
-      const invertY = st.yAxis === 'rank'
-
       const VW = 760
-      const VH = narrow ? 190 : 212
+      const VH = narrow ? 196 : 216
       const padL = 54
-      const padR = 18
-      const padT = 16
       const padB = 26
+      const axes = buildCompareAxes(books, st.yAxis, st.yScale, { vh: VH, padB: padB })
+      const yField = axes.yField
+      const padR = axes.padR
+      const padT = axes.padT
       const plotW = VW - padL - padR
-      const plotH = VH - padT - padB
+      const plotH = axes.plotH
 
-      const yVals = []
       const wordVals = []
       let wordCurveCount = 0
       books.forEach(function (b) {
         let wPts = 0
         ;(b.points || []).forEach(function (p) {
           const yv = p[yField]
-          if (typeof yv === 'number' && Number.isFinite(yv)) yVals.push(yv)
+          const yOk = typeof yv === 'number' && Number.isFinite(yv) && (!axes.useLog || yv > 0)
           if (typeof p.words === 'number' && Number.isFinite(p.words) && p.words > 0) {
             wordVals.push(p.words)
-            if (typeof yv === 'number' && Number.isFinite(yv)) wPts += 1
+            if (yOk) wPts += 1
           }
         })
         if (wPts >= 2) wordCurveCount += 1
       })
 
-      const yTicks = yVals.length ? chartNiceTicks(Math.min.apply(null, yVals), Math.max.apply(null, yVals), 4) : [0, 100]
-      const yMin = yTicks[0]
-      const yMax = yTicks[yTicks.length - 1]
-      const ySpan = Math.max(1e-6, yMax - yMin)
-      const yAt = function (v) {
-        const norm = (v - yMin) / ySpan
-        return invertY ? (padT + norm * plotH) : (padT + plotH - norm * plotH)
-      }
+      const yTicks = axes.left ? axes.left.ticks : [0, 100]
+      const rightTicks = axes.right ? axes.right.ticks : []
 
       const xTicksWords = wordVals.length ? chartNiceTicks(Math.min.apply(null, wordVals), Math.max.apply(null, wordVals), 5) : [0, 100000]
       const wMin = xTicksWords[0]
@@ -517,6 +563,18 @@
               h('button', { type: 'button', className: 'rs-ov-seg-btn' + (st.yAxis === 'value' ? ' is-on' : ''), onClick: function () { patch({ yAxis: 'value' }); persistCfg({ yAxis: 'value' }) } }, '在读/收藏'),
               h('button', { type: 'button', className: 'rs-ov-seg-btn' + (st.yAxis === 'pct' ? ' is-on' : ''), onClick: function () { patch({ yAxis: 'pct' }); persistCfg({ yAxis: 'pct' }) } }, '涨幅%'),
               h('button', { type: 'button', className: 'rs-ov-seg-btn' + (st.yAxis === 'rank' ? ' is-on' : ''), onClick: function () { patch({ yAxis: 'rank' }); persistCfg({ yAxis: 'rank' }) } }, '名次')),
+            st.yAxis === 'value'
+              ? h('button', {
+                  type: 'button',
+                  className: 'rs-ov-chip' + (st.yScale === 'log' ? ' is-on' : ''),
+                  title: '切换对数刻度（Log10），同轴兼看小体量新书与大头部作品的倍增斜率',
+                  onClick: function () {
+                    const nextScale = st.yScale === 'log' ? 'linear' : 'log'
+                    patch({ yScale: nextScale })
+                    persistCfg({ yScale: nextScale })
+                  },
+                }, '对数')
+              : null,
             h('div', { className: 'rs-ov-seg' },
               [{ d: 14, l: '14天' }, { d: 30, l: '30天' }, { d: 0, l: '全库' }].map(function (o) {
                 return h('button', {
@@ -528,9 +586,15 @@
           h('div', { ref: searchBoxRef, style: { position: 'relative' } },
             h('button', {
               type: 'button', className: 'rs-ov-chip' + (st.searchOpen ? ' is-on' : ''),
+              title: '搜索、勾选或取消对比作品（最多 8 本）',
               onClick: function () { patch(function (prev) { return { searchOpen: !prev.searchOpen } }) },
-            }, '＋ 添加作品'),
-            st.searchOpen ? h('div', { className: 'rs-ov-popover', style: { minWidth: '270px', maxWidth: '320px' } },
+            }, '＋ 添加作品' + (keys.length ? ' ' + keys.length : '')),
+            st.searchOpen ? h('div', { className: 'rs-ov-popover', style: { minWidth: '280px', maxWidth: '330px' } },
+              h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '4px', borderBottom: '1px solid ' + wash(T.border, 55), fontSize: T.fs.xs } },
+                h('span', { style: { fontWeight: 600, color: T.fg } }, '选择对比作品（' + keys.length + '/8）'),
+                h('div', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } },
+                  keys.length ? h('button', { type: 'button', className: 'rs-ov-iconbtn', title: '清空全部对比作品', onClick: clearBooks }, '清空') : null,
+                  h('button', { type: 'button', className: 'rs-ov-iconbtn', onClick: function () { patch({ searchOpen: false }) } }, '关闭'))),
               h('input', {
                 type: 'text', className: 'rs-input', autoFocus: true,
                 style: { ...C.input, width: '100%', height: '26px' },
@@ -539,67 +603,108 @@
                 onChange: function (ev) { patch({ searchQ: ev.target.value }) },
                 onKeyDown: function (ev) {
                   if (ev.key === 'Escape') patch({ searchOpen: false })
-                  if (ev.key === 'Enter' && searchHits.length) addBook(searchHits[0].bookKey)
+                  if (ev.key === 'Enter' && searchHits.length) {
+                    const firstNew = searchHits.filter(function (x) { return !keySet[normOvBookKey(x.bookKey)] })[0]
+                    toggleBook((firstNew || searchHits[0]).bookKey)
+                  }
                 },
               }),
-              h('div', { style: { maxHeight: '200px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '4px' } },
+              h('div', { style: { maxHeight: '210px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '2px' } },
                 searchHits.length
                   ? searchHits.map(function (hit) {
-                      const already = keys.indexOf(hit.bookKey) >= 0
+                      const nk = normOvBookKey(hit.bookKey)
+                      const already = !!keySet[nk]
                       return h('div', {
-                        key: 'sh-' + hit.bookKey, className: 'rs-ov-dir-row',
-                        style: { opacity: already ? 0.45 : 1 },
-                        onClick: function () { if (!already) addBook(hit.bookKey) },
+                        key: 'sh-' + nk, className: 'rs-ov-dir-row' + (already ? ' is-sel' : ''),
+                        title: already ? '点击移出对比' : '点击加入对比',
+                        onClick: function () { toggleBook(nk) },
                       },
                         h('span', { style: { width: '6px', height: '6px', borderRadius: '50%', background: OV_SITE_COLORS[hit.site] || T.muted, flex: '0 0 auto' } }),
-                        h('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: T.fg } }, hit.title),
-                        h('span', { style: { fontSize: '10px', color: T.muted, flex: '0 0 auto' } }, already ? '已选' : (hit.watched ? '盯盘' : hit.siteName)))
+                        h('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: T.fg, fontWeight: already ? 500 : 400 } }, hit.title),
+                        h('span', { style: { fontSize: '10px', color: T.muted, flex: '0 0 auto' } }, hit.watched ? '盯盘' : hit.siteName),
+                        h('span', { style: { color: already ? T.accent : T.muted, fontWeight: 600, flex: '0 0 auto', minWidth: '12px', textAlign: 'center' } }, already ? '✓' : '＋'))
                     })
                   : h('div', { style: { fontSize: T.fs.xs, color: T.muted, padding: '8px 4px', textAlign: 'center' } }, '未找到匹配作品'))) : null)),
 
         h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '5px' } },
-          books.map(function (b, idx) {
+          keys.map(function (k, idx) {
+            const b = bookByKey[k] || null
             const col = OV_CHART_COLORS[idx % OV_CHART_COLORS.length]
-            const isHover = st.hoverKey === b.bookKey
+            const isHover = st.hoverKey === k
+            const side = b ? axes.sideOfBook(b) : 'left'
+            const siteTag = b ? (axes.isDual ? (b.siteName + (side === 'left' ? '·左' : '·右')) : b.siteName) : '加载中'
+            const titleText = b ? b.title : k
             return h('span', {
-              key: 'chip-' + b.bookKey, className: 'rs-ov-chip',
+              key: 'chip-' + k, className: 'rs-ov-chip',
               style: { borderColor: isHover ? col : wash(col, 35), background: wash(col, isHover ? 14 : 6), color: T.fg },
-              onMouseEnter: function () { patch({ hoverKey: b.bookKey }) },
+              onMouseEnter: function () { patch({ hoverKey: k }) },
               onMouseLeave: function () { patch({ hoverKey: null }) },
             },
-              h('span', { style: { width: '6px', height: '6px', borderRadius: '50%', background: col, flex: '0 0 auto' } }),
-              h('span', { style: { maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, b.title),
-              h('span', { style: { fontSize: '10px', color: T.muted } }, b.siteName),
+              h('span', {
+                style: {
+                  width: b && axes.isDual && side === 'right' ? '10px' : '6px',
+                  height: b && axes.isDual && side === 'right' ? '0px' : '6px',
+                  borderRadius: b && axes.isDual && side === 'right' ? '0px' : '50%',
+                  background: b && axes.isDual && side === 'right' ? 'transparent' : col,
+                  borderTop: b && axes.isDual && side === 'right' ? ('2px dashed ' + col) : 'none',
+                  flex: '0 0 auto',
+                },
+              }),
+              h('span', { style: { maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: titleText }, titleText),
+              h('span', { style: { fontSize: '10px', color: T.muted } }, siteTag),
               h('button', {
-                type: 'button',
-                style: { border: 'none', background: 'transparent', color: T.muted, cursor: 'pointer', padding: '0 0 0 2px', fontSize: '11px', lineHeight: 1 },
-                title: '移除对比',
-                onClick: function (ev) { ev.stopPropagation(); removeBook(b.bookKey) },
+                type: 'button', className: 'rs-ov-chip-x',
+                title: '移除对比：' + titleText,
+                'aria-label': '移除 ' + titleText,
+                onClick: function (ev) { ev.stopPropagation(); removeBook(k) },
               }, '×'))
           }),
-          !books.length && !st.loading ? h('span', { style: { fontSize: T.fs.xs, color: T.muted } }, '点右上角「＋ 添加作品」挑选 2~6 本书同轴对比走势') : null),
+          keys.length > 0
+            ? h('button', { type: 'button', className: 'rs-ov-iconbtn', title: '清空全部已选对比作品', onClick: clearBooks }, '清空')
+            : (!st.loading
+                ? h('div', { style: { display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: T.fs.xs, color: T.muted } },
+                    h('span', null, '暂未选择对比作品 · 点右上角「＋ 添加作品」勾选 1~8 本书'),
+                    h('button', { type: 'button', className: 'rs-ov-iconbtn', title: '自动填入 3 本示例作品', onClick: restoreDefaultBooks }, '恢复默认'))
+                : null)),
 
         st.error
           ? ovCardNotice({ error: st.error, onRetry: function () { patch(function (prev) { return { retryTick: (prev.retryTick || 0) + 1 } }) } })
           : st.loading && !books.length
           ? ovCardNotice({ text: '正在读取作品成长曲线…' })
-          : !books.length || !yVals.length
+          : !books.length || !axes.hasData
             ? ovCardNotice({
                 pad: '22px 0',
-                text: books.length ? '所选作品在当前窗口暂无「' + (st.yAxis === 'rank' ? '名次' : '在读/收藏') + '」数据，可切换 Y 轴或扩大时间窗' : '暂未选择对比作品',
+                text: books.length
+                  ? (axes.useLog
+                      ? '当前窗口暂无大于 0 的「在读/收藏」数据可用于对数刻度，可切回线性或扩大时间窗'
+                      : '所选作品在当前窗口暂无「' + (st.yAxis === 'rank' ? '名次' : '在读/收藏') + '」数据，可切换 Y 轴或扩大时间窗')
+                  : '暂未选择对比作品',
               })
             : h('div', null,
                 h('svg', {
                   viewBox: '0 0 ' + VW + ' ' + VH,
-                  style: { width: '100%', height: narrow ? '178px' : '198px', display: 'block', overflow: 'visible' },
+                  style: { width: '100%', height: narrow ? '184px' : '202px', display: 'block', overflow: 'visible' },
                   onMouseLeave: function () { patch({ hoverXIdx: -1, hoverKey: null }) },
                 },
+                  axes.isDual ? h('g', { key: 'dual-hdr' },
+                    h('text', { x: padL - 6, y: 11, textAnchor: 'end', fontSize: 9.5, fontWeight: 600, fill: T.fg }, '左·在读'),
+                    h('text', { x: VW - padR + 6, y: 11, textAnchor: 'start', fontSize: 9.5, fontWeight: 600, fill: T.muted }, '右·收藏'),
+                    h('line', { x1: padL, y1: padT, x2: padL, y2: padT + plotH, stroke: T.border, strokeOpacity: 0.7, strokeWidth: 0.8 }),
+                    h('line', { x1: VW - padR, y1: padT, x2: VW - padR, y2: padT + plotH, stroke: T.border, strokeOpacity: 0.7, strokeWidth: 0.8 })) : null,
                   yTicks.map(function (tv, i) {
-                    const yy = yAt(tv)
+                    const yy = axes.left ? axes.left.yAt(tv) : null
+                    if (yy == null) return null
                     return h('g', { key: 'cy-' + i },
                       h('line', { x1: padL, y1: yy, x2: VW - padR, y2: yy, stroke: T.border, strokeOpacity: 0.45, strokeWidth: 0.75, strokeDasharray: '2 3' }),
                       h('text', { x: padL - 6, y: yy + 3.5, textAnchor: 'end', fontSize: 10, fill: T.muted, style: { fontVariantNumeric: 'tabular-nums' } }, fmtY(tv)))
                   }),
+                  axes.isDual && axes.right ? rightTicks.map(function (tv, i) {
+                    const yy = axes.right.yAt(tv)
+                    if (yy == null) return null
+                    return h('g', { key: 'cyr-' + i },
+                      h('line', { x1: VW - padR, y1: yy, x2: VW - padR + 3, y2: yy, stroke: T.border, strokeOpacity: 0.8, strokeWidth: 0.8 }),
+                      h('text', { x: VW - padR + 6, y: yy + 3.5, textAnchor: 'start', fontSize: 10, fill: T.muted, style: { fontVariantNumeric: 'tabular-nums' } }, fmtY(tv)))
+                  }) : null,
                   st.xAxis === 'date'
                     ? dateTickIdxs.map(function (di) {
                         const d = dates[di]
@@ -616,19 +721,22 @@
                       h('rect', { x: Math.max(padL, xx - colW / 2), y: padT, width: colW, height: plotH, fill: 'transparent', onMouseEnter: function () { patch({ hoverXIdx: di }) } }))
                   }) : null,
                   books.map(function (b, idx) {
-                    const col = OV_CHART_COLORS[idx % OV_CHART_COLORS.length]
-                    const isHover = st.hoverKey === b.bookKey
+                    const nbk = normOvBookKey(b.bookKey)
+                    const col = colorOfKey[nbk] || OV_CHART_COLORS[idx % OV_CHART_COLORS.length]
+                    const isHover = st.hoverKey === nbk
                     const op = st.hoverKey ? (isHover ? 1 : 0.25) : 0.92
                     const sw = isHover ? 2.6 : 1.9
+                    const isRightAxis = axes.isDual && axes.sideOfBook(b) === 'right'
                     const pts = []
                     ;(b.points || []).forEach(function (p) {
                       const yv = p[yField]
-                      if (typeof yv !== 'number' || !Number.isFinite(yv)) return
+                      const yy = axes.yAtBook(b, yv)
+                      if (yy == null || !Number.isFinite(yy)) return
                       if (st.xAxis === 'words') {
                         if (typeof p.words !== 'number' || !Number.isFinite(p.words) || p.words <= 0) return
-                        pts.push({ x: xAtWords(p.words), y: yAt(yv), p: p })
+                        pts.push({ x: xAtWords(p.words), y: yy, p: p })
                       } else {
-                        pts.push({ x: xAtDate(p.date), y: yAt(yv), p: p })
+                        pts.push({ x: xAtDate(p.date), y: yy, p: p })
                       }
                     })
                     if (st.xAxis === 'words') pts.sort(function (a, c) { return a.x - c.x })
@@ -643,14 +751,18 @@
                         sdPt = { x: xAtWords(b.shouding.words), y: pts[pts.length - 1].y, label: b.shouding.label }
                       }
                     }
-                    return h('g', { key: 'bc-' + b.bookKey, onMouseEnter: function () { patch({ hoverKey: b.bookKey }) } },
-                      pts.length >= 2 ? h('path', { d: dAttr, fill: 'none', stroke: col, strokeWidth: sw, strokeOpacity: op, strokeLinecap: 'round', strokeLinejoin: 'round' }) : null,
+                    return h('g', { key: 'bc-' + nbk, onMouseEnter: function () { patch({ hoverKey: nbk }) } },
+                      pts.length >= 2 ? h('path', {
+                        d: dAttr, fill: 'none', stroke: col, strokeWidth: sw, strokeOpacity: op,
+                        strokeDasharray: isRightAxis ? '5 2.5' : undefined,
+                        strokeLinecap: 'round', strokeLinejoin: 'round',
+                      }) : null,
                       pts.map(function (pt, pi) {
                         const showDot = pts.length === 1 || pi === pts.length - 1 || (st.xAxis === 'date' && pt.p.date === activeDate)
                         if (!showDot) return null
                         return h('circle', { key: 'dp-' + pi, cx: pt.x.toFixed(1), cy: pt.y.toFixed(1), r: isHover ? 3.5 : 2.5, fill: col, fillOpacity: op })
                       }),
-                      sdPt ? h('g', { key: 'sd-' + b.bookKey },
+                      sdPt ? h('g', { key: 'sd-' + nbk },
                         h('line', { x1: sdPt.x, y1: padT, x2: sdPt.x, y2: padT + plotH, stroke: T.warn, strokeOpacity: 0.45, strokeWidth: 1, strokeDasharray: '2 2' }),
                         h('circle', { cx: sdPt.x, cy: sdPt.y, r: 4, fill: T.surface, stroke: T.warn, strokeWidth: 1.8 }),
                         h('text', { x: Math.min(VW - padR - 4, sdPt.x + 5), y: Math.max(padT + 10, sdPt.y - 6), fontSize: 9.5, fill: T.warn, fontWeight: 600 }, sdPt.label)) : null)
@@ -663,18 +775,26 @@
                 },
                   activeDate && st.xAxis === 'date' ? h('span', { style: { fontWeight: 600, color: T.fg } }, mdOf(activeDate)) : null,
                   books.map(function (b, idx) {
-                    const col = OV_CHART_COLORS[idx % OV_CHART_COLORS.length]
+                    const nbk = normOvBookKey(b.bookKey)
+                    const col = colorOfKey[nbk] || OV_CHART_COLORS[idx % OV_CHART_COLORS.length]
                     const pt = (st.xAxis === 'date' && activeDate)
                       ? ((b.points || []).filter(function (p) { return p.date === activeDate })[0] || null)
                       : ((b.points && b.points.length) ? b.points[b.points.length - 1] : null)
-                    const vText = pt ? fmtY(pt[yField]) : '—'
+                    const unit = st.yAxis === 'value' && axes.isDual ? (b.metricLabel || (b.site === 'fanqie' ? '在读' : '收藏')) : ''
+                    const rawV = pt ? fmtY(pt[yField]) : '—'
+                    const vText = rawV !== '—' && unit ? (rawV + unit) : rawV
                     const wText = pt && pt.words ? ' · ' + fmtWordsShort(pt.words) : ''
-                    return h('span', { key: 'rd-' + b.bookKey, style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } },
+                    return h('span', { key: 'rd-' + nbk, style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } },
                       h('span', { style: { width: '6px', height: '6px', borderRadius: '50%', background: col } }),
                       h('span', { style: { color: T.fg } }, b.title.slice(0, 10) + (b.title.length > 10 ? '…' : '')),
                       h('span', null, vText + wText))
                   }),
                   st.xAxis === 'words' && wordCurveCount < books.length
                     ? h('span', { style: { marginLeft: 'auto', color: T.warn } }, '部分作品缺少多日字数记录，切 X:日期 可看全量走势')
-                    : null)))
+                    : (axes.isDual || axes.useLog)
+                      ? h('span', { style: { marginLeft: 'auto', color: T.muted } },
+                          axes.isDual
+                            ? ('双轴：左在读(实线) · 右收藏(虚线)' + (axes.useLog ? ' · 对数' : ''))
+                            : '对数刻度（Log10）')
+                      : null)))
     }

@@ -5,11 +5,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import vm from 'node:vm'
 import {
+  cleanKeywordTags,
   computeBookSeries,
   computeKeywordGraph,
   computeWeeklyRace,
   DEFAULT_OVERVIEW_LAYOUT,
   normalizeOverviewLayout,
+  pickCorpusBackfillCandidates,
+  sanitizeKeywordText,
   searchLocalBooks,
 } from '../lib/scan/overview-analytics.js'
 import { readClientSource } from './_client-source.mjs'
@@ -312,4 +315,293 @@ test('客户端纯函数与无 DOM 安全渲染：中心枢纽零偏移、零重
   assert.ok(kwSrc.includes("key: 'kw-svg-tree'") && kwSrc.includes("key: 'kw-svg-cloud-'"), '树视图与词云 SVG 必须独立 key，防止 React 复用导致两图重叠')
   assert.ok(src.includes('if (vp.parentNode === svg) svg.removeChild(vp)'), '树卸载时必须清理命令式追加的 DOM 子树')
   assert.ok(!src.includes('＋ 周榜竞速') && !src.includes('＋ 作品对比'), '卡片管理弹窗底部不应出现重复的添加加号按钮')
+})
+
+test('关键词语料补齐与去噪：接入双缓存 desc/tags、屏蔽平台模板词与否定词、首订榜用收藏权重与覆盖率统计', () => {
+  assert.deepEqual(
+    cleanKeywordTags(['男频', '女频', '签约', 'VIP付费', '无系统', '无后宫', '多女主', '赛博朋克', '多女主']),
+    ['多女主', '赛博朋克'],
+  )
+  assert.ok(!sanitizeKeywordText('这是一本无系统、没有金手指的纯修仙小说').includes('系统'))
+  assert.ok(sanitizeKeywordText('这是一本无系统、没有金手指的纯修仙小说').includes('修仙'))
+  assert.ok(sanitizeKeywordText('无敌流主角').includes('无敌'), '无敌流不应被否定词正则误剥')
+
+  const root = mkTempRoot()
+  try {
+    writeSnap(root, '2026-11-24', 'ciweimao.yp_new.week', [
+      { key: '1001', rank: 1, value: null, title: '普通书名甲', author: 'A', url: null, extra: { collect: 9000 } },
+    ], 'rank')
+    writeSnap(root, '2026-11-24', 'sfacg.hot.week', [
+      { key: '2001', rank: 1, value: null, title: '普通书名乙', author: 'B', url: null, extra: { collect: 8000 } },
+      { key: '2002', rank: 2, value: null, title: '普通书名丙', author: 'C', url: null, extra: { collect: 3000 } },
+    ], 'rank')
+    writeSnap(root, '2026-11-24', 'qidiantu.shouding', [
+      { key: '3001', rank: 1, value: 180, title: '普通书名丁', author: 'D', url: null, extra: { collect: 25000 } },
+    ], 'value')
+
+    mkdirSync(join(root, 'state'), { recursive: true })
+    writeFileSync(join(root, 'state', 'book-page-cache.json'), JSON.stringify({
+      version: 1,
+      entries: {
+        'ciweimao:1001': {
+          collect: 9000, words: 120000, title: null, author: null, score: null, fetchedAt: '2026-11-24T00:00:00Z',
+          desc: '无系统无后宫，纯粹的崩坏世界冒险故事',
+          tags: ['男频', '刺猬猫首发', '女频', '无系统', '星铁'],
+        },
+        'sfacg:2001': {
+          collect: 8000, words: 90000, title: null, author: null, score: null, fetchedAt: '2026-11-24T00:00:00Z',
+          desc: '',
+          tags: ['VIP付费', '橘味', '变身'],
+        },
+      },
+    }), 'utf8')
+    writeFileSync(join(root, 'state', 'qidian-book-cache.json'), JSON.stringify({
+      version: 1,
+      books: {
+        '3001': {
+          collect: 25000, wordsCnt: 150000, title: '普通书名丁', fetchedAt: '2026-11-24T00:00:00Z',
+          desc: '夜之城义体改造故事',
+          tags: ['签约', '赛博朋克'],
+        },
+      },
+    }), 'utf8')
+
+    const kw = computeKeywordGraph(root, { days: 30 })
+    assert.equal(kw.meta.totalBooks, 4)
+    assert.ok(kw.nodes['崩坏'], '应命中 book-page-cache 的简介词')
+    assert.ok(kw.nodes['星铁'], '应命中 book-page-cache 的清洗后标签')
+    assert.ok(kw.nodes['轻百橘味'] && kw.nodes['变身'], '应命中菠萝包缓存标签')
+    assert.ok(kw.nodes['赛博朋克'], '应命中 qidian-book-cache 的简介与标签')
+    assert.ok(!kw.nodes['系统'], '否定词「无系统」绝不能反向误中系统')
+    assert.ok(!kw.nodes['多女主'], '否定词「无后宫」绝不能反向误中多女主')
+    assert.ok(!kw.nodes['穿书女频'], '平台模板标签「女频」绝不能误中穿书女频')
+    const qdCyber = kw.clouds.qidian.find((x) => x[0] === '赛博朋克')
+    assert.ok(qdCyber && qdCyber[5] === 25000, '起点首订榜作品热度口径应取收藏 25000 而非首订 180')
+    assert.equal(kw.meta.coverage.withText, 3, '4 本书中应有 3 本含简介或标签')
+    assert.equal(kw.meta.coverage.pct, 75)
+    assert.equal(kw.meta.coverage.bySite.sfacg.withText, 1)
+    assert.equal(kw.meta.coverage.bySite.sfacg.total, 2)
+    assert.equal(kw.meta.coverage.bySite.sfacg.pct, 50)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('1B 低速增量语料补缺候选挑选：按菠萝包>刺猬猫>三江>首订>其余排序，跳过已覆盖/隔离/冷却项', () => {
+  const root = mkTempRoot()
+  try {
+    writeSnap(root, '2026-11-24', 'fanqie.m.new.262', [
+      { key: '1', rank: 1, value: 90000, title: '番茄缺简介', author: 'A', url: null, extra: {} },
+      { key: '2', rank: 2, value: 80000, title: '番茄已有简介', author: 'A', url: null, extra: { desc: '已有简介' } },
+    ])
+    writeSnap(root, '2026-11-24', 'qidiantu.shouding', [
+      { key: '301', rank: 1, value: 500, title: '首订缺简介', author: 'B', url: null, extra: { collect: 5000 } },
+    ])
+    writeSnap(root, '2026-11-24', 'qidiantu.sanjiang', [
+      { key: '302', rank: 1, value: 2000, title: '三江缺简介', author: 'C', url: null, extra: { collectBase: 10000, totalDelta: 2000 } },
+    ])
+    writeSnap(root, '2026-11-24', 'ciweimao.yp_new.week', [
+      { key: '401', rank: 1, value: null, title: '猫缺简介', author: 'D', url: null, extra: { collect: 4000 } },
+    ], 'rank')
+    writeSnap(root, '2026-11-23', 'sfacg.new.click', [
+      { key: '501', rank: 2, value: null, title: '包第二（昨日分时快照）', author: 'E', url: null, extra: { collect: 2000 } },
+      { key: '502', rank: 1, value: null, title: '包第一冷却', author: 'E', url: null, extra: { collect: 3000 } },
+    ], 'rank')
+    writeSnap(root, '2026-11-24', 'sfacg.vip.week', [
+      { key: '599', rank: 1, value: null, title: '隔离榜书', author: 'F', url: null, extra: {} },
+    ], 'rank')
+    writeFileSync(join(root, '2026-11-24', 'sfacg.vip.week.untrusted.json'), JSON.stringify({ reason: 'swap' }), 'utf8')
+
+    const cands = pickCorpusBackfillCandidates(root, { limit: 10, skipKeys: new Set(['sfacg:502']) })
+    assert.deepEqual(
+      cands.map((c) => c.bookKey),
+      ['sfacg:501', 'ciweimao:401', 'qidian:302', 'qidian:301', 'fanqie:1'],
+      '优先级应为 菠萝包 > 刺猬猫 > 三江 > 首订 > 番茄，且排除已有简介、冷却与隔离榜',
+    )
+    assert.equal(pickCorpusBackfillCandidates(root, { limit: 2 }).length, 2, '必须严格受单轮上限约束')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('作品成长对比 2A：智能双 Y 轴（在读 vs 收藏）与 Log10 对数刻度纯函数', () => {
+  const { mod } = loadClientMod()
+  const { chartLogTicks, buildCompareAxes } = mod.__test.helpers
+
+  // 1. 对数刻度：紧贴边界、严格递增、单值不 NaN
+  const ltWide = chartLogTicks(3000, 200000)
+  assert.ok(ltWide.length >= 3 && ltWide.length <= 6)
+  assert.ok(ltWide[0] <= 3000 && ltWide[ltWide.length - 1] >= 200000)
+  for (let i = 1; i < ltWide.length; i++) assert.ok(ltWide[i] > ltWide[i - 1])
+  const ltSingle = chartLogTicks(5000, 5000)
+  assert.ok(ltSingle.length >= 2 && ltSingle[0] < 5000 && ltSingle[ltSingle.length - 1] > 5000)
+
+  const fqBook = { bookKey: 'fanqie:1', site: 'fanqie', siteName: '番茄', title: '番茄书', points: [{ date: '2026-11-20', value: 60000, pct: 0, rank: 5 }, { date: '2026-11-24', value: 240000, pct: 300, rank: 1 }] }
+  const qdBook = { bookKey: 'qidian:2', site: 'qidian', siteName: '起点', title: '起点书', points: [{ date: '2026-11-20', value: 2000, pct: 0, rank: 10 }, { date: '2026-11-24', value: 8000, pct: 300, rank: 3 }] }
+  const cwBook = { bookKey: 'ciweimao:3', site: 'ciweimao', siteName: '刺猬猫', title: '猫书', points: [{ date: '2026-11-20', value: 1000, pct: 0, rank: 8 }, { date: '2026-11-24', value: 100000, pct: 9900, rank: 1 }] }
+
+  // 2. 跨站（在读+收藏）自动启用双轴，起点曲线不再贴底
+  const dual = buildCompareAxes([fqBook, qdBook], 'value', 'linear', { vh: 216, padB: 26 })
+  assert.equal(dual.isDual, true)
+  assert.equal(dual.useLog, false)
+  assert.equal(dual.padR, 54)
+  assert.equal(dual.left.label, '在读')
+  assert.equal(dual.right.label, '收藏')
+  assert.equal(dual.sideOfBook(fqBook), 'left')
+  assert.equal(dual.sideOfBook(qdBook), 'right')
+  const qdHighY = dual.yAtBook(qdBook, 8000)
+  const qdLowY = dual.yAtBook(qdBook, 2000)
+  assert.ok(qdLowY - qdHighY > dual.plotH * 0.5, '启用右轴后，收藏曲线应展开占满可视高度而不是被压扁贴底')
+
+  // 3. 同量纲自动退回单左轴
+  const single = buildCompareAxes([qdBook, cwBook], 'value', 'linear', { vh: 216, padB: 26 })
+  assert.equal(single.isDual, false)
+  assert.equal(single.right, null)
+  assert.equal(single.padR, 18)
+
+  // 4. 对数刻度：等倍增长等距，<=0 安全返回 null
+  const logAx = buildCompareAxes([cwBook], 'value', 'log', { vh: 216, padB: 26 })
+  assert.equal(logAx.useLog, true)
+  assert.equal(logAx.yAtBook(cwBook, 0), null)
+  assert.equal(logAx.yAtBook(cwBook, -10), null)
+  const y1k = logAx.yAtBook(cwBook, 1000)
+  const y10k = logAx.yAtBook(cwBook, 10000)
+  const y100k = logAx.yAtBook(cwBook, 100000)
+  assert.ok(Math.abs((y1k - y10k) - (y10k - y100k)) < 0.05, '对数轴上 1k→1w 与 1w→10w 两个十倍跨度必须等距')
+
+  // 5. 涨幅% 与 名次 强制保持线性单轴
+  const pctAx = buildCompareAxes([fqBook, qdBook], 'pct', 'log', { vh: 216, padB: 26 })
+  assert.equal(pctAx.isDual, false)
+  assert.equal(pctAx.useLog, false)
+  const rkAx = buildCompareAxes([fqBook, qdBook], 'rank', 'log', { vh: 216, padB: 26 })
+  assert.equal(rkAx.isDual, false)
+  assert.equal(rkAx.useLog, false)
+  assert.equal(rkAx.invertY, true)
+})
+
+test('作品成长对比交互与配置回显：键名归一化、异步 /layout 回填、可取消已选、删空不复活', () => {
+  const { mod, src } = loadClientMod()
+  const { normOvBookKey, dedupeCompareKeys } = mod.__test.helpers
+  assert.equal(normOvBookKey('qidiantu:1049003034'), 'qidian:1049003034')
+  assert.equal(normOvBookKey('ciweimao:100508295'), 'ciweimao:100508295')
+  assert.deepEqual(
+    Array.from(dedupeCompareKeys(['qidiantu:101', 'qidian:101', 'fanqie:202', 'ciweimao:303', ''])),
+    ['qidian:101', 'fanqie:202', 'ciweimao:303'],
+    '跨源起点图与起点同书号必须归一化去重，确保移除按钮总能命中',
+  )
+  assert.equal(dedupeCompareKeys(Array.from({ length: 12 }, (_, i) => 'fanqie:' + i)).length, 8, '最多保留 8 本')
+
+  // 用真实有状态 mini-React 驱动 BookCompareCard，验证：
+  // 1) layoutLoaded=false 时不抢跑自动填 3 本；
+  // 2) layoutRev 到达后完整回显磁盘保存的 compareKeys 与 yScale；
+  // 3) 点芯片 × 与「清空」均可正常删除并落盘 compareTouched=true，重开空态不再强制复活默认 3 本
+  const calls = []
+  let reg = null
+  const states = []
+  const refs = []
+  const effects = []
+  let sIdx = 0
+  let rIdx = 0
+  const miniReact = {
+    createElement: (type, props, ...children) => ({ type, props: { ...(props || {}), children } }),
+    useState: (init) => {
+      const i = sIdx++
+      if (!(i in states)) states[i] = typeof init === 'function' ? init() : init
+      const set = (v) => { states[i] = typeof v === 'function' ? v(states[i]) : v }
+      return [states[i], set]
+    },
+    useRef: (init) => {
+      const i = rIdx++
+      if (!(i in refs)) refs[i] = { current: init }
+      return refs[i]
+    },
+    useEffect: (fn, deps) => { effects.push({ fn, deps }) },
+    useLayoutEffect: () => {},
+    useCallback: (fn) => fn,
+    useMemo: (fn) => fn(),
+    Component: function () {},
+    Fragment: 'Fragment',
+  }
+  const sandbox = {
+    console, Promise, JSON, Math, Number, String, Object, Array, Date, RegExp, Error,
+    setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
+    fetch: async (u) => {
+      calls.push(String(u))
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, items: [{ bookKey: 'fanqie:999', title: '默认书' }], books: [], dates: [] }) }
+    },
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    document: { createElement: () => ({ style: {}, setAttribute: () => {}, remove: () => {} }), head: { appendChild: () => {} }, body: { appendChild: () => {} }, addEventListener: () => {}, removeEventListener: () => {}, querySelectorAll: () => [] },
+    __ModuleLoader__: { load: (r) => { reg = r } },
+  }
+  sandbox.window = sandbox
+  sandbox.window.addEventListener = () => {}
+  sandbox.window.removeEventListener = () => {}
+  vm.runInContext(src, vm.createContext(sandbox), { filename: 'client/parts/*.js' })
+  const m2 = reg.factory((id) => { if (id === 'react') return miniReact; throw new Error(id) })
+  const { BookCompareCard } = m2.__test.components
+
+  const renderCard = (props) => {
+    sIdx = 0; rIdx = 0; effects.length = 0
+    const tree = BookCompareCard(props)
+    const runEffects = effects.slice()
+    for (const ef of runEffects) ef.fn()
+    return tree
+  }
+  const findAll = (node, pred, out = []) => {
+    if (!node || typeof node !== 'object') return out
+    if (Array.isArray(node)) { node.forEach((c) => findAll(c, pred, out)); return out }
+    if (pred(node)) out.push(node)
+    if (node.props && node.props.children) findAll(node.props.children, pred, out)
+    return out
+  }
+
+  const persisted = []
+  // 阶段 1：/layout 尚未返回（layoutLoaded=false），绝不抢跑填充默认 3 本
+  renderCard({
+    config: { xAxis: 'date', yAxis: 'value', days: 30, compareKeys: [] },
+    layoutLoaded: false, layoutRev: 0, watchReady: true, seedBooks: ['fanqie:1', 'fanqie:2', 'fanqie:3'],
+    onConfigChange: (p) => persisted.push(p),
+  })
+  assert.deepEqual(Array.from(states[0].keys), [], '/layout 到达前不应抢跑回填默认书单')
+
+  // 阶段 2：/layout 返回用户已保存的 2 本书（含刺猬猫与 qidiantu 归一化）及 log 刻度
+  renderCard({
+    config: { xAxis: 'date', yAxis: 'value', yScale: 'log', days: 14, compareKeys: ['qidiantu:101', 'ciweimao:100508295'], compareTouched: true },
+    layoutLoaded: true, layoutRev: 1, watchReady: true, seedBooks: ['fanqie:1', 'fanqie:2', 'fanqie:3'],
+    onConfigChange: (p) => persisted.push(p),
+  })
+  assert.deepEqual(Array.from(states[0].keys), ['qidian:101', 'ciweimao:100508295'], '必须完整回显已保存的书单并归一化')
+  assert.equal(states[0].yScale, 'log')
+  assert.equal(states[0].days, 14)
+
+  // 阶段 3：重绘出芯片后点 × 删除第一本，再点「清空」
+  const tree2 = renderCard({
+    config: { xAxis: 'date', yAxis: 'value', yScale: 'log', days: 14, compareKeys: ['qidiantu:101', 'ciweimao:100508295'], compareTouched: true },
+    layoutLoaded: true, layoutRev: 1, watchReady: true, seedBooks: ['fanqie:1', 'fanqie:2', 'fanqie:3'],
+    onConfigChange: (p) => persisted.push(p),
+  })
+  const closeBtns = findAll(tree2, (n) => n.type === 'button' && n.props && n.props.className === 'rs-ov-chip-x')
+  assert.equal(closeBtns.length, 2, '每个已选书号都必须直接渲染可点的 × 移除按钮')
+  closeBtns[0].props.onClick({ stopPropagation() {} })
+  assert.deepEqual(Array.from(states[0].keys), ['ciweimao:100508295'])
+  assert.deepEqual(Array.from(persisted[persisted.length - 1].compareKeys), ['ciweimao:100508295'])
+  assert.equal(persisted[persisted.length - 1].compareTouched, true)
+
+  const clearBtn = findAll(tree2, (n) => n.type === 'button' && n.props && n.props.title === '清空全部已选对比作品')[0]
+  assert.ok(clearBtn, '已选区应提供统一风格的「清空」按钮')
+  clearBtn.props.onClick()
+  assert.deepEqual(Array.from(states[0].keys), [])
+  assert.equal(persisted[persisted.length - 1].compareTouched, true)
+
+  // 阶段 4：清空后再次渲染（模拟关掉重开，config 为 compareKeys=[], compareTouched=true），绝不再强行塞回默认 3 本
+  renderCard({
+    config: { xAxis: 'date', yAxis: 'value', days: 14, compareKeys: [], compareTouched: true },
+    layoutLoaded: true, layoutRev: 2, watchReady: true, seedBooks: ['fanqie:1', 'fanqie:2', 'fanqie:3'],
+    onConfigChange: (p) => persisted.push(p),
+  })
+  assert.deepEqual(Array.from(states[0].keys), [], '用户主动清空后重开必须保持空态，不再塞回默认 3 本')
+
+  // 回归检查：三张分析卡全部接入 layoutLoaded / layoutRev
+  assert.ok(src.includes('layoutLoaded: ui.layoutLoaded, layoutRev: ui.layoutRev'))
+  assert.ok(src.includes("className: 'rs-ov-dir-row' + (already ? ' is-sel' : '')"), '下拉已选项应可点击切换并带统一选中态样式')
 })

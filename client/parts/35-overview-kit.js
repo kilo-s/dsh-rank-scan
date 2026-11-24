@@ -453,3 +453,174 @@
       }
       return h('div', { style: { ...C.muted, padding: o.pad || '24px 0', textAlign: 'center', fontSize: T.fs.xs } }, o.text || '')
     }
+
+    /** 归一化跨源书号键（qidiantu:ID → qidian:ID），保证对比列表增删与后端返回键一致 */
+    function normOvBookKey(raw) {
+      const s = String(raw || '').trim()
+      if (!s) return ''
+      return s.indexOf('qidiantu:') === 0 ? ('qidian:' + s.slice(9)) : s
+    }
+
+    /** 对比书单去重归一化（最多 8 本） */
+    function dedupeCompareKeys(arr) {
+      const out = []
+      const seen = {}
+      ;(Array.isArray(arr) ? arr : []).forEach(function (raw) {
+        const k = normOvBookKey(raw)
+        if (!k || seen[k]) return
+        seen[k] = 1
+        if (out.length < 8) out.push(k)
+      })
+      return out
+    }
+
+    /** 生成简洁的 4~5 档坐标刻度 */
+    function chartNiceTicks(minV, maxV, count) {
+      const n = count || 4
+      if (!Number.isFinite(minV) || !Number.isFinite(maxV)) return [0, 1]
+      if (minV === maxV) {
+        const pad = minV === 0 ? 1 : Math.abs(minV) * 0.2
+        return [minV - pad, minV, minV + pad]
+      }
+      const span = maxV - minV
+      const rawStep = span / Math.max(1, n - 1)
+      const mag = Math.pow(10, Math.floor(Math.log10(Math.abs(rawStep) || 1)))
+      const norm = rawStep / mag
+      const step = (norm <= 1.2 ? 1 : norm <= 2.5 ? 2 : norm <= 6 ? 5 : 10) * mag
+      const lo = Math.floor(minV / step) * step
+      const hi = Math.ceil(maxV / step) * step
+      const out = []
+      for (let v = lo; v <= hi + step * 0.25 && out.length < 8; v += step) {
+        out.push(Math.abs(v) < 1e-9 ? 0 : Number(v.toFixed(4)))
+      }
+      return out.length >= 2 ? out : [minV, maxV]
+    }
+
+    /** 生成整洁的对数（Log10）坐标刻度：按 1/2/5×10^k 紧贴边界并控制在 3~6 档 */
+    function chartLogTicks(minV, maxV) {
+      const loRaw = (typeof minV === 'number' && Number.isFinite(minV) && minV > 0) ? minV : 1
+      const hiRaw = (typeof maxV === 'number' && Number.isFinite(maxV) && maxV > 0) ? Math.max(loRaw, maxV) : Math.max(10, loRaw * 10)
+      const minExp = Math.floor(Math.log10(loRaw)) - 1
+      const maxExp = Math.ceil(Math.log10(hiRaw)) + 1
+      const mults = [1, 2, 5]
+      const grid = []
+      for (let e = minExp; e <= maxExp; e++) {
+        const base = Math.pow(10, e)
+        for (let i = 0; i < mults.length; i++) {
+          const v = Number((mults[i] * base).toPrecision(6))
+          if (v > 0) grid.push(v)
+        }
+      }
+      let loIdx = 0
+      for (let i = 0; i < grid.length; i++) {
+        if (grid[i] <= loRaw * 1.0001) loIdx = i
+      }
+      let hiIdx = grid.length - 1
+      for (let i = grid.length - 1; i >= 0; i--) {
+        if (grid[i] >= hiRaw * 0.9999) hiIdx = i
+      }
+      if (loIdx === hiIdx) {
+        loIdx = Math.max(0, loIdx - 1)
+        hiIdx = Math.min(grid.length - 1, hiIdx + 1)
+      }
+      const span = grid.slice(loIdx, hiIdx + 1)
+      if (span.length <= 5) return span
+      const decades = span.filter(function (v, idx) {
+        if (idx === 0 || idx === span.length - 1) return true
+        const lg = Math.log10(v)
+        return Math.abs(lg - Math.round(lg)) < 1e-6
+      })
+      if (decades.length >= 3 && decades.length <= 6) return decades
+      const step = Math.ceil((span.length - 1) / 4)
+      const out = []
+      for (let i = 0; i < span.length; i += step) out.push(span[i])
+      if (out[out.length - 1] !== span[span.length - 1]) out.push(span[span.length - 1])
+      return out
+    }
+
+    /**
+     * 作品对比卡坐标轴计算（纯函数，支持离线单测）：
+     * - 仅在 yAxis==='value' 且同时含番茄（在读）与非番茄（收藏）时自动启用左在读/右收藏双轴；
+     * - yAxis==='value' 时支持 linear / log（Log10），涨幅% 与名次自动保持线性单轴。
+     */
+    function buildCompareAxes(books, yAxis, yScale, geom) {
+      const g = geom || {}
+      const vh = typeof g.vh === 'number' ? g.vh : 212
+      const padB = typeof g.padB === 'number' ? g.padB : 26
+      const yField = yAxis === 'pct' ? 'pct' : (yAxis === 'rank' ? 'rank' : 'value')
+      const invertY = yAxis === 'rank'
+      const useLog = yAxis === 'value' && yScale === 'log'
+
+      const fqVals = []
+      const otherVals = []
+      ;(Array.isArray(books) ? books : []).forEach(function (b) {
+        const bucket = b && b.site === 'fanqie' ? fqVals : otherVals
+        ;((b && b.points) || []).forEach(function (p) {
+          const yv = p && p[yField]
+          if (typeof yv !== 'number' || !Number.isFinite(yv)) return
+          if (useLog && !(yv > 0)) return
+          bucket.push(yv)
+        })
+      })
+
+      const isDual = yAxis === 'value' && fqVals.length > 0 && otherVals.length > 0
+      const padT = isDual ? 22 : 16
+      const padR = isDual ? 54 : 18
+      const plotH = Math.max(40, vh - padT - padB)
+
+      const mkAxis = function (vals, label, side) {
+        if (!vals.length) return null
+        const minV = Math.min.apply(null, vals)
+        const maxV = Math.max.apply(null, vals)
+        if (useLog) {
+          const ticks = chartLogTicks(minV, maxV)
+          const loLog = Math.log10(ticks[0])
+          const hiLog = Math.log10(ticks[ticks.length - 1])
+          const spanLog = Math.max(1e-6, hiLog - loLog)
+          return {
+            label: label, side: side, ticks: ticks, min: ticks[0], max: ticks[ticks.length - 1],
+            yAt: function (v) {
+              if (typeof v !== 'number' || !Number.isFinite(v) || !(v > 0)) return null
+              const norm = (Math.log10(v) - loLog) / spanLog
+              return padT + plotH - norm * plotH
+            },
+          }
+        }
+        const ticks = chartNiceTicks(minV, maxV, 4)
+        const lo = ticks[0]
+        const hi = ticks[ticks.length - 1]
+        const span = Math.max(1e-6, hi - lo)
+        return {
+          label: label, side: side, ticks: ticks, min: lo, max: hi,
+          yAt: function (v) {
+            if (typeof v !== 'number' || !Number.isFinite(v)) return null
+            const norm = (v - lo) / span
+            return invertY ? (padT + norm * plotH) : (padT + plotH - norm * plotH)
+          },
+        }
+      }
+
+      const left = isDual
+        ? mkAxis(fqVals, '在读', 'left')
+        : mkAxis(fqVals.concat(otherVals), yAxis === 'value' ? (fqVals.length && !otherVals.length ? '在读' : '收藏') : '', 'left')
+      const right = isDual ? mkAxis(otherVals, '收藏', 'right') : null
+      const sideOfBook = function (b) { return (isDual && b && b.site !== 'fanqie') ? 'right' : 'left' }
+      const yAtBook = function (b, v) {
+        const ax = sideOfBook(b) === 'right' && right ? right : left
+        return ax ? ax.yAt(v) : null
+      }
+      return {
+        yField: yField,
+        invertY: invertY,
+        useLog: useLog,
+        isDual: isDual,
+        padT: padT,
+        padR: padR,
+        plotH: plotH,
+        left: left,
+        right: right,
+        hasData: !!(left && left.ticks.length),
+        sideOfBook: sideOfBook,
+        yAtBook: yAtBook,
+      }
+    }

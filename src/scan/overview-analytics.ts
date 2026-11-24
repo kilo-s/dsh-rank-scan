@@ -206,18 +206,55 @@ function putBoundedCache<V>(cache: Map<string, V>, key: string, val: V, maxSize:
   cache.set(key, val)
 }
 
-const BOOK_VAL_CACHE = new Map<string, Map<string, { collect: number | null; words: number | null }>>()
+interface CachedBookInfo {
+  collect: number | null
+  words: number | null
+  desc: string | null
+  tags: string[]
+}
 
-function readBookValueCaches(root: string): Map<string, { collect: number | null; words: number | null }> {
+const BOOK_VAL_CACHE = new Map<string, Map<string, CachedBookInfo>>()
+
+function mergeCachedBookInfo(
+  map: Map<string, CachedBookInfo>,
+  key: string,
+  incoming: { collect: number | null; words: number | null; desc: string | null; tags: string[] },
+): void {
+  const prev = map.get(key)
+  if (!prev) {
+    map.set(key, { collect: incoming.collect, words: incoming.words, desc: incoming.desc, tags: incoming.tags.slice() })
+    return
+  }
+  const tags = prev.tags.slice()
+  if (incoming.tags.length) {
+    const seen = new Set(tags)
+    for (const t of incoming.tags) {
+      if (!seen.has(t)) { seen.add(t); tags.push(t) }
+    }
+  }
+  const desc = incoming.desc && (!prev.desc || incoming.desc.length > prev.desc.length) ? incoming.desc : prev.desc
+  map.set(key, {
+    collect: incoming.collect != null && (prev.collect == null || incoming.collect > prev.collect) ? incoming.collect : prev.collect,
+    words: incoming.words != null && (prev.words == null || incoming.words > prev.words) ? incoming.words : prev.words,
+    desc,
+    tags,
+  })
+}
+
+function readBookValueCaches(root: string): Map<string, CachedBookInfo> {
   const f1 = join(root, 'state', 'book-page-cache.json')
   const f2 = join(root, 'state', 'qidian-book-cache.json')
   const ck = root + '|' + fileMtime(f1) + '|' + fileMtime(f2)
   const hit = BOOK_VAL_CACHE.get(ck)
   if (hit) return hit
 
-  const out = new Map<string, { collect: number | null; words: number | null }>()
-  for (const fp of [f1, f2]) {
-    const j = readJsonSafe<any>(fp)
+  const out = new Map<string, CachedBookInfo>()
+  const sources: Array<{ fp: string; defaultSite: string | null }> = [
+    { fp: f1, defaultSite: null },
+    { fp: f2, defaultSite: 'qidian' },
+  ]
+  for (const src of sources) {
+    const j = readJsonSafe<any>(src.fp)
     if (!j || typeof j !== 'object') continue
     const entries = j.entries || j.books || j
     if (!entries || typeof entries !== 'object') continue
@@ -226,28 +263,20 @@ function readBookValueCaches(root: string): Map<string, { collect: number | null
       const rec = v as Record<string, unknown>
       const collect = numVal(rec.collect) ?? numVal(rec.readCount) ?? null
       const words = numVal(rec.wordsCnt) ?? numVal(rec.words) ?? numVal(rec.wordNumber) ?? null
-      if (collect == null && words == null) continue
+      const desc = typeof rec.desc === 'string' && rec.desc.trim() ? rec.desc.trim() : null
+      const tags = Array.isArray(rec.tags)
+        ? rec.tags.map((t) => String(t || '').trim()).filter((t) => t.length >= 2 && t.length <= 20)
+        : []
+      if (collect == null && words == null && !desc && !tags.length) continue
+      const info = { collect, words, desc, tags }
       const idPart = String(k).split(':').pop() || ''
       if (!idPart) continue
-      const prev = out.get(idPart)
-      if (!prev) {
-        out.set(idPart, { collect, words })
-      } else {
-        out.set(idPart, {
-          collect: collect != null && (prev.collect == null || collect > prev.collect) ? collect : prev.collect,
-          words: words != null && (prev.words == null || words > prev.words) ? words : prev.words,
-        })
-      }
       if (k.includes(':')) {
-        const prevK = out.get(k)
-        if (!prevK) out.set(k, { collect, words })
-        else {
-          out.set(k, {
-            collect: collect != null && (prevK.collect == null || collect > prevK.collect) ? collect : prevK.collect,
-            words: words != null && (prevK.words == null || words > prevK.words) ? words : prevK.words,
-          })
-        }
+        mergeCachedBookInfo(out, k, info)
+      } else if (src.defaultSite) {
+        mergeCachedBookInfo(out, src.defaultSite + ':' + idPart, info)
       }
+      mergeCachedBookInfo(out, idPart, info)
     }
   }
   putBoundedCache(BOOK_VAL_CACHE, ck, out, 4)
@@ -1296,6 +1325,22 @@ export interface KeywordNodeData {
 
 export type CloudItemTuple = [term: string, share: number, count: number, top1: number, topBook: string, topVal: number]
 
+export interface KeywordSiteCoverage {
+  total: number
+  withText: number
+  withDesc: number
+  withTags: number
+  pct: number
+}
+
+export interface KeywordCoverageMeta {
+  withText: number
+  withDesc: number
+  withTags: number
+  pct: number
+  bySite: Record<'fanqie' | 'qidian' | 'ciweimao' | 'sfacg', KeywordSiteCoverage>
+}
+
 export interface KeywordGraphResult {
   ok: true
   meta: {
@@ -1305,6 +1350,7 @@ export interface KeywordGraphResult {
     windowDays: number
     termCount: number
     dateRange: string | null
+    coverage: KeywordCoverageMeta
   }
   clouds: {
     fanqie: CloudItemTuple[]
@@ -1318,6 +1364,40 @@ export interface KeywordGraphResult {
 const KW_CACHE = new Map<string, KeywordGraphResult>()
 const KW_SITES = ['fanqie', 'qidian', 'ciweimao', 'sfacg'] as const
 type KwSite = (typeof KW_SITES)[number]
+
+/** 过滤平台模板/渠道元标签，防止与真实细分题材混同（尤其避免「女频」误中「穿书女频」） */
+const KW_BOILERPLATE_TAGS = new Set([
+  '男频', '女频', '签约', 'VIP', 'VIP付费', '免费', '独家', '首发', '刺猬猫首发',
+  '原创', '连载', '连载中', '完结', '已完结', '轻小说', '小说', '网文', '短篇', '长篇',
+  '男频衍生', '女频衍生',
+])
+
+/** 否定词短语剥离（如「无系统」「无后宫」「非重生」），避免子串匹配反相误中 */
+const KW_NEG_PHRASE_RE = /(?:无|没有|非|反|不带|不含|拒绝)(?:系统|外挂|金手指|后宫|多女主|女主|单女主|CP|cp|重生|穿越|修仙|变身|种田|异能|圣母)/g
+
+export function cleanKeywordTags(rawTags: readonly string[] | null | undefined): string[] {
+  if (!Array.isArray(rawTags) || !rawTags.length) return []
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of rawTags) {
+    const t = String(raw || '').replace(PUA_GLOBAL_RE, '').trim()
+    if (t.length < 2 || t.length > 20 || KW_BOILERPLATE_TAGS.has(t) || seen.has(t)) continue
+    KW_NEG_PHRASE_RE.lastIndex = 0
+    if (/^(?:无|非|反|没)/.test(t) && KW_NEG_PHRASE_RE.test(t)) {
+      KW_NEG_PHRASE_RE.lastIndex = 0
+      continue
+    }
+    KW_NEG_PHRASE_RE.lastIndex = 0
+    seen.add(t)
+    out.push(t)
+  }
+  return out
+}
+
+export function sanitizeKeywordText(raw: string): string {
+  if (!raw) return ''
+  return raw.replace(PUA_GLOBAL_RE, '').replace(KW_NEG_PHRASE_RE, ' ')
+}
 
 export function computeKeywordGraph(
   root: string,
@@ -1333,7 +1413,8 @@ export function computeKeywordGraph(
     : null
   const boardKey = allowedBoards ? [...allowedBoards].sort().join(',') : '*'
   const customKey = opts.customTerms && opts.customTerms.length ? JSON.stringify(opts.customTerms) : ''
-  const cacheKey = root + '|' + windowDays + '|' + useDates.length + '|' + (latestDate || '') + '|' + dirStamp(root, latestDate) + '|b:' + boardKey + '|' + customKey
+  const cacheStamp = fileMtime(join(root, 'state', 'book-page-cache.json')) + '|' + fileMtime(join(root, 'state', 'qidian-book-cache.json'))
+  const cacheKey = root + '|' + windowDays + '|' + useDates.length + '|' + (latestDate || '') + '|' + dirStamp(root, latestDate) + '|c:' + cacheStamp + '|b:' + boardKey + '|' + customKey
 
   const cached = KW_CACHE.get(cacheKey)
   if (cached) return cached
@@ -1352,7 +1433,7 @@ export function computeKeywordGraph(
 
   const fmap = loadFontMap(root)
   const hasFmap = Object.keys(fmap).length > 0
-  const books = new Map<string, { key: string; plat: KwSite; title: string; val: number; desc: string }>()
+  const books = new Map<string, { key: string; plat: KwSite; title: string; val: number; desc: string; tags: string[] }>()
 
   for (const day of useDates) {
     const dir = join(root, day)
@@ -1373,31 +1454,58 @@ export function computeKeywordGraph(
         if (!title || PUA_RE.test(title)) continue
         const ex = (r.extra || {}) as Record<string, unknown>
         const key = plat + '::' + String(r.key || title)
-        const val = Number(r.value || ex.collect || ex.collectBase || ex.popularity || 0) || 0
+        // 与多书曲线保持同一数值口径（首订榜取收藏而非首订，三江取期初+总增量）
+        const val = extractRowMetric(plat, boardId, r).value ?? 0
         let desc = typeof ex.desc === 'string' ? ex.desc : ''
         if (plat === 'fanqie' && hasFmap && hasPua(desc)) desc = decodePua(desc, fmap).text
-        desc = desc.replace(PUA_GLOBAL_RE, '')
+        desc = desc.replace(PUA_GLOBAL_RE, '').trim()
+        const snapTags = Array.isArray(ex.tags) ? ex.tags.map((t) => String(t || '').trim()).filter(Boolean) : []
         const prev = books.get(key)
         if (!prev) {
-          books.set(key, { key, plat, title, val, desc })
+          books.set(key, { key, plat, title, val, desc, tags: snapTags })
         } else {
           if (val > prev.val) prev.val = val
           if (title.length > prev.title.length && !title.endsWith('...')) prev.title = title
           if (desc.length > prev.desc.length) prev.desc = desc
+          if (snapTags.length) {
+            const seen = new Set(prev.tags)
+            for (const t of snapTags) if (!seen.has(t)) { seen.add(t); prev.tags.push(t) }
+          }
         }
       }
     }
   }
 
-  // Enrich values from book-page / qidian caches
+  // 零额外请求接入 book-page-cache 与 qidian-book-cache 的数值、简介与作品标签
   const valCaches = readBookValueCaches(root)
   for (const bk of books.values()) {
     const idPart = bk.key.split('::')[1] || ''
-    const c = valCaches.get(bk.plat + ':' + idPart) || valCaches.get(idPart)
-    if (c && c.collect != null && c.collect > bk.val) bk.val = c.collect
+    const c = valCaches.get(bk.plat + ':' + idPart) || (bk.plat === 'qidian' ? valCaches.get(idPart) : undefined)
+    if (!c) continue
+    if (c.collect != null && c.collect > bk.val) bk.val = c.collect
+    if (c.desc) {
+      let cDesc = c.desc
+      if (bk.plat === 'fanqie' && hasFmap && hasPua(cDesc)) cDesc = decodePua(cDesc, fmap).text
+      cDesc = cDesc.replace(PUA_GLOBAL_RE, '').trim()
+      if (cDesc.length > bk.desc.length) bk.desc = cDesc
+    }
+    if (c.tags.length) {
+      const seen = new Set(bk.tags)
+      for (const t of c.tags) if (!seen.has(t)) { seen.add(t); bk.tags.push(t) }
+    }
   }
 
   const bookArr = [...books.values()]
+  const bySiteCov: Record<KwSite, KeywordSiteCoverage> = {
+    fanqie: { total: 0, withText: 0, withDesc: 0, withTags: 0, pct: 0 },
+    qidian: { total: 0, withText: 0, withDesc: 0, withTags: 0, pct: 0 },
+    ciweimao: { total: 0, withText: 0, withDesc: 0, withTags: 0, pct: 0 },
+    sfacg: { total: 0, withText: 0, withDesc: 0, withTags: 0, pct: 0 },
+  }
+  let covWithText = 0
+  let covWithDesc = 0
+  let covWithTags = 0
+
   interface SiteBucket { n: number; score: number; topVal: number; topBook: string; scores: number[] }
   interface TermAcc {
     term: string
@@ -1423,8 +1531,20 @@ export function computeKeywordGraph(
 
   const bookTerms = new Map<string, string[]>()
   for (const bk of bookArr) {
-    // 严格只匹配 title + desc，绝不吃大榜分类名
-    const hay = bk.title + ' ' + bk.desc
+    const cleanTags = cleanKeywordTags(bk.tags)
+    const hasDesc = bk.desc.length > 0
+    const hasTags = cleanTags.length > 0
+    const hasText = hasDesc || hasTags
+    const scov = bySiteCov[bk.plat]
+    scov.total += 1
+    if (hasDesc) { scov.withDesc += 1; covWithDesc += 1 }
+    if (hasTags) { scov.withTags += 1; covWithTags += 1 }
+    if (hasText) { scov.withText += 1; covWithText += 1 }
+
+    // 严格只匹配 title + desc + 清洗后的作品细分标签，绝不吃大榜分类名 cat
+    const hay = sanitizeKeywordText(bk.title)
+      + (hasDesc ? ' ' + sanitizeKeywordText(bk.desc) : '')
+      + (hasTags ? ' ' + cleanTags.join(' ') : '')
     const matched: string[] = []
     const w = Math.sqrt(Math.max(100, bk.val))
     for (const [term, _p, aliases] of lexicon) {
@@ -1446,6 +1566,17 @@ export function computeKeywordGraph(
       }
     }
     if (matched.length >= 2) bookTerms.set(bk.key, matched)
+  }
+
+  for (const s of KW_SITES) {
+    bySiteCov[s].pct = bySiteCov[s].total > 0 ? Math.round((bySiteCov[s].withText / bySiteCov[s].total) * 100) : 0
+  }
+  const coverage: KeywordCoverageMeta = {
+    withText: covWithText,
+    withDesc: covWithDesc,
+    withTags: covWithTags,
+    pct: bookArr.length > 0 ? Math.round((covWithText / bookArr.length) * 100) : 0,
+    bySite: bySiteCov,
   }
 
   const siteTot: Record<KwSite, number> = { fanqie: 0, qidian: 0, ciweimao: 0, sfacg: 0 }
@@ -1543,6 +1674,7 @@ export function computeKeywordGraph(
       windowDays,
       termCount: Object.keys(nodes).length,
       dateRange: useDates.length ? useDates[0] + ' ~ ' + useDates[useDates.length - 1] : null,
+      coverage,
     },
     clouds,
     nodes,
@@ -1550,4 +1682,96 @@ export function computeKeywordGraph(
 
   putBoundedCache(KW_CACHE, cacheKey, res, 12)
   return res
+}
+
+export interface CorpusBackfillCandidate {
+  site: KwSite
+  bookId: string
+  bookKey: string
+  boardId: string
+  priority: number
+  rank: number | null
+  val: number
+}
+
+/**
+ * 1B 低速增量语料补缺候选挑选器（纯本地读盘、可离线单测）：
+ * 仅从最新一期可信快照（按当前启用频道）挑选既缺 desc 又缺 tags 的在榜书，
+ * 优先覆盖日常不走原站书页补全的菠萝包，其次刺猬猫旧缓存、起点三江/首订头部，最后其余缺文本项。
+ */
+export function pickCorpusBackfillCandidates(
+  root: string,
+  opts: { boards?: string[] | null; limit?: number; skipKeys?: Set<string> } = {},
+): CorpusBackfillCandidate[] {
+  const limit = Math.max(0, Math.min(30, Math.round(Number(opts.limit ?? 12))))
+  if (limit <= 0) return []
+  const dates = listDataDates(root)
+  if (!dates.length) return []
+  const recentDates = dates.slice(-3).reverse()
+
+  const allowed = Array.isArray(opts.boards)
+    ? new Set(opts.boards.map((b) => String(b || '').trim()).filter(Boolean))
+    : null
+  const caches = readBookValueCaches(root)
+  const picked = new Map<string, CorpusBackfillCandidate>()
+  const seenBoards = new Set<string>()
+
+  const prioOf = (site: KwSite, boardId: string): number => {
+    if (site === 'sfacg') return 1
+    if (site === 'ciweimao') return 2
+    if (boardId === 'qidiantu.sanjiang') return 3
+    if (boardId === 'qidiantu.shouding') return 4
+    if (site === 'qidian') return 5
+    return 6
+  }
+
+  // 分时扫榜时部分站点今天尚未轮到：按最近 3 天倒序为每个启用的榜取最新一份可信快照
+  for (const day of recentDates) {
+    const dir = join(root, day)
+    let files: string[] = []
+    try { files = readdirSync(dir) } catch { continue }
+    for (const f of files) {
+      if (!f.endsWith('.json') || f === 'day-index.json' || f === 'scan.json' || f.endsWith('.untrusted.json')) continue
+      const site = siteFromBoardFile(f)
+      if (!site) continue
+      const boardId = f.replace(/\.json$/, '')
+      if (seenBoards.has(boardId)) continue
+      if (allowed && !allowed.has(boardId)) continue
+      if (isUntrustedSnap(root, day, boardId)) continue
+      const snap = readJsonSafe<Snapshot>(join(dir, f))
+      if (!snap || !Array.isArray(snap.rows)) continue
+      seenBoards.add(boardId)
+      const prio = prioOf(site, boardId)
+      for (const r of snap.rows) {
+        const bookId = String(r.key || '').trim()
+        if (!/^\d+$/.test(bookId)) continue
+        const bookKey = site + ':' + bookId
+        if (opts.skipKeys && opts.skipKeys.has(bookKey)) continue
+        const ex = (r.extra || {}) as Record<string, unknown>
+        const snapDesc = typeof ex.desc === 'string' ? ex.desc.replace(PUA_GLOBAL_RE, '').trim() : ''
+        const snapTags = Array.isArray(ex.tags) ? cleanKeywordTags(ex.tags as string[]) : []
+        const cached = caches.get(bookKey) || (site === 'qidian' ? caches.get(bookId) : undefined)
+        const hasDesc = snapDesc.length > 0 || !!(cached && cached.desc)
+        const hasTags = snapTags.length > 0 || !!(cached && cleanKeywordTags(cached.tags).length > 0)
+        if (hasDesc || hasTags) continue
+        const m = extractRowMetric(site, boardId, r)
+        const val = m.value ?? (cached && cached.collect != null ? cached.collect : 0)
+        const rank = m.rank
+        const prev = picked.get(bookKey)
+        if (!prev || prio < prev.priority || (prio === prev.priority && val > prev.val)) {
+          picked.set(bookKey, { site, bookId, bookKey, boardId, priority: prio, rank, val })
+        }
+      }
+    }
+  }
+
+  return [...picked.values()]
+    .sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority
+      const ra = a.rank ?? 9999
+      const rb = b.rank ?? 9999
+      if (ra !== rb) return ra - rb
+      return b.val - a.val
+    })
+    .slice(0, limit)
 }

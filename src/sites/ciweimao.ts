@@ -107,6 +107,27 @@ export function parseCiweimaoBookDesc(html: string): string | null {
   return lines.length ? lines.join('\n') : null
 }
 
+/**
+ * 解析刺猬猫原站单书页官方标签（纯函数，零额外请求复用已抓 HTML）。
+ * 原站标签位于 `label-box` / `book-label` 容器内的 `<span>`/`<a>` 中。
+ */
+export function parseCiweimaoBookTags(html: string): string[] {
+  if (!html || typeof html !== 'string') return []
+  const box = html.match(/<(?:p|div)[^>]*class="[^"]*(?:label-box|book-label)[^"]*"[^>]*>([\s\S]*?)<\/(?:p|div)>/i)
+  if (!box) return []
+  const tags: string[] = []
+  const seen = new Set<string>()
+  for (const m of box[1].matchAll(/<(?:span|a)[^>]*>([\s\S]*?)<\/(?:span|a)>/gi)) {
+    const t = decode(m[1].replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim()
+    if (t.length >= 2 && t.length <= 20 && !seen.has(t)) {
+      seen.add(t)
+      tags.push(t)
+      if (tags.length >= 16) break
+    }
+  }
+  return tags
+}
+
 /** 按需拉取刺猬猫原站单书页简介（走全局限速与超时保护，失败静默返回 null） */
 export async function fetchCiweimaoBookDesc(
   bookId: string,
