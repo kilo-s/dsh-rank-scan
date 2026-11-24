@@ -392,3 +392,64 @@
 
     /** 同会话单书走势缓存（key = bookKey|boardId|days|rev） */
     const BOOK_TREND_CACHE = {}
+
+    /** 概览统一站点色板与多曲线循环色板（36/37/38/39/40 共用单一来源） */
+    const OV_CHART_COLORS = [T.chart0, T.chart1, T.chart2, T.chart3, T.chart4, T.chart5]
+    const OV_SITE_COLORS = {
+      fanqie: T.siteFanqie,
+      qidian: T.siteQidian,
+      ciweimao: T.siteCiweimao,
+      sfacg: T.siteSfacg,
+    }
+
+    /** 格式化本地接口报错（专门识别宿主未重启导致的 404，避免静默吞错显示成「无数据」） */
+    function formatOvApiError(err) {
+      if (!err) return '读取失败'
+      const status = typeof err.status === 'number' ? err.status : 0
+      const msg = String(err.message || err || '')
+      if (status === 404 || /404|not found/i.test(msg)) {
+        return '后端接口未就绪（HTTP 404）：DSH 宿主仍在运行旧版内存缓存，请完全重启 DSH 桌面端以加载新版接口'
+      }
+      return '读取失败：' + msg.slice(0, 120)
+    }
+
+    /** 概览卡片带标签复合状态 Hook（统一去重，并彻底免疫测试渲染器跨组件状态槽串味） */
+    function useOvState(tag, initFn) {
+      const [raw, setRaw] = React.useState(function () { return Object.assign({ _tag: tag }, initFn()) })
+      const st = (raw && typeof raw === 'object' && raw._tag === tag) ? raw : Object.assign({ _tag: tag }, initFn())
+      const patch = function (p) {
+        setRaw(function (prev) {
+          const base = (prev && typeof prev === 'object' && prev._tag === tag) ? prev : Object.assign({ _tag: tag }, initFn())
+          return Object.assign({}, base, typeof p === 'function' ? p(base) : p)
+        })
+      }
+      return [st, patch]
+    }
+
+    /** 概览浮层统一关闭 Hook（点外部自动收起 + 接入面板既有 Esc 层级，与 PopMenu 体验一致） */
+    function useOvPopoverClose(open, onClose, boxRef) {
+      const closeRef = React.useRef(onClose)
+      closeRef.current = onClose
+      useEscLayer(open ? function () { closeRef.current && closeRef.current(); return true } : null)
+      React.useEffect(function () {
+        if (!open || typeof document === 'undefined' || !document.addEventListener) return undefined
+        const onDown = function (ev) {
+          const box = boxRef && boxRef.current
+          if (box && ev && ev.target && box.contains && box.contains(ev.target)) return
+          closeRef.current && closeRef.current()
+        }
+        document.addEventListener('mousedown', onDown, true)
+        return function () { document.removeEventListener('mousedown', onDown, true) }
+      }, [open, boxRef])
+    }
+
+    /** 概览卡片统一状态提示（错误+重试 / 加载中 / 空态） */
+    function ovCardNotice(opts) {
+      const o = opts || {}
+      if (o.error) {
+        return h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '18px 8px', fontSize: T.fs.xs, color: T.warn, textAlign: 'center' } },
+          h('span', null, o.error),
+          o.onRetry ? h('button', { type: 'button', className: 'rs-ov-chip', onClick: o.onRetry }, '重试') : null)
+      }
+      return h('div', { style: { ...C.muted, padding: o.pad || '24px 0', textAlign: 'center', fontSize: T.fs.xs } }, o.text || '')
+    }

@@ -11,16 +11,19 @@
       const [chg, setChg] = React.useState(null)
       const [watchData, setWatchData] = React.useState(null)
       const [trendState, setTrendState] = React.useState(null)
+      const [layout, setLayout] = React.useState(function () { return normalizeOvLayout(null) })
       // 收拢 UI 交互状态到一个复合对象，减少无谓重渲染与状态槽位占用
       const [ui, setUi] = React.useState(function () {
         return {
           watchOpen: true, watchShowQuiet: false, watchShowAll: false, watchTick: 0, watchBusy: false,
           lens: 'pick', focusPid: null, focusTab: 'changes', focusGroup: '', focusLimit: 30,
-          issuesOpen: true, trendPick: null, trendDays: 7,
+          issuesOpen: true, trendPick: null, trendDays: 7, reloadTick: 0,
         }
       })
       const patchUi = function (patch) { setUi(function (prev) { return Object.assign({}, prev, patch) }) }
       const issuesRef = React.useRef(null)
+      const trendRef = React.useRef(null)
+      const layoutWarnedRef = React.useRef(false)
       const rev = props.rev || revOf(ov)
 
       React.useEffect(function () {
@@ -28,14 +31,36 @@
         let alive = true
         jget('/changes').then(function (r) { if (alive) setChg(r) }).catch(function () { if (alive) setChg(null) })
         return function () { alive = false }
-      }, [rev])
+      }, [rev, ui.reloadTick])
 
       React.useEffect(function () {
         if (!ov) return undefined
         let alive = true
         jget('/watch-summary').then(function (r) { if (alive && r && r.ok) setWatchData(r) }).catch(function () {})
         return function () { alive = false }
-      }, [rev, bm.total, ui.watchTick])
+      }, [rev, bm.total, ui.watchTick, ui.reloadTick])
+
+      React.useEffect(function () {
+        let alive = true
+        jget('/layout').then(function (r) {
+          if (alive && r && r.ok && r.layout) setLayout(normalizeOvLayout(r.layout))
+        }).catch(function () {})
+        return function () { alive = false }
+      }, [ui.reloadTick])
+
+      const commitLayout = function (op, a, b) {
+        setLayout(function (prev) {
+          const next = applyOvLayoutOp(prev, op, a, b)
+          jpost('/layout', { layout: next }).catch(function (e) {
+            if (!layoutWarnedRef.current) {
+              layoutWarnedRef.current = true
+              toast('warn', '画布布局暂未落盘（' + formatOvApiError(e) + '）')
+            }
+          })
+          return next
+        })
+      }
+      const ptrDrag = useOvPointerDrag(function (fromId, toId) { commitLayout('reorder', fromId, toId) })
 
       React.useEffect(function () {
         const tp = ui.trendPick
@@ -252,6 +277,12 @@
         }
         setUi(function (prev) {
           const same = prev.trendPick && prev.trendPick.bookKey === info.bookKey && prev.trendPick.boardId === (info.boardId || null)
+          if (!same && typeof setTimeout === 'function') {
+            setTimeout(function () {
+              const el = trendRef.current
+              if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+            }, 30)
+          }
           return Object.assign({}, prev, {
             trendPick: same ? null : { bookKey: info.bookKey, boardId: info.boardId || null, title: info.title || '', boardName: info.boardName || '', url: info.url || null },
           })
@@ -390,8 +421,8 @@
             compactDeltaNode(e.group, it)))
       }
 
-      // 第 3 层：按需盯盘条（0 本盯盘时完全不渲染）
-      const watchSection = (function () {
+      // 第 3 层：按需盯盘条（0 本盯盘时完全不渲染；标题栏统一由 OverviewCardShell 承载，消除双标题栏）
+      const watchSpec = (function () {
         const items = (watchData && Array.isArray(watchData.items)) ? watchData.items : []
         if (!items.length) return null
         const active = items.filter(function (x) { return !x.quiet })
@@ -399,21 +430,19 @@
         const pool = ui.watchShowQuiet ? active.concat(quiet) : active
         const shown = ui.watchShowAll ? pool : pool.slice(0, 5)
         const moreN = pool.length - shown.length
-        return h('div', { style: { marginTop: '10px', borderRadius: '9px', border: '1px solid ' + wash(T.border, 70), background: wash(T.fg, 2) } },
-          h('div', {
-            style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 10px', cursor: 'pointer', userSelect: 'none' },
-            onClick: function () { patchUi({ watchOpen: !ui.watchOpen }) },
-          },
-            h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: T.fs.s } },
-              h('span', { style: { fontWeight: 600, color: T.fg } }, '盯盘'),
-              h('span', { style: { ...C.muted, ...C.num } }, active.length ? active.length + ' 活跃' : '今日无变动'),
-              quiet.length ? h('button', {
-                type: 'button', className: 'rs-btn is-ghost',
-                style: { height: '20px', padding: '0 4px', fontSize: T.fs.xs, color: T.muted },
-                onClick: function (ev) { ev.stopPropagation(); patchUi({ watchShowQuiet: !ui.watchShowQuiet, watchOpen: true }) },
-              }, ui.watchShowQuiet ? '收起静默' : '+' + quiet.length + ' 静默') : null),
-            h('span', { style: { fontSize: T.fs.xs, color: T.muted } }, ui.watchOpen ? '▾' : '▸')),
-          ui.watchOpen && shown.length ? h('div', { style: { padding: '3px 6px 5px', borderTop: '1px solid ' + wash(T.border, 50), display: 'flex', flexDirection: 'column', gap: '2px' } },
+        return {
+          subtitle: active.length ? active.length + ' 活跃' : '今日无变动',
+          headerExtra: h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '2px' } },
+            quiet.length ? h('button', {
+              type: 'button', className: 'rs-ov-iconbtn',
+              onClick: function () { patchUi({ watchShowQuiet: !ui.watchShowQuiet, watchOpen: true }) },
+            }, ui.watchShowQuiet ? '收起静默' : '+' + quiet.length + ' 静默') : null,
+            h('button', {
+              type: 'button', className: 'rs-ov-iconbtn',
+              title: ui.watchOpen ? '折叠盯盘列表' : '展开盯盘列表',
+              onClick: function () { patchUi({ watchOpen: !ui.watchOpen }) },
+            }, ui.watchOpen ? '▾' : '▸')),
+          body: ui.watchOpen && shown.length ? h('div', { style: { padding: '4px 6px 6px', display: 'flex', flexDirection: 'column', gap: '2px' } },
             shown.map(function (w) {
               const dtCls = w.deltaType === 'up' ? 'rs-ov-delta is-up'
                 : w.deltaType === 'down' ? 'rs-ov-delta is-down'
@@ -436,7 +465,8 @@
             }),
             pool.length > 5 ? h('div', { style: { textAlign: 'center', paddingTop: '2px' } },
               h('button', { type: 'button', className: 'rs-btn is-ghost', style: { height: '22px', fontSize: T.fs.xs, color: T.muted }, onClick: function () { patchUi({ watchShowAll: !ui.watchShowAll }) } },
-                ui.watchShowAll ? '收起至 5 本' : '展开其余 ' + moreN + ' 本')) : null) : null)
+                ui.watchShowAll ? '收起至 5 本' : '展开其余 ' + moreN + ' 本')) : null) : null,
+        }
       })()
 
       // 单书本地走势原地抽屉
@@ -459,7 +489,7 @@
         const showDates = dates
         const showVals = vals
         const gridCols = Math.min(7, Math.max(1, showDates.length))
-        return h('div', { style: { ...C.detail, marginTop: '10px', padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: '8px' } },
+        return h('div', { ref: trendRef, style: { ...C.detail, marginTop: '10px', padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: '8px' } },
           h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: '1 1 180px' } },
               url
@@ -500,75 +530,60 @@
                   }))))
       })()
 
-      // 第 4 层：四大平台 2×2 活卡片 / 单站聚焦钻取
+      // 第 4 层：自由组合可拖拽画布（盯盘、四站独立活卡片、周榜竞速、作品成长对比、关键词生态） / 单站聚焦钻取
       const lensGroups = ['新入榜', '上升', '下降', '退榜', '回榜'].filter(function (g) { return (chgTotals[g] || 0) > 0 })
       const hasAnyBatch = platforms.some(function (p) { return p.batchItems && p.batchItems.length > 0 })
       const activeLens = (ui.lens === 'pick' || (ui.lens === 'batch' && hasAnyBatch) || lensGroups.indexOf(ui.lens) >= 0) ? ui.lens : 'pick'
       const cardLimit = chgNarrow ? 5 : 6
       const focusPlat = ui.focusPid ? platforms.filter(function (p) { return p.id === ui.focusPid })[0] || null : null
+      const platById = {}
+      platforms.forEach(function (p) { platById[p.id] = p })
 
-      const platformGridView = h('div', { style: { marginTop: '10px' } },
-        (chgEntries.length || hasAnyBatch) ? h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '6px', marginBottom: '8px' } },
-          h('div', { className: 'rs-ov-seg' },
-            [{ value: 'pick', label: '精选' }].concat(lensGroups.map(function (g) {
-              return { value: g, label: g + ' ' + (chgTotals[g] || 0) }
-            })).concat(hasAnyBatch ? [{ value: 'batch', label: '首订' }] : []).map(function (o) {
-              return h('button', {
-                key: 'lg-' + o.value, type: 'button',
-                className: 'rs-ov-seg-btn' + (activeLens === o.value ? ' is-on' : ''),
-                onClick: function () { patchUi({ lens: o.value }) },
-              }, o.label)
-            })),
-          chg && (chg.note || chgRealTotal > chgEntries.length)
-            ? h('span', { style: { fontSize: T.fs.xs, color: T.muted }, title: chg.note || '' },
-                chgRealTotal > chgEntries.length
-                  ? '共 ' + chgRealTotal + ' 条（每类预览 20 条）'
-                  : '共 ' + chgRealTotal + ' 条变动')
-            : h('span', { style: { fontSize: T.fs.xs, color: T.muted } }, '共 ' + chgRealTotal + ' 条')) : null,
-        platforms.length ? h('div', {
-          style: { display: 'grid', gridTemplateColumns: chgNarrow ? '1fr' : 'repeat(2, minmax(0, 1fr))', gap: '8px' },
-        }, platforms.map(function (p) {
-          let renderedRows = []
-          if (activeLens === 'batch') {
-            renderedRows = (p.batchItems || []).slice(0, cardLimit).map(function (bi, idx) { return renderBatchItem(bi, idx, { inFocus: false }) })
-          } else if (activeLens === 'pick') {
-            // 统一动态精选（方案 B）：日常变化与有效首订同池竞争、按榜深与当日分布动态评分、软多样性衰减选席
-            const picked = pickHighlights(p.items, cardLimit, {
-              platformId: p.id,
-              batch: p.batchBoard ? p.batchBoard.batch : null,
-              batchItems: p.batchItems,
-              boardDepths: p.boardDepths,
-            })
-            renderedRows = picked.map(function (x, idx) {
-              return x && x.isBatch ? renderBatchItem(x, idx, { inFocus: false }) : renderChangeItem(x, idx, { inFocus: false })
-            })
-          } else {
-            renderedRows = sortGroupChanges(p.items.filter(function (e) { return e.group === activeLens }), activeLens)
-              .slice(0, cardLimit)
-              .map(function (e, idx) { return renderChangeItem(e, idx, { inFocus: false }) })
-          }
-          const cnt = activeLens === 'batch' ? ((p.batchBoard && p.batchBoard.batch && p.batchBoard.batch.count) || 0)
-            : activeLens === 'pick' ? p.items.length : (p.counts[activeLens] || 0)
-          const maxChips = chgNarrow ? 3 : 4
-          const shownBoards = p.boards.slice(0, maxChips)
-          const moreBoards = p.boards.length - shownBoards.length
-          const dotColor = p.dotTone === 'bad' ? T.bad : p.dotTone === 'warn' ? T.warn : p.dotTone === 'ok' ? T.ok : T.muted
-          return h('div', { key: 'plat-' + p.id, className: 'rs-ov-card', style: { padding: '8px 10px' } },
-            h('div', {
-              style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', paddingBottom: '6px', borderBottom: '1px solid ' + wash(T.border, 55), cursor: 'pointer' },
-              title: p.statusTip + ' · 点击查看全站变化与各榜',
-              onClick: function () { openPlatformFocus(p.id, activeLens === 'batch' && p.batchBoard ? 'batch' : (p.items.length ? 'changes' : (p.batchBoard ? 'batch' : 'boards'))) },
-            },
-              h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 } },
-                h('span', { style: { fontWeight: 600, fontSize: T.fs.m, color: T.fg } }, p.name),
-                h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: T.fs.xs, color: T.muted, ...C.num } },
-                  h('span', { style: { display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: dotColor } }),
-                  p.okN + '/' + p.boards.length + (p.metaTime ? ' · ' + p.metaTime : ''))),
-              h('span', { style: { fontSize: T.fs.s, color: T.muted, ...C.num, flex: '0 0 auto' } },
-                activeLens === 'batch'
-                  ? (p.batchBoard ? cnt + ' 本 ›' : p.boards.length + ' 榜 ›')
-                  : (p.items.length ? cnt + ' ›' : p.boards.length + ' 榜 ›'))),
-            h('div', { style: { padding: '5px 0', display: 'flex', flexDirection: 'column', gap: '2px', flex: '1 1 auto' } },
+      const buildPlatformCardSpec = function (p, isNarrowCard) {
+        let renderedRows = []
+        if (activeLens === 'batch') {
+          renderedRows = (p.batchItems || []).slice(0, cardLimit).map(function (bi, idx) { return renderBatchItem(bi, idx, { inFocus: false }) })
+        } else if (activeLens === 'pick') {
+          const picked = pickHighlights(p.items, cardLimit, {
+            platformId: p.id,
+            batch: p.batchBoard ? p.batchBoard.batch : null,
+            batchItems: p.batchItems,
+            boardDepths: p.boardDepths,
+          })
+          renderedRows = picked.map(function (x, idx) {
+            return x && x.isBatch ? renderBatchItem(x, idx, { inFocus: false }) : renderChangeItem(x, idx, { inFocus: false })
+          })
+        } else {
+          renderedRows = sortGroupChanges(p.items.filter(function (e) { return e.group === activeLens }), activeLens)
+            .slice(0, cardLimit)
+            .map(function (e, idx) { return renderChangeItem(e, idx, { inFocus: false }) })
+        }
+        const cnt = activeLens === 'batch' ? ((p.batchBoard && p.batchBoard.batch && p.batchBoard.batch.count) || 0)
+          : activeLens === 'pick' ? p.items.length : (p.counts[activeLens] || 0)
+        const maxChips = isNarrowCard ? 3 : 4
+        const shownBoards = p.boards.slice(0, maxChips)
+        const moreBoards = p.boards.length - shownBoards.length
+        const dotColor = p.dotTone === 'bad' ? T.bad : p.dotTone === 'warn' ? T.warn : p.dotTone === 'ok' ? T.ok : T.muted
+        const goFocus = function () {
+          openPlatformFocus(p.id, activeLens === 'batch' && p.batchBoard ? 'batch' : (p.items.length ? 'changes' : (p.batchBoard ? 'batch' : 'boards')))
+        }
+        return {
+          title: p.name,
+          headerTitle: p.statusTip + ' · 点击查看全站变化与各榜，长按可拖动卡片',
+          onHeaderClick: goFocus,
+          subtitle: h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px', ...C.num } },
+            h('span', { style: { display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: dotColor } }),
+            p.okN + '/' + p.boards.length + (p.metaTime ? ' · ' + p.metaTime : '')),
+          headerExtra: h('button', {
+            type: 'button', className: 'rs-ov-iconbtn',
+            style: { ...C.num, marginRight: '2px' },
+            title: '查看全站变化与各榜',
+            onClick: goFocus,
+          }, activeLens === 'batch'
+            ? (p.batchBoard ? cnt + ' 本 ›' : p.boards.length + ' 榜 ›')
+            : (p.items.length ? cnt + ' ›' : p.boards.length + ' 榜 ›')),
+          body: h('div', { style: { padding: '5px 10px 8px', display: 'flex', flexDirection: 'column', flex: '1 1 auto' } },
+            h('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px', flex: '1 1 auto', paddingBottom: '5px' } },
               renderedRows.length
                 ? renderedRows
                 : h('div', { style: { padding: '16px 4px', textAlign: 'center', fontSize: T.fs.xs, color: T.muted } },
@@ -597,8 +612,87 @@
               moreBoards > 0 ? h('button', {
                 type: 'button', className: 'rs-ov-bchip',
                 onClick: function () { openPlatformFocus(p.id, 'boards') },
-              }, '+' + moreBoards + ' ›') : null))
-        })) : null)
+              }, '+' + moreBoards + ' ›') : null)),
+        }
+      }
+
+      const watchSeeds = (watchData && Array.isArray(watchData.items))
+        ? watchData.items.slice(0, 3).map(function (w) { return w.bookKey })
+        : []
+      const visibleCanvasCards = (layout.cards || []).filter(function (card) {
+        if (card.visible === false) return false
+        if (card.type === 'watch' && !watchSpec) return false
+        const pid = OV_PLAT_PID_OF_TYPE[card.type]
+        if (pid && !platById[pid]) return false
+        return true
+      })
+      const moveVisibleCard = function (id, dir) {
+        const pos = visibleCanvasCards.findIndex(function (c) { return c.id === id })
+        const target = visibleCanvasCards[pos + dir]
+        if (target) commitLayout('reorder', id, target.id)
+      }
+
+      const platformGridView = h('div', { style: { marginTop: '10px' } },
+        (chgEntries.length || hasAnyBatch) ? h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '6px', marginBottom: '8px' } },
+          h('div', { className: 'rs-ov-seg' },
+            [{ value: 'pick', label: '精选' }].concat(lensGroups.map(function (g) {
+              return { value: g, label: g + ' ' + (chgTotals[g] || 0) }
+            })).concat(hasAnyBatch ? [{ value: 'batch', label: '首订' }] : []).map(function (o) {
+              return h('button', {
+                key: 'lg-' + o.value, type: 'button',
+                className: 'rs-ov-seg-btn' + (activeLens === o.value ? ' is-on' : ''),
+                onClick: function () { patchUi({ lens: o.value }) },
+              }, o.label)
+            })),
+          chg && (chg.note || chgRealTotal > chgEntries.length)
+            ? h('span', { style: { fontSize: T.fs.xs, color: T.muted }, title: chg.note || '' },
+                chgRealTotal > chgEntries.length
+                  ? '共 ' + chgRealTotal + ' 条（每类预览 20 条）'
+                  : '共 ' + chgRealTotal + ' 条变动')
+            : h('span', { style: { fontSize: T.fs.xs, color: T.muted } }, '共 ' + chgRealTotal + ' 条')) : null,
+        h('div', {
+          style: { display: 'grid', gridTemplateColumns: chgNarrow ? '1fr' : 'repeat(2, minmax(0, 1fr))', gap: '8px', alignItems: 'start' },
+        }, visibleCanvasCards.map(function (card, vIdx) {
+          const cardNarrow = chgNarrow || card.span === 'half'
+          const pid = OV_PLAT_PID_OF_TYPE[card.type]
+          let shellExtra = {}
+          let body = null
+          if (card.type === 'watch' && watchSpec) {
+            shellExtra = { subtitle: watchSpec.subtitle, headerExtra: watchSpec.headerExtra }
+            body = watchSpec.body
+          } else if (pid && platById[pid]) {
+            const spec = buildPlatformCardSpec(platById[pid], cardNarrow)
+            shellExtra = { title: spec.title, subtitle: spec.subtitle, headerExtra: spec.headerExtra, headerTitle: spec.headerTitle, onHeaderClick: spec.onHeaderClick }
+            body = spec.body
+          } else if (card.type === 'weekly-race') {
+            body = h(WeeklyRaceCard, {
+              cardId: card.id, config: card.config, narrow: cardNarrow, rev: rev, reloadTick: ui.reloadTick,
+              onConfigChange: function (p) { commitLayout('config', card.id, p) },
+              onOpenTrend: openBookTrend,
+            })
+          } else if (card.type === 'book-compare') {
+            body = h(BookCompareCard, {
+              cardId: card.id, config: card.config, narrow: cardNarrow, rev: rev, reloadTick: ui.reloadTick,
+              seedBooks: watchSeeds, watchReady: watchData !== null,
+              onConfigChange: function (p) { commitLayout('config', card.id, p) },
+            })
+          } else if (card.type === 'keywords') {
+            body = h(KeywordAnalysisCard, {
+              cardId: card.id, config: card.config, narrow: cardNarrow, rev: rev, reloadTick: ui.reloadTick,
+              onConfigChange: function (p) { commitLayout('config', card.id, p) },
+            })
+          }
+          return h(OverviewCardShell, Object.assign({
+            key: card.id, card: card, narrow: chgNarrow,
+            drag: ptrDrag.drag,
+            onStartDrag: ptrDrag.startDrag,
+            wasRecentDrag: ptrDrag.wasRecentDrag,
+            canMoveUp: vIdx > 0, canMoveDown: vIdx < visibleCanvasCards.length - 1,
+            onMove: moveVisibleCard,
+            onToggleSpan: function (id) { commitLayout('span', id) },
+            onHide: function (id) { commitLayout('hide', id) },
+          }, shellExtra), body)
+        })))
 
       const platformFocusView = focusPlat ? (function () {
         const grpNames = ['新入榜', '上升', '下降', '退榜', '回榜'].filter(function (g) { return (focusPlat.counts[g] || 0) > 0 })
@@ -736,7 +830,16 @@
           h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px' } },
             badRows.length ? h('button', { className: 'rs-btn', disabled: scanBusy, onClick: function () { props.act('/retry') }, title: '只重试失败的榜（联网）' }, '重试失败 ' + badRows.length + ' 个榜') : null,
             scanBusy ? h('button', { className: 'rs-btn is-danger', onClick: function () { props.act('/cancel') } }, '停止本次（保留已完成）') : null,
-            h('button', { className: 'rs-btn is-ghost', onClick: props.reload, title: '只重新读取本地数据：不联网、不采集' }, '重新载入'),
+            h(OverviewCanvasPicker, {
+              layout: layout,
+              onToggleCard: function (id) { commitLayout('toggle', id) },
+              onReset: function () { commitLayout('reset') },
+            }),
+            h('button', {
+              className: 'rs-btn is-ghost',
+              onClick: function () { patchUi({ reloadTick: (ui.reloadTick || 0) + 1 }); props.reload && props.reload() },
+              title: '重新读取本地概览与全部卡片数据：不联网、不采集',
+            }, '重新载入'),
             h('button', {
               className: 'rs-btn is-primary',
               disabled: scanBusy || !ov || total === 0,
@@ -777,9 +880,9 @@
           props.onOpenSettings ? h('button', { className: 'rs-btn is-ghost', onClick: props.onOpenSettings }, '去设置勾选') : null) : null,
         total > 0 && noData ? h('div', { style: { ...C.muted, marginTop: '10px' } }, '今天还没有采集结果，到计划时刻会自动跑，也可以点「扫描已选榜」') : null,
         noChanges ? h('div', { style: { ...C.muted, marginTop: '8px' } }, '今天没有榜单变化') : null,
-        /* 按需盯盘区 & 单书本地走势抽屉 */
-        watchSection,
+        /* 单书本地走势抽屉（点击任意作品原地展开） */
         trendDrawer,
-        /* 四大平台 2×2 活卡片 / 单站聚焦钻取 */
-        total > 0 ? (focusPlat ? platformFocusView : platformGridView) : null)
+        /* 自由组合可拖拽概览画布 / 单站聚焦钻取 */
+        total > 0 ? (focusPlat ? platformFocusView : platformGridView) : null,
+        h(OverviewDragGhost, { drag: ptrDrag.drag }))
     }

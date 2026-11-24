@@ -59,6 +59,7 @@ import { DEFAULT_FALLBACK_TIME, DEFAULT_SITE_TIMES, hmOf, planSiteRuns, RETRY_CO
 import { cacheStats, cachedBook, clearCache, putCachedBooks } from './scan/qidian-cache.js'
 import { assignCachedStats, cacheStats as bookCacheStats, cachedDetail, cachedEntry, clearCache as clearBookCache, putEntries, readDetailMap } from './scan/book-cache.js'
 import { daoSearchSiteOf, fetchDaoSearchBook, mergeBookHonours } from './sites/daosearch-book.js'
+import { computeBookSeries, computeKeywordGraph, computeWeeklyRace, normalizeOverviewLayout, searchLocalBooks } from './scan/overview-analytics.js'
 
 interface PluginCtx {
   tools: { register(tool: any): unknown }
@@ -3854,6 +3855,71 @@ export function apply(ctx: PluginCtx, config: any): void {
             return send(200, await panelBookTrend(bk, days, bid))
           }
           if (p === '/api/rank-scan/watch-summary') return send(200, await panelWatchSummary())
+          if (p === '/api/rank-scan/layout') {
+            const method = String(req.method || 'GET').toUpperCase()
+            if (method === 'GET') {
+              const stL: any = readState()
+              return send(200, { ok: true, layout: normalizeOverviewLayout(stL.overviewLayout) })
+            }
+            if (method === 'POST') {
+              const body = await readBody(req)
+              const rawLayout = body && typeof body === 'object' && body.layout ? body.layout : body
+              const normalized = normalizeOverviewLayout(rawLayout)
+              const stL: any = readState()
+              stL.overviewLayout = normalized
+              writeState(stL)
+              return send(200, { ok: true, layout: normalized })
+            }
+            return send(405, { error: 'GET or POST only' })
+          }
+          if (p === '/api/rank-scan/weekly-race') {
+            const src = String(q.get('source') || 'sanjiang').trim().toLowerCase()
+            if (src !== 'sanjiang' && src !== 'fanqie') return send(400, { error: 'source 仅支持 sanjiang 或 fanqie' })
+            const period = q.get('period') ? String(q.get('period')).trim() : null
+            const cat = q.get('cat') ? String(q.get('cat')).trim() : null
+            return send(200, computeWeeklyRace(root, { source: src, period, cat }))
+          }
+          if (p === '/api/rank-scan/books-series') {
+            const rawKeys = String(q.get('bookKeys') || '').trim()
+            const bookKeys = rawKeys ? rawKeys.split(',').map((x) => x.trim()).filter(Boolean) : []
+            const days = q.get('days') !== null ? Number(q.get('days')) : 30
+            const bms = BOOKMARKS
+              ? BOOKMARKS.all().map((b) => ({
+                  bookKey: b.bookKey,
+                  title: displayLabel(b),
+                  label: b.label,
+                  author: b.author,
+                  url: b.url,
+                  site: b.site,
+                  watched: b.watched === true,
+                }))
+              : []
+            return send(200, computeBookSeries(root, { bookKeys, days, bookmarks: bms }))
+          }
+          if (p === '/api/rank-scan/books-search') {
+            const kw = String(q.get('q') || '').trim()
+            const lim = Number(q.get('limit') || 20)
+            const bms = BOOKMARKS
+              ? BOOKMARKS.all().map((b) => ({
+                  bookKey: b.bookKey,
+                  title: displayLabel(b),
+                  label: b.label,
+                  author: b.author,
+                  url: b.url,
+                  site: b.site,
+                  watched: b.watched === true,
+                }))
+              : []
+            return send(200, { ok: true, items: searchLocalBooks(root, kw, Number.isFinite(lim) ? lim : 20, bms) })
+          }
+          if (p === '/api/rank-scan/keywords') {
+            const daysRaw = q.get('days')
+            const days = daysRaw !== null && daysRaw !== '' ? Number(daysRaw) : 30
+            const stK: any = readState()
+            const customTerms = Array.isArray(stK.customKeywordTerms) ? stK.customKeywordTerms : undefined
+            const boards = Array.isArray(stK.boards) ? stK.boards : undefined
+            return send(200, computeKeywordGraph(root, { days: Number.isFinite(days) ? days : 30, boards, customTerms }))
+          }
           if (p === '/api/rank-scan/select') {
             if (String(req.method || 'GET').toUpperCase() !== 'POST') return send(405, { error: 'POST only' })
             const body = await readBody(req)
